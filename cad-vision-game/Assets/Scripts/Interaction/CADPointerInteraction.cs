@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Oculus.Interaction;
 using Oculus.Interaction.Input;
@@ -56,7 +57,8 @@ public class CADPointerInteraction : MonoBehaviour
     private RayInteractor ray;
     private float nextRaySearch;
     private bool wasSelecting;
-    private bool pressedSelectedTarget; // The press started on the already-selected object.
+    private bool pressedSelectedTarget; // The press started on an already-selected object.
+    private string pressedResolvedId;   // The selectable object the press resolved to.
 
     private void Awake()
     {
@@ -107,14 +109,12 @@ public class CADPointerInteraction : MonoBehaviour
     {
         CADPointerTargetKind kind = Classify(out string cadId, out Vector3? hitPoint);
 
-        // Decided before anything changes: was this press on the one selected object?
+        // Decided before anything changes: was this press on something already selected?
+        // (Multi-select toggles instead of opening a menu, so it never needs this.)
         pressedSelectedTarget = false;
-        if (kind == CADPointerTargetKind.Cad)
-        {
-            string resolved = manipulationService.ResolveSelectable(cadId);
-            var selected = manipulationService.GetSelectedObjects().ToList();
-            pressedSelectedTarget = resolved != null && selected.Count == 1 && selected[0].id == resolved;
-        }
+        pressedResolvedId = kind == CADPointerTargetKind.Cad ? manipulationService.ResolveHitTarget(cadId) : null;
+        if (pressedResolvedId != null && !manipulationService.IsMultiSelectActive)
+            pressedSelectedTarget = manipulationService.IsSelected(pressedResolvedId);
 
         machine.Down(kind, cadId, hitPoint, pose, Time.unscaledTime);
         Debug.Log($"[CADPointer] Down on {kind}{(cadId != null ? $" '{cadId}'" : "")}" +
@@ -126,7 +126,13 @@ public class CADPointerInteraction : MonoBehaviour
         switch (intent)
         {
             case CADPointerStateMachine.Intent.ClickCad:
-                if (pressedSelectedTarget)
+                if (manipulationService.IsMultiSelectActive)
+                {
+                    string toggled = manipulationService.ToggleFromHit(machine.PressCadId,
+                        machine.PressHasHitPoint ? machine.PressHitPoint : (Vector3?)null);
+                    Debug.Log($"[CADPointer] Multi-select toggle '{toggled}'.");
+                }
+                else if (pressedSelectedTarget)
                     RequestContextMenu();
                 else
                     manipulationService.SelectFromHit(machine.PressCadId,
@@ -134,6 +140,13 @@ public class CADPointerInteraction : MonoBehaviour
                 break;
 
             case CADPointerStateMachine.Intent.ClickEmpty:
+                if (manipulationService.IsMultiSelectActive)
+                {
+                    // Keep the set; the selection menu's Clear / Done end multi-select.
+                    Debug.Log("[CADPointer] Empty click ignored during multi-select.");
+                    break;
+                }
+
                 Debug.Log("[CADPointer] Empty click; clearing selection.");
                 manipulationService.ClearSelection();
                 break;
@@ -153,9 +166,11 @@ public class CADPointerInteraction : MonoBehaviour
         }
     }
 
+    // The menu decides object menu vs selection menu from the selection size.
     private void RequestContextMenu()
     {
-        CADObject target = manipulationService.GetSelectedObjects().FirstOrDefault();
+        CADObject target = manipulationService.GetSelectedObjects()
+            .FirstOrDefault(o => o.id == pressedResolvedId);
         if (target == null)
             return;
 
@@ -178,6 +193,16 @@ public class CADPointerInteraction : MonoBehaviour
             return;
         }
 
+        // Grabbing the selection moves the selection: any selected object when several are
+        // selected, and anything while picking (an unselected object is added first).
+        bool picking = manipulationService.IsMultiSelectActive;
+        bool pressedSelected = pressedResolvedId != null && manipulationService.IsSelected(pressedResolvedId);
+        if (picking || (pressedSelected && manipulationService.GetSelectedIds().Count > 1))
+        {
+            BeginGroupDrag(pose, addPressedFirst: picking && !pressedSelected);
+            return;
+        }
+
         // Select at drag start (scope-aware, stores the pressed point as the grab point).
         manipulationService.SelectFromHit(machine.PressCadId,
             machine.PressHasHitPoint ? machine.PressHitPoint : (Vector3?)null);
@@ -190,6 +215,37 @@ public class CADPointerInteraction : MonoBehaviour
 
         string info = session.Begin(manipulationService, target, pose);
         Debug.Log($"[CADPointer] Drag started: '{target.id}' ({target.name}); {info}.");
+    }
+
+    // Moves every selected transform root as one rigid group, held at the pressed point. The
+    // selection is never collapsed. Roots avoid moving a selected child twice with its parent.
+    private void BeginGroupDrag(Pose pose, bool addPressedFirst)
+    {
+        if (pressedResolvedId == null)
+        {
+            Debug.Log("[CADPointer] Group drag ignored: nothing selectable at the press point.");
+            return;
+        }
+
+        if (addPressedFirst)
+            manipulationService.AddToSelection(pressedResolvedId);
+
+        List<CADObject> roots = manipulationService.GetSelectedTransformRoots()
+            .Select(id => manipulationService.GetSelectedObjects().FirstOrDefault(o => o.id == id))
+            .Where(o => o != null && o.gameObject.activeInHierarchy)
+            .ToList();
+        if (roots.Count == 0)
+            return;
+
+        // Anchor the grab point on the root that carries the pressed object.
+        CADObject pressed = manipulationService.GetSelectedObjects().FirstOrDefault(o => o.id == pressedResolvedId);
+        int anchor = pressed == null ? -1 : roots.FindIndex(r => pressed.transform.IsChildOf(r.transform));
+        if (anchor > 0)
+            (roots[0], roots[anchor]) = (roots[anchor], roots[0]);
+
+        string info = session.Begin(manipulationService, roots, pose,
+            machine.PressHasHitPoint ? machine.PressHitPoint : (Vector3?)null);
+        Debug.Log($"[CADPointer] Group drag started: {string.Join(", ", roots.Select(r => r.name))}; {info}.");
     }
 
     private void EndManipulation(string reason)

@@ -68,7 +68,7 @@ public class CADSelectionOutline : MonoBehaviour
     private void OnDestroy()
     {
         if (material != null)
-            Destroy(material);
+            DestroySafe(material);
     }
 
     // LateUpdate: after this frame's selection changes (pointer, menu, service calls).
@@ -145,7 +145,7 @@ public class CADSelectionOutline : MonoBehaviour
             foreach (GameObject shell in shells)
             {
                 if (shell != null)
-                    Destroy(shell);
+                    DestroySafe(shell);
             }
         }
 
@@ -225,6 +225,15 @@ public class CADSelectionOutline : MonoBehaviour
         return shell;
     }
 
+    // Destroy is not allowed outside Play mode (EditMode tests); DestroyImmediate is.
+    private static void DestroySafe(Object obj)
+    {
+        if (Application.isPlaying)
+            Destroy(obj);
+        else
+            DestroyImmediate(obj);
+    }
+
     private static void ReleaseDeadShellMeshes()
     {
         List<Mesh> dead = null;
@@ -240,7 +249,7 @@ public class CADSelectionOutline : MonoBehaviour
         foreach (Mesh key in dead)
         {
             if (ShellMeshes.TryGetValue(key, out Mesh shell) && shell != null)
-                Destroy(shell);
+                DestroySafe(shell);
             ShellMeshes.Remove(key);
         }
     }
