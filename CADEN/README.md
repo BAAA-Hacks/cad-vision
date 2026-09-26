@@ -77,6 +77,8 @@ The hidden system prompt defines CADEN's role and the same evidence rules.
 - **Core/tools:** registry, JSON contract, and the four query handlers plus metadata parsing.
 - **Core/primitives:** internal data structures and operations, including the [mechanical multigraph](Core/primitives/README.md). It is not exposed to Gemini.
 - **Canonical loader foundation:** [ProjectSnapshot and scoped load diagnostics](Core/primitives/operations/project/README.md). Tested independently; the desktop/query path will migrate in the next milestone.
+- **Issue store:** [Immutable findings, indexed queries, dispositions and targeted revalidation](Core/primitives/operations/issues/README.md). Persistent memory remains future work.
+- **Issue engine:** [Subject-level scans, candidate presentation and initial checkers](Core/primitives/operations/issues/ENGINE.md). Includes missing material and native constraint-state checks; host/chat integration and export-dependent checks remain deferred.
 - **Desktop:** .NET 10 Windows Forms; temporary chat UI and local configuration loader.
 - **Checks:** console-based offline checks and an optional live connectivity check.
 

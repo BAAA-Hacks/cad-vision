@@ -2,11 +2,21 @@
 
 Primitives are internal building blocks. Gemini sees higher-level tools, not these APIs.
 
+The [canonical loader](operations/project/README.md) provides immutable project snapshots.
+The [runtime issue store](operations/issues/README.md) layers indexed findings and separate
+user dispositions over a snapshot, with targeted checker revalidation.
+The [issue engine](operations/issues/ENGINE.md) adds per-subject discovery/coverage,
+candidate presentation rules and the first material/native-constraint checkers.
+
 ```text
 primitives/
   data_structures/mechanical_graph/MechanicalGraph.cs
   operations/mechanical_graph/BuildMechanicalGraph.cs
   operations/mechanical_graph/TraverseMechanicalGraph.cs
+  data_structures/project/ProjectSnapshot.cs
+  operations/project/
+  data_structures/issues/IssueModels.cs
+  operations/issues/
 ```
 
 The representation contains immutable component/mate records and read-only ID indexes.
