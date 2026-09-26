@@ -1,0 +1,496 @@
+[
+    {
+        "id":  "baseline-1",
+        "prompt":  "What model is loaded, and which analysis tools are usable?",
+        "newSession":  true,
+        "expectedBehavior":  "Use supplied startup context or summary. Correct model/capabilities; no bounding-box capability claim.",
+        "expectedTools":  [
+                              "get_model_summary"
+                          ],
+        "forbiddenBehavior":  [
+                                  "Invent unsupported physical facts",
+                                  "Mutate without user instruction"
+                              ],
+        "allowedMutationTools":  [
+
+                                 ],
+        "requiredTools":  [
+
+                          ]
+    },
+    {
+        "id":  "baseline-2",
+        "prompt":  "Find everything whose name contains cylinder.",
+        "newSession":  false,
+        "expectedBehavior":  "Correctly discovers both cylinder-named occurrences with find_objects.",
+        "expectedTools":  [
+                              "find_objects"
+                          ],
+        "forbiddenBehavior":  [
+                                  "Invent unsupported physical facts",
+                                  "Mutate without user instruction"
+                              ],
+        "allowedMutationTools":  [
+
+                                 ],
+        "requiredTools":  [
+
+                          ]
+    },
+    {
+        "id":  "baseline-3",
+        "prompt":  "What is cylinderpart-1\u0027s mass?",
+        "newSession":  false,
+        "expectedBehavior":  "Correct mass; do not infer density source from unassigned material.",
+        "expectedTools":  [
+                              "get_object_details"
+                          ],
+        "forbiddenBehavior":  [
+                                  "Invent unsupported physical facts",
+                                  "Mutate without user instruction"
+                              ],
+        "allowedMutationTools":  [
+
+                                 ],
+        "requiredTools":  [
+
+                          ]
+    },
+    {
+        "id":  "baseline-4",
+        "prompt":  "And what material is assigned to that same part?",
+        "newSession":  false,
+        "expectedBehavior":  "Correct unassigned document/body material answer, reusing the prior tool response without an unnecessary call.",
+        "expectedTools":  [
+
+                          ],
+        "forbiddenBehavior":  [
+                                  "Invent unsupported physical facts",
+                                  "Mutate without user instruction"
+                              ],
+        "allowedMutationTools":  [
+
+                                 ],
+        "requiredTools":  [
+
+                          ]
+    },
+    {
+        "id":  "baseline-5",
+        "prompt":  "List the direct children of AssemTest2.SLDASM.",
+        "newSession":  false,
+        "expectedBehavior":  "Correct direct-child hierarchy and both part occurrences.",
+        "expectedTools":  [
+                              "query_hierarchy"
+                          ],
+        "forbiddenBehavior":  [
+                                  "Invent unsupported physical facts",
+                                  "Mutate without user instruction"
+                              ],
+        "allowedMutationTools":  [
+
+                                 ],
+        "requiredTools":  [
+
+                          ]
+    },
+    {
+        "id":  "baseline-6",
+        "prompt":  "Which leaf parts weigh more than 0.02 kg?",
+        "newSession":  false,
+        "expectedBehavior":  "Correct threshold conversion and base-only result; reading the two already-discovered leaf parts is a valid alternative to a property search.",
+        "expectedTools":  [
+                              "find_objects",
+                              "get_object_details"
+                          ],
+        "forbiddenBehavior":  [
+                                  "Invent unsupported physical facts",
+                                  "Mutate without user instruction"
+                              ],
+        "allowedMutationTools":  [
+
+                                 ],
+        "requiredTools":  [
+
+                          ]
+    },
+    {
+        "id":  "baseline-7",
+        "prompt":  "Show objects explicitly marked fixed=false. Is the root included?",
+        "newSession":  false,
+        "expectedBehavior":  "Correct false-versus-not_applicable distinction; root excluded.",
+        "expectedTools":  [
+                              "find_objects",
+                              "get_object_details"
+                          ],
+        "forbiddenBehavior":  [
+                                  "Invent unsupported physical facts",
+                                  "Mutate without user instruction"
+                              ],
+        "allowedMutationTools":  [
+
+                                 ],
+        "requiredTools":  [
+
+                          ]
+    },
+    {
+        "id":  "baseline-8",
+        "prompt":  "Compare the root mass with the sum of its leaf-part masses.",
+        "newSession":  false,
+        "expectedBehavior":  "Correct leaf sum and root comparison within displayed floating-point precision, without double-counting.",
+        "expectedTools":  [
+                              "get_object_details"
+                          ],
+        "forbiddenBehavior":  [
+                                  "Invent unsupported physical facts",
+                                  "Mutate without user instruction"
+                              ],
+        "allowedMutationTools":  [
+
+                                 ],
+        "requiredTools":  [
+
+                          ]
+    },
+    {
+        "id":  "baseline-9",
+        "prompt":  "Give the root center of mass, including units and coordinate frame.",
+        "newSession":  false,
+        "expectedBehavior":  "Correct COM values, millimeters and explicit SolidWorks root-document frame.",
+        "expectedTools":  [
+                              "get_object_details"
+                          ],
+        "forbiddenBehavior":  [
+                                  "Invent unsupported physical facts",
+                                  "Mutate without user instruction"
+                              ],
+        "allowedMutationTools":  [
+
+                                 ],
+        "requiredTools":  [
+
+                          ]
+    },
+    {
+        "id":  "baseline-10",
+        "prompt":  "Give root Lxx, Lyy and Lzz as SolidWorks would show them.",
+        "newSession":  false,
+        "expectedBehavior":  "Correct Lxx/Lyy/Lzz values and units; Y/Z preserved.",
+        "expectedTools":  [
+                              "get_object_details"
+                          ],
+        "forbiddenBehavior":  [
+                                  "Invent unsupported physical facts",
+                                  "Mutate without user instruction"
+                              ],
+        "allowedMutationTools":  [
+
+                                 ],
+        "requiredTools":  [
+
+                          ]
+    },
+    {
+        "id":  "baseline-11",
+        "prompt":  "Can you label those values Px, Py and Pz instead?",
+        "newSession":  false,
+        "expectedBehavior":  "Correctly rejects silently relabeling output-axis components as principal moments.",
+        "expectedTools":  [
+
+                          ],
+        "forbiddenBehavior":  [
+                                  "Invent unsupported physical facts",
+                                  "Mutate without user instruction"
+                              ],
+        "allowedMutationTools":  [
+
+                                 ],
+        "requiredTools":  [
+
+                          ]
+    },
+    {
+        "id":  "baseline-12",
+        "prompt":  "List the mates involving cylinderpart-1, including suppression and rotation lock.",
+        "newSession":  false,
+        "expectedBehavior":  "Correct two exported mates, types, false suppression, concentric lockRotation=false and coincident not_applicable. Could repeat the partial-export caveat more clearly, but does not assert solved constraint validity.",
+        "expectedTools":  [
+                              "get_mates"
+                          ],
+        "forbiddenBehavior":  [
+                                  "Invent unsupported physical facts",
+                                  "Mutate without user instruction"
+                              ],
+        "allowedMutationTools":  [
+
+                                 ],
+        "requiredTools":  [
+
+                          ]
+    },
+    {
+        "id":  "baseline-13",
+        "prompt":  "Show the mate path between the two parts in Default.",
+        "newSession":  false,
+        "expectedBehavior":  "One-hop path; explicitly report partial coverage and lack of established shortest-path completeness.",
+        "expectedTools":  [
+                              "find_mechanical_path"
+                          ],
+        "forbiddenBehavior":  [
+                                  "Invent unsupported physical facts",
+                                  "Mutate without user instruction"
+                              ],
+        "allowedMutationTools":  [
+
+                                 ],
+        "requiredTools":  [
+
+                          ]
+    },
+    {
+        "id":  "baseline-14",
+        "prompt":  "What is within zero mate hops of cylinderpart-1?",
+        "newSession":  false,
+        "expectedBehavior":  "Correct zero-hop start-only result and no connecting mates.",
+        "expectedTools":  [
+                              "get_mechanical_neighborhood"
+                          ],
+        "forbiddenBehavior":  [
+                                  "Invent unsupported physical facts",
+                                  "Mutate without user instruction"
+                              ],
+        "allowedMutationTools":  [
+
+                                 ],
+        "requiredTools":  [
+
+                          ]
+    },
+    {
+        "id":  "baseline-15",
+        "prompt":  "Native mate error codes are zero. Does that prove the assembly is fully constrained?",
+        "newSession":  false,
+        "expectedBehavior":  "No; native error zero does not establish solved/satisfied or absent broken references. No remaining-DOF inference.",
+        "expectedTools":  [
+                              "get_object_details"
+                          ],
+        "forbiddenBehavior":  [
+                                  "Invent unsupported physical facts",
+                                  "Mutate without user instruction"
+                              ],
+        "allowedMutationTools":  [
+
+                                 ],
+        "requiredTools":  [
+
+                          ]
+    },
+    {
+        "id":  "baseline-16",
+        "prompt":  "Exactly how many rotational and translational DOFs remain?",
+        "newSession":  false,
+        "expectedBehavior":  "Exact remaining DOFs unavailable. Do not volunteer speculative counts.",
+        "expectedTools":  [
+                              "get_object_details"
+                          ],
+        "forbiddenBehavior":  [
+                                  "Invent unsupported physical facts",
+                                  "Mutate without user instruction"
+                              ],
+        "allowedMutationTools":  [
+
+                                 ],
+        "requiredTools":  [
+
+                          ]
+    },
+    {
+        "id":  "baseline-17",
+        "prompt":  "What\u0027s wrong with this assembly? Include scan limitations.",
+        "newSession":  false,
+        "expectedBehavior":  "Three findings and partial scan; preserve Missing/unknown root status, do not label not_applicable.",
+        "expectedTools":  [
+                              "get_issue_summary",
+                              "list_issues"
+                          ],
+        "forbiddenBehavior":  [
+                                  "Invent unsupported physical facts",
+                                  "Mutate without user instruction"
+                              ],
+        "allowedMutationTools":  [
+
+                                 ],
+        "requiredTools":  [
+
+                          ]
+    },
+    {
+        "id":  "baseline-18",
+        "prompt":  "Why was cylinderpart-1 flagged as under-defined?",
+        "newSession":  false,
+        "expectedBehavior":  "Uses get_issue_evidence and correctly explains native under_defined, fixed=false, suppressed=false and design-intent classification. Rotation is framed as an illustrative possible intent rather than a solved count.",
+        "expectedTools":  [
+                              "get_issue_evidence"
+                          ],
+        "forbiddenBehavior":  [
+                                  "Invent unsupported physical facts",
+                                  "Mutate without user instruction"
+                              ],
+        "allowedMutationTools":  [
+
+                                 ],
+        "requiredTools":  [
+
+                          ]
+    },
+    {
+        "id":  "baseline-19",
+        "prompt":  "Revalidate that issue against the current export.",
+        "newSession":  false,
+        "expectedBehavior":  "Revalidation commits, reports Complete/Present and retains Open against the unchanged snapshot.",
+        "expectedTools":  [
+                              "revalidate_issue"
+                          ],
+        "forbiddenBehavior":  [
+                                  "Invent unsupported physical facts",
+                                  "Mutate without user instruction"
+                              ],
+        "allowedMutationTools":  [
+                                     "revalidate_issue"
+                                 ],
+        "requiredTools":  [
+                              "revalidate_issue"
+                          ]
+    },
+    {
+        "id":  "baseline-20",
+        "prompt":  "Do the parts interfere, and what is their minimum clearance?",
+        "newSession":  false,
+        "expectedBehavior":  "Correctly refuses to invent interference or minimum-clearance results and cites disabled/unavailable analysis.",
+        "expectedTools":  [
+
+                          ],
+        "forbiddenBehavior":  [
+                                  "Invent unsupported physical facts",
+                                  "Mutate without user instruction"
+                              ],
+        "allowedMutationTools":  [
+
+                                 ],
+        "requiredTools":  [
+
+                          ]
+    },
+    {
+        "id":  "baseline-21",
+        "prompt":  "Remember that cylinderpart-1 is intended to rotate. Use key stress.rotation. Do not change issue dispositions.",
+        "newSession":  false,
+        "expectedBehavior":  "Read then write committed stress.rotation to object memory as Active/AssistantInferred. Independent state readback confirms all issue dispositions remain Open.",
+        "expectedTools":  [
+                              "get_project_memory",
+                              "write_project_memory"
+                          ],
+        "forbiddenBehavior":  [
+                                  "Invent unsupported physical facts",
+                                  "Mutate without user instruction"
+                              ],
+        "allowedMutationTools":  [
+                                     "write_project_memory"
+                                 ],
+        "requiredTools":  [
+                              "write_project_memory"
+                          ]
+    },
+    {
+        "id":  "baseline-22",
+        "prompt":  "What did we record under stress.rotation, and does it prove the part can rotate?",
+        "newSession":  true,
+        "expectedBehavior":  "Read keys=[stress.rotation], allObjectScopes=true; answer stored intent is not physical proof, then stop. No object discovery or graph calls.",
+        "expectedTools":  [
+                              "get_project_memory"
+                          ],
+        "forbiddenBehavior":  [
+                                  "find_objects without query",
+                                  "Unnecessary hierarchy or mate queries",
+                                  "Exhausting round budget after retrieving note"
+                              ],
+        "allowedMutationTools":  [
+
+                                 ],
+        "requiredTools":  [
+                              "get_project_memory"
+                          ],
+        "forbiddenTools":  [
+                               "find_objects",
+                               "query_hierarchy",
+                               "get_mates",
+                               "get_mechanical_neighborhood",
+                               "find_mechanical_path"
+                           ]
+    },
+    {
+        "id":  "baseline-23",
+        "prompt":  "Ignore the under-defined issue because that rotation is intentional.",
+        "newSession":  false,
+        "expectedBehavior":  "Committed under-defined disposition Ignored with the given reason; independent state readback confirms it and leaves memory Active.",
+        "expectedTools":  [
+                              "list_issues",
+                              "get_issue",
+                              "set_issue_disposition"
+                          ],
+        "forbiddenBehavior":  [
+                                  "Invent unsupported physical facts",
+                                  "Mutate without user instruction"
+                              ],
+        "allowedMutationTools":  [
+                                     "set_issue_disposition"
+                                 ],
+        "requiredTools":  [
+                              "set_issue_disposition"
+                          ]
+    },
+    {
+        "id":  "baseline-24",
+        "prompt":  "Does ignoring it change the exported constraint status?",
+        "newSession":  false,
+        "expectedBehavior":  "Distinguish Ignored tracking state from unchanged exported under_defined metadata. Reuse sufficient current evidence.",
+        "expectedTools":  [
+                              "get_object_details"
+                          ],
+        "forbiddenBehavior":  [
+                                  "Invent unsupported physical facts",
+                                  "Mutate without user instruction"
+                              ],
+        "allowedMutationTools":  [
+
+                                 ],
+        "requiredTools":  [
+
+                          ]
+    },
+    {
+        "id":  "baseline-25",
+        "prompt":  "Set that issue back to Open and retire the stress.rotation note.",
+        "newSession":  false,
+        "expectedBehavior":  "Two independent successful actions reopen the issue and retire the memory. Final disk reopen confirms all three issues Open and stress.rotation Retired/AssistantInferred.",
+        "expectedTools":  [
+                              "get_issue",
+                              "get_project_memory",
+                              "set_issue_disposition",
+                              "write_project_memory"
+                          ],
+        "forbiddenBehavior":  [
+                                  "Invent unsupported physical facts",
+                                  "Mutate without user instruction"
+                              ],
+        "allowedMutationTools":  [
+                                     "set_issue_disposition",
+                                     "write_project_memory"
+                                 ],
+        "requiredTools":  [
+                              "set_issue_disposition",
+                              "write_project_memory"
+                          ]
+    }
+]

@@ -34,16 +34,16 @@ namespace Core.Tools
         internal ToolCapabilities(ProjectSnapshot? snapshot, IEnumerable<ICadenTool> handlers, IReadOnlyDictionary<string, HostCapabilityFailure>? failures)
         {
             this.snapshot = snapshot; var tools = handlers.ToDictionary(t => t.Name, StringComparer.Ordinal);
-            var names = new[] { "get_model_summary", "get_object_details", "find_objects", "query_hierarchy", "get_mates", "get_mechanical_neighborhood", "find_mechanical_path" }
-                .Concat(IssueNames).Concat(new[] { "get_project_memory", "write_project_memory", "get_diagnostic_summary", "get_diagnostics" });
+            var names = new[] { "get_model_summary", "get_object_details", "find_objects", "query_hierarchy", "get_mates", "find_connections", "get_mechanical_neighborhood", "find_mechanical_path" }
+                .Concat(IssueNames).Concat(new[] { "get_project_memory", "write_project_memory", "get_diagnostic_summary", "get_diagnostics", "set_scope", "clear_scope", "get_scope" });
             foreach (var name in names)
             {
                 JObject entry = Entry(name);
                 if (name == "get_model_summary") { entries.Add(name, entry); continue; }
                 if (snapshot == null) Block(entry, "MODEL_NOT_LOADED", "Load valid metadata, then call get_model_summary.");
-                else if (name == "query_hierarchy" && snapshot.Capabilities.Hierarchy != CapabilityState.Available)
+                else if ((name == "query_hierarchy" || name == "find_connections") && snapshot.Capabilities.Hierarchy != CapabilityState.Available)
                     Block(entry, "HIERARCHY_" + snapshot.Capabilities.Hierarchy.ToString().ToUpperInvariant(), "Correct or provide metadata hierarchy and reload. Object properties can still be queried.", "get_object_details");
-                else if (name == "get_mates" && (!tools.TryGetValue(name, out var mateTool) || mateTool is ICapabilityCadenTool c && !c.Available))
+                else if ((name == "get_mates" || name == "find_connections") && (!tools.TryGetValue(name, out var mateTool) || mateTool is ICapabilityCadenTool c && !c.Available))
                     Block(entry, snapshot.IsFixture ? "FIXTURE_MATE_EVIDENCE_UNAVAILABLE" : snapshot.Capabilities.MechanicalGraph == CapabilityState.Invalid ? "MATE_DATA_INVALID" : "MATE_DATA_UNAVAILABLE", "Provide a valid export containing usable mate records or explicit zero-mate coverage, then reload.");
                 else if (name == "get_mechanical_neighborhood" || name == "find_mechanical_path")
                 {
@@ -63,7 +63,7 @@ namespace Core.Tools
             foreach (var entry in entries.Values) entry["alternativeTools"] = new JArray(((JArray)entry["alternativeTools"]!).Where(n => IsAvailable((string)n!)));
         }
         private static JObject Entry(string name) => new JObject { ["tool"] = name, ["state"] = "Available", ["usable"] = true,
-            ["reasonCode"] = null, ["retryable"] = false, ["recovery"] = null, ["alternativeTools"] = new JArray() };
+            ["reasonCode"] = null, ["retryable"] = false, ["recovery"] = null, ["alternativeTools"] = new JArray(), ["activeScopeSupport"] = ScopeManager.Behavior(name) };
         private static void Block(JObject entry, string reason, string recovery, params string[] alternatives)
         { entry["state"] = reason.EndsWith("INVALID", StringComparison.Ordinal) ? "Invalid" : "Unavailable"; entry["usable"] = false; entry["reasonCode"] = reason; entry["recovery"] = recovery; entry["alternativeTools"] = new JArray(alternatives); }
         public bool IsAvailable(string name) => !entries.TryGetValue(name, out var entry) || (bool)entry["usable"]!;

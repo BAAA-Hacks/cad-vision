@@ -85,10 +85,12 @@ It does not verify those indices against a GLB. Size caps: 10 MB JSON, 10,000 ob
 ## Gemini integration
 
 Explicit function declarations accompany requests. The registry independently validates
-arguments rather than trusting model output. A turn permits up to 6 tool rounds and
-16 calls under the configured turn timeout. There is no automatic network retry.
+arguments rather than trusting model output. A turn defaults to up to 12 tool rounds and
+48 calls, configurable through GeminiSettings and desktop GEMINI_MAX_TOOL_ROUNDS /
+GEMINI_MAX_TOOL_CALLS, under the independently configured turn timeout. There is no automatic network retry.
 All model content parts, thought signatures, and function IDs are retained unchanged
-for continuation and later turns. Tool responses are structured user-role content.
+within active continuation. Older raw exchanges stay local and are omitted from subsequent
+turn payloads in favor of bounded context and result recall. Tool responses are structured user-role content.
 Only the final text is shown in the desktop transcript. Failed/cancelled/limited turns
 are not committed to conversation history. Read-only query execution has no model side effects.
 

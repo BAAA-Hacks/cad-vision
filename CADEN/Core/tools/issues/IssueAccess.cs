@@ -142,6 +142,7 @@ namespace Core.Tools.Issues
                     ["updatedAt"] = change.Value!.UpdatedAt.ToString("O"), ["revision"] = revision,
                     ["receipt"] = new JObject { ["operationId"] = args["operationId"]!.DeepClone(), ["subsystem"] = "issues", ["revision"] = revision, ["applied"] = true, ["replayed"] = false } };
                 var request = new JObject { ["tool"] = name, ["arguments"] = args.DeepClone() };
+                result["scopeAtCommit"] = ScopeContext.From(args)?.Describe();
                 var next = (JObject)journal.DeepClone(); next["revision"] = revision;
                 ((JArray)next["operations"]!).Add(new JObject { ["operationId"] = args["operationId"]!.DeepClone(), ["request"] = request, ["fingerprint"] = IssueValidation.Canonical(request), ["result"] = result.DeepClone() });
                 token.ThrowIfCancellationRequested(); Commit(next); store = nextStore;
@@ -187,6 +188,7 @@ namespace Core.Tools.Issues
                     result["outcome"] = current?.IsVerified == true ? "Present" : scan.Value.Status == IssueScanStatus.Complete && current == null ? "Absent" : "UnableToEvaluate";
                 }
                 else { result["objectId"] = args["objectId"]!.DeepClone(); result["presentedCount"] = nextStore.GetPresentation((string)args["objectId"]!).Count(p => p.IsPresented); }
+                result["scopeAtCommit"] = ScopeContext.From(args)?.Describe();
                 var request = new JObject { ["tool"] = name, ["arguments"] = args.DeepClone() };
                 var next = (JObject)journal.DeepClone(); next["revision"] = revision;
                 ((JArray)next["operations"]!).Add(new JObject { ["operationId"] = args["operationId"]!.DeepClone(), ["request"] = request, ["fingerprint"] = IssueValidation.Canonical(request), ["result"] = result.DeepClone() });

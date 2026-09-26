@@ -1,14 +1,15 @@
 # Bounded session context and result recall
 
 The Gemini host advertises the existing capability-gated semantic tools plus one
-session-only `recall_result` tool. With all capabilities available, that is 20 semantic
+session-only `recall_result` tool. With all capabilities available, that is 24 semantic
 tools plus recall. The semantic registry and its exported declaration catalogue remain
-20 tools; recall belongs to the chat transport, not project memory or CAD capabilities.
+24 tools; recall belongs to the chat transport, not project memory or CAD capabilities.
 
 Completed turns retain their full local trace in ChatSession. Subsequent requests send
 only the last six complete visible user/answer pairs, bounded to 16,000 text characters.
 Older raw function calls, function results and thought signatures are omitted. The active
-turn still preserves its full tool-call sequence, call IDs and continuation signatures.
+turn preserves its full tool-call sequence, call IDs and continuation signatures, while
+older discovery response bodies are projected as described below.
 No model-generated summarization or background Gemini requests are used.
 
 The normal system prompt, startup summary and available tool definitions remain in each
@@ -64,3 +65,29 @@ reset isolation. Existing loop, cancellation, persistence and failure tests stil
 The synthetic large-result check reduced a follow-up payload from roughly 45,700 to
 2,000 JSON characters. That is a payload-size check, not a measured live token reduction.
 Live model recall behavior and billing changes still require a separately authorized run.
+
+## Within-turn discovery pruning
+
+Every new discovery result reaches Gemini intact once. On subsequent tool rounds,
+explicit object/mate/issue IDs in the model's calls select rows to retain in older
+results. Unfollowed rows become only a resultId + JSON Pointer + original/retained/omitted
+counts; there are no inline summaries or snippets of omitted candidates. The original
+request remains in its function call. This applies to find_objects, query_hierarchy,
+find_connections, get_mates and issue-list tools, for their items/candidates arrays.
+
+Original coverage, pagination, identity/scope and ambiguity metadata remain unchanged.
+The response's contextPruning marker explicitly says omission is not rejection, absence,
+or resolution of ambiguity. Matching rows remain whole: mate endpoints, property units,
+availability and provenance are not stripped. Explicitly followed IDs accumulate during
+the turn; later selection of an omitted ID restores its original row. The newest results,
+exact-detail reads, recall results, failures and committed action receipts are not pruned.
+This is deliberately conservative, not a hard bound on the entire active turn.
+
+Only the outgoing response projection changes. Original results stay in the bounded
+local cache and full local transcript. Recall accesses the original array offsets, not
+the projected ones. Evicted references fail explicitly via RESULT_NOT_CACHED. No extra
+model calls are used. Fixed prompt/startup/tool-declaration overhead is unchanged.
+
+Fake-HTTP checks verify exact recall, revisiting a pruned candidate, unchanged coverage
+and signatures, and retention of complete mate evidence for followed endpoints. Live
+model behavior and token savings have not been measured for this change.

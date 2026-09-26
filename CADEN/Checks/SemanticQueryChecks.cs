@@ -28,7 +28,7 @@ internal static class SemanticQueryChecks
         }
         JObject Filter(string property, string op, JObject value) => new() { ["property"] = property, ["operator"] = op, ["value"] = value };
         var summary = await Call("get_model_summary");
-        Require((string?)summary["contractVersion"] == "3.0" && (string?)summary["snapshotId"] == snapshot.SnapshotId && registry.Declarations.Count == 6, "Canonical envelope/declarations missing.");
+        Require((string?)summary["contractVersion"] == "3.0" && (string?)summary["snapshotId"] == snapshot.SnapshotId && registry.Declarations.Count == 9, "Canonical envelope/declarations missing.");
         var stale = await registry.ExecuteAsync("get_object_details", new JObject { ["projectId"] = "caden-test", ["snapshotId"] = "old", ["objectIds"] = new JArray("A") });
         Require((string?)stale["errors"]![0]!["code"] == "STALE_SNAPSHOT_REFERENCE" && stale["projectId"] != null, "Stale references accepted or error lacks context.");
         Require((string?)(await registry.ExecuteAsync("get_object_details", new JObject { ["objectIds"] = new JArray("A") }))["errors"]![0]!["code"] == "INVALID_ARGUMENT", "Snapshot scope not required.");

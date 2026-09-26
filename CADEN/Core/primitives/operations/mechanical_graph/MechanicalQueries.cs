@@ -60,30 +60,30 @@ namespace Core.Primitives.Operations.MechanicalGraph
             if (hops < 0) throw new MechanicalQueryException("INVALID_ARGUMENT", "maxHops must be non-negative.");
             foreach (var id in ids) if (id == null || !graph.NodesById.ContainsKey(id)) throw new MechanicalQueryException("OBJECT_OUTSIDE_SCOPE", "Occurrence is outside explicit mechanical membership: " + id);
         }
-        private static IEnumerable<MateEdge> Adjacent(DataStructures.MechanicalGraph.MechanicalGraph graph, string id) => graph.NodesById[id].Edges
-            .Where(e => Active(e, graph)).OrderBy(e => e.GetOtherEndpoint(id), StringComparer.Ordinal).ThenBy(e => e.Id, StringComparer.Ordinal);
+        private static IEnumerable<MateEdge> Adjacent(DataStructures.MechanicalGraph.MechanicalGraph graph, string id, Func<string, bool>? includes = null) => graph.NodesById[id].Edges
+            .Where(e => Active(e, graph) && (includes == null || includes(e.ObjectAId) && includes(e.ObjectBId))).OrderBy(e => e.GetOtherEndpoint(id), StringComparer.Ordinal).ThenBy(e => e.Id, StringComparer.Ordinal);
 
-        public static MechanicalReach Neighborhood(MechanicalScope scope, IEnumerable<string> startIds, int maxHops, CancellationToken token = default)
+        public static MechanicalReach Neighborhood(MechanicalScope scope, IEnumerable<string> startIds, int maxHops, CancellationToken token = default, Func<string, bool>? includes = null)
         {
             var graph = RequireGraph(scope); var starts = startIds.Distinct(StringComparer.Ordinal).OrderBy(id => id, StringComparer.Ordinal).ToArray();
             if (starts.Length == 0) throw new MechanicalQueryException("INVALID_ARGUMENT", "At least one start occurrence is required.");
-            Validate(graph, starts, maxHops);
+            Validate(graph, starts, maxHops); if (includes != null && starts.Any(id => !includes(id))) throw new MechanicalQueryException("OUT_OF_SCOPE", "Start is outside active scope.");
             var depths = new Dictionary<string, int>(StringComparer.Ordinal); var queue = new Queue<string>(); var excluded = new List<string>();
             foreach (var id in starts) { if (graph.NodesById[id].Suppressed != false) excluded.Add(id); else { depths.Add(id, 0); queue.Enqueue(id); } }
             while (queue.Count > 0)
             {
                 token.ThrowIfCancellationRequested(); var id = queue.Dequeue();
                 if (depths[id] == maxHops) continue;
-                foreach (var edge in Adjacent(graph, id)) { var next = edge.GetOtherEndpoint(id); if (!depths.ContainsKey(next)) { depths.Add(next, depths[id] + 1); queue.Enqueue(next); } }
+                foreach (var edge in Adjacent(graph, id, includes)) { var next = edge.GetOtherEndpoint(id); if (!depths.ContainsKey(next)) { depths.Add(next, depths[id] + 1); queue.Enqueue(next); } }
             }
             token.ThrowIfCancellationRequested();
             var edges = graph.MatesById.Values.Where(e => Active(e, graph) && depths.ContainsKey(e.ObjectAId) && depths.ContainsKey(e.ObjectBId)).OrderBy(e => e.Id, StringComparer.Ordinal);
-            bool bounded = depths.Keys.Any(id => Adjacent(graph, id).Any(e => !depths.ContainsKey(e.GetOtherEndpoint(id))));
+            bool bounded = depths.Keys.Any(id => Adjacent(graph, id, includes).Any(e => !depths.ContainsKey(e.GetOtherEndpoint(id))));
             return new MechanicalReach(depths, edges, excluded, bounded);
         }
-        public static MechanicalPath Path(MechanicalScope scope, string start, string end, int? maxHops = null, CancellationToken token = default)
+        public static MechanicalPath Path(MechanicalScope scope, string start, string end, int? maxHops = null, CancellationToken token = default, Func<string, bool>? includes = null)
         {
-            var graph = RequireGraph(scope); Validate(graph, new[] { start, end }, maxHops); token.ThrowIfCancellationRequested();
+            var graph = RequireGraph(scope); Validate(graph, new[] { start, end }, maxHops); if (includes != null && (!includes(start) || !includes(end))) throw new MechanicalQueryException("OUT_OF_SCOPE", "Endpoint is outside active scope."); token.ThrowIfCancellationRequested();
             MechanicalPath None(MechanicalPathStatus status, bool bounded, string? reason) => new MechanicalPath(status, Array.Empty<string>(), Array.Empty<MateEdge>(), false, bounded, reason);
             if (graph.NodesById[start].Suppressed != false || graph.NodesById[end].Suppressed != false)
                 return None(MechanicalPathStatus.NotEstablished, false, "ENDPOINT_NOT_CONFIRMED_ACTIVE");
@@ -97,19 +97,19 @@ namespace Core.Primitives.Operations.MechanicalGraph
                     var objects = new List<string> { end }; var edges = new List<MateEdge>();
                     while (id != start) { var step = parent[id]; edges.Add(step.Edge); id = step.Id; objects.Add(id); }
                     objects.Reverse(); edges.Reverse();
-                    return new MechanicalPath(MechanicalPathStatus.Found, objects, edges, start == end || Complete(scope), false, start == end ? "ZERO_HOP_IDENTITY" : null);
+                    return new MechanicalPath(MechanicalPathStatus.Found, objects, edges, start == end || includes == null && Complete(scope), false, start == end ? "ZERO_HOP_IDENTITY" : null);
                 }
                 if (maxHops != null && depths[id] >= maxHops) continue;
-                foreach (var edge in Adjacent(graph, id))
+                foreach (var edge in Adjacent(graph, id, includes))
                 {
                     var next = edge.GetOtherEndpoint(id); if (depths.ContainsKey(next)) continue;
                     depths.Add(next, depths[id] + 1); parent.Add(next, (id, edge)); queue.Enqueue(next);
                 }
             }
-            bool bounded = depths.Keys.Any(id => Adjacent(graph, id).Any(e => !depths.ContainsKey(e.GetOtherEndpoint(id))));
-            bool complete = Complete(scope);
+            bool bounded = depths.Keys.Any(id => Adjacent(graph, id, includes).Any(e => !depths.ContainsKey(e.GetOtherEndpoint(id))));
+            bool complete = includes == null && Complete(scope);
             return None(complete && !bounded ? MechanicalPathStatus.ConfirmedDisconnected : MechanicalPathStatus.NotEstablished, bounded,
-                bounded ? "SEARCH_DEPTH_BOUNDED" : !complete ? "INCOMPLETE_CONNECTIVITY_EVIDENCE" : null);
+                bounded ? "SEARCH_DEPTH_BOUNDED" : includes != null ? "ACTIVE_SCOPE_RESTRICTED" : !complete ? "INCOMPLETE_CONNECTIVITY_EVIDENCE" : null);
         }
         // Ordered reference island first; lexicographic member sequence breaks equal-size ties.
         public static IReadOnlyList<IReadOnlyList<string>> Islands(MechanicalScope scope, CancellationToken token = default)

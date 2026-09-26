@@ -1,7 +1,7 @@
-# CADEN Gemini Tool Declarations — Implemented Non-Unity V1.1
+# CADEN Gemini Tool Declarations — Implemented Non-Unity V1.3
 
 This document freezes the **current Gemini-facing implementation**, not a proposed second
-API. Revision 1.1 adds two diagnostic reads and keyed cross-object memory lookup. All 20 semantic tools and the Gemini function-call loop are implemented. Runtime/Unity
+API. Revision 1.3 adds one-call connection discovery; revision 1.2 adds active query scope controls; revision 1.1 added diagnostics and keyed cross-object memory lookup. All 24 semantic tools and the Gemini function-call loop are implemented. Runtime/Unity
 tools remain excluded. A tool is advertised only when its backing capability is usable.
 
 The exact declarations below were exported offline from `SemanticQueryTools.Create` with
@@ -18,9 +18,7 @@ Defaults described in prose are applied by handlers, not necessarily emitted as 
 `default` keywords. The emitted schemas use the current `nullable` convention and do not
 claim to be standalone, exhaustive JSON Schema validation documents.
 
-The Gemini chat host additionally advertises session-only `recall_result`, documented in
-[Session context](CADEN_Session_Context.md). It is separate from the 20 semantic registry
-declarations below; a fully enabled chat therefore exposes 21 functions.
+The chat host additionally provides session-only recall_result, so a fully enabled chat has 25 functions. See [active scope contract](CADEN_Active_Scope.md) for scoped behavior, unsupported-tool failures and cursor binding.
 
 ## Implemented surface
 
@@ -31,6 +29,7 @@ declarations below; a fully enabled chat therefore exposes 21 functions.
 | Issues | get_issue, list_issues, get_issues_for_object, get_issues_for_mate, get_issue_summary, get_issue_evidence, revalidate_issue, revalidate_object_issues, set_issue_disposition |
 | Memory | get_project_memory, write_project_memory |
 | Diagnostics | get_diagnostic_summary, get_diagnostics |
+| Session scope | set_scope, clear_scope, get_scope |
 
 No aliases are implied. `searchText`, `fromObjectId`, `toObjectId`, `presentedOnly`,
 disposition `state`, memory `scope`, and `includeRequirements` are not current parameters.
@@ -121,7 +120,7 @@ Subsystem validation can return additional specific codes; this list is not exha
 ## Capability discovery and recovery
 
 get_model_summary remains callable with no loaded metadata. It reports modelLoaded and
-toolCapabilities for all 20 tools, including tools absent from the current declarations.
+toolCapabilities for all 24 tools, including tools absent from the current declarations.
 Entries contain tool, state, usable, reasonCode, retryable, recovery and alternativeTools;
 host initialization failures may include a correlationId. Do not infer complete evidence
 from usable=true.
@@ -152,7 +151,7 @@ The current client uses Gemini REST through HttpClient and the existing registry
 migration is not part of this freeze. It sends currently available functionDeclarations,
 dispatches returned calls locally, returns contract-3.0 function responses, preserves call
 IDs/model continuation parts, and continues until an answer. The current per-turn bounds
-are six tool rounds and sixteen tool calls; calls within a model response execute in order.
+default to twelve tool rounds and forty-eight tool calls, configurable through GEMINI_MAX_TOOL_ROUNDS and GEMINI_MAX_TOOL_CALLS; calls within a model response execute in order.
 No automatic live API retry was added by this document.
 
 ## Deferred host-orchestration migration
@@ -205,7 +204,7 @@ Exact emitted declaration:
 
 ## get_object_details
 
-Status: implemented when metadata is loaded. objectIds has 1â€“32 entries; IDs are deduplicated and an unknown ID rejects the entire batch. fields, when supplied, has 1â€“32 entries from the exact enum below. Defaults: suppressed, fixed, material, mass, constraintStatus. Returns identity context plus requested availability-wrapped fields; missing values are not zero/false. Retrieval coverage does not certify engineering-property completeness. No pagination. Inertia output uses documented SolidWorks L-components about COM in the output coordinate frame; it does not compute principal moments or output-origin inertia.
+Status: implemented when metadata is loaded. objectIds has 1Ã¢â‚¬â€œ32 entries; IDs are deduplicated and an unknown ID rejects the entire batch. fields, when supplied, has 1Ã¢â‚¬â€œ32 entries from the exact enum below. Defaults: suppressed, fixed, material, mass, constraintStatus. Returns identity context plus requested availability-wrapped fields; missing values are not zero/false. Retrieval coverage does not certify engineering-property completeness. No pagination. Inertia output uses documented SolidWorks L-components about COM in the output coordinate frame; it does not compute principal moments or output-origin inertia.
 
 Exact emitted declaration:
 
@@ -277,7 +276,7 @@ Exact emitted declaration:
 
 ## find_objects
 
-Status: implemented when metadata is loaded. Choose exactly one mode: nonblank query, OR property plus operator. Query cannot be combined with property/operator/value/values. Query performs ordinal case-insensitive ID/name matching, requiring every whitespace-separated word to match; exact ID matches sort first, then name and ID. Property filtering uses ordinal case-sensitive string equality and deterministic name/ID ordering. Non-in operators require value and reject values; in requires values (1â€“32 operands) and rejects value. Each operand contains exactly one of text, number or boolean matching the property's type; only number can include unit. mass/volume require units. Mass: kg, g, lb. Volume: m^3, cm^3, mm^3, in^3, ft^3. Numeric comparisons normalize units; equality has no hidden tolerance. Ordered comparisons require a numeric property. Unknown values satisfy neither ordinary equality nor not_equals. Omitted or null scopeObjectIds means all objects; [] means none. Scope is exact IDs, not descendants. Pagination defaults to 20. No availability-state search operator is exposed in V1.
+Status: implemented when metadata is loaded. Choose exactly one mode: nonblank query, OR property plus operator. Query cannot be combined with property/operator/value/values. Query performs ordinal case-insensitive ID/name matching, requiring every whitespace-separated word to match; exact ID matches sort first, then name and ID. Property filtering uses ordinal case-sensitive string equality and deterministic name/ID ordering. Non-in operators require value and reject values; in requires values (1Ã¢â‚¬â€œ32 operands) and rejects value. Each operand contains exactly one of text, number or boolean matching the property's type; only number can include unit. mass/volume require units. Mass: kg, g, lb. Volume: m^3, cm^3, mm^3, in^3, ft^3. Numeric comparisons normalize units; equality has no hidden tolerance. Ordered comparisons require a numeric property. Unknown values satisfy neither ordinary equality nor not_equals. Omitted or null scopeObjectIds means all objects; [] means none. Scope is exact IDs, not descendants. Pagination defaults to 20. No availability-state search operator is exposed in V1.
 
 Exact emitted declaration:
 
@@ -413,7 +412,7 @@ Exact emitted declaration:
 
 ## query_hierarchy
 
-Status: implemented only with usable metadata hierarchy. direction is required; maxDepth defaults to 1. parent/children require depth exactly 1; ancestors/descendants accept 0â€“32. Depth zero returns no relatives, excludes the start object and reports the bounded query's coverage. Ancestors order nearest-first; descendants preserve exported child order within each depth. Pagination defaults to 20. Metadata hierarchy is authoritative and distinct from mate connectivity. Invalid/unavailable hierarchy is gated and fails with CAPABILITY_UNAVAILABLE; see the emitted-description caveat above.
+Status: implemented only with usable metadata hierarchy. direction is required; maxDepth defaults to 1. parent/children require depth exactly 1; ancestors/descendants accept 0Ã¢â‚¬â€œ32. Depth zero returns no relatives, excludes the start object and reports the bounded query's coverage. Ancestors order nearest-first; descendants preserve exported child order within each depth. Pagination defaults to 20. Metadata hierarchy is authoritative and distinct from mate connectivity. Invalid/unavailable hierarchy is gated and fails with CAPABILITY_UNAVAILABLE; see the emitted-description caveat above.
 
 Exact emitted declaration:
 
@@ -476,20 +475,19 @@ Exact emitted declaration:
 
 ## get_mates
 
-Status: implemented, independently gated from scoped traversal. objectIds has 1â€“32 entries. Returns mates incident to ANY requested object, deduplicated and ordered by mate ID. Unknown object IDs reject the call. includeSuppressed defaults false and excludes explicitly suppressed mates only; unknown suppression remains visible as Unknown, never Active. Error/dangling relationships can be returned without implying functioning constraints. Returns contextual endpoints, availability-wrapped mate properties and provenance. Unestablished spatial frame/units are reported with limitations; raw spatial values are not usable geometry. The current unscoped lookup conservatively reports partial coverage with UNSCOPED_MATE_COVERAGE_NOT_ESTABLISHED. limit defaults to 20; filtering never establishes complete export coverage.
+Status: implemented, independently gated from scoped traversal. objectIds has 1Ã¢â‚¬â€œ32 entries. Returns mates incident to ANY requested object, deduplicated and ordered by mate ID. Unknown object IDs reject the call. includeSuppressed defaults false and excludes explicitly suppressed mates only; unknown suppression remains visible as Unknown, never Active. Error/dangling relationships can be returned without implying functioning constraints. Returns contextual endpoints, availability-wrapped mate properties and provenance. Unestablished spatial frame/units are reported with limitations; raw spatial values are not usable geometry. The current unscoped lookup conservatively reports partial coverage with UNSCOPED_MATE_COVERAGE_NOT_ESTABLISHED. limit defaults to 20; filtering never establishes complete export coverage. With active scope, objectIds may be omitted to use all members; records are classified Internal/Boundary. Without active scope objectIds remains required by handler validation.
 
 Exact emitted declaration:
 
 ```json
 {
   "name": "get_mates",
-  "description": "Read exported mates incident to ANY requested object, deduplicated by mate ID. Does not traverse or prove valid constraints. Explicitly suppressed mates excluded by default; unknown suppression retained and labeled unknown, never assumed active. Includes availability/provenance for optional fields. Missing export coverage is partial even when the list is empty. Raw spatial fields are not usable geometry without explicit frame/units.",
+  "description": "Read exported mates incident to ANY requested object, deduplicated by mate ID. objectIds is required without active scope; omit it with active scope to list all incident internal/boundary mates. External explicit targets fail OUT_OF_SCOPE. Does not traverse or prove valid constraints. Explicitly suppressed mates excluded by default; unknown suppression retained and labeled unknown, never assumed active. Includes availability/provenance for optional fields. Missing export coverage is partial even when the list is empty. Raw spatial fields are not usable geometry without explicit frame/units.",
   "parameters": {
     "type": "object",
     "required": [
       "projectId",
-      "snapshotId",
-      "objectIds"
+      "snapshotId"
     ],
     "properties": {
       "projectId": {
@@ -514,6 +512,79 @@ Exact emitted declaration:
       },
       "includeSuppressed": {
         "type": "boolean"
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 50
+      },
+      "cursor": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      }
+    }
+  }
+}
+```
+
+## find_connections
+
+
+
+Exact emitted declaration:
+
+```json
+{
+  "name": "find_connections",
+  "description": "First choice for whether parts/assemblies are mated or connected. Supply query (name/ID words) OR exact objectId. Resolves matching occurrences and assembly descendants locally; returns connected endpoint names, mate types/references and native fixed/constraint states in one call. Exact IDs/names preferred; otherwise matching descendants under matching assemblies are folded into those assembly candidates. otherQuery is an optional name hint, NEVER a hard filter: unmatched informal names still return connected alternatives, not confirmed aliases. Default relation=boundary includes mates crossing each candidate's subtree; all also includes internal mates. Active scope limits primary candidates, not visibility of their boundary endpoints. No scope change or graph traversal. Empty results never prove no connection. Results are bounded; if candidatesTruncated, narrow query or use objectId. Repeat unchanged query with cursor for remaining connections.",
+  "parameters": {
+    "type": "object",
+    "required": [
+      "projectId",
+      "snapshotId"
+    ],
+    "properties": {
+      "projectId": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      },
+      "snapshotId": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      },
+      "query": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      },
+      "objectId": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      },
+      "otherQuery": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      },
+      "relation": {
+        "type": "string",
+        "enum": [
+          "boundary",
+          "internal",
+          "all"
+        ]
+      },
+      "includeSuppressed": {
+        "type": "boolean"
+      },
+      "candidateLimit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 16
       },
       "limit": {
         "type": "integer",
@@ -593,7 +664,7 @@ Exact emitted declaration:
 
 ## find_mechanical_path
 
-Status: implemented with an available scoped graph. scopeAssemblyId, configuration, startObjectId and endObjectId are required. maxHops is optional: omission requests an unbounded search over the eligible scoped graph; explicitly supplied values are 0â€“32. Outcomes: Found, ConfirmedDisconnected or NotEstablished. Uses confirmed-active exported relationships; unavailable/invalid graph is an execution failure, not NotEstablished. A found path is minimum-hop among known eligible relationships; complete object-ID sequence then mate IDs break ties. Parallel mate alternatives and edge status are preserved. Same eligible start/end returns Found with zero hops/no mates. ConfirmedDisconnected needs exhaustive search and complete evidence. No pagination; path certainty and shortestPathComplete retain their distinct meanings.
+Status: implemented with an available scoped graph. scopeAssemblyId, configuration, startObjectId and endObjectId are required. maxHops is optional: omission requests an unbounded search over the eligible scoped graph; explicitly supplied values are 0Ã¢â‚¬â€œ32. Outcomes: Found, ConfirmedDisconnected or NotEstablished. Uses confirmed-active exported relationships; unavailable/invalid graph is an execution failure, not NotEstablished. A found path is minimum-hop among known eligible relationships; complete object-ID sequence then mate IDs break ties. Parallel mate alternatives and edge status are preserved. Same eligible start/end returns Found with zero hops/no mates. ConfirmedDisconnected needs exhaustive search and complete evidence. No pagination; path certainty and shortestPathComplete retain their distinct meanings.
 
 Exact emitted declaration:
 
@@ -1144,7 +1215,7 @@ Exact emitted declaration:
 
 ## set_issue_disposition
 
-Status: implemented action. Requires issueId, disposition (Open/Resolved/Ignored), expectedEvidenceHash, operationId and expectedRevision, plus project/snapshot identity. reason is optional, 1â€“512 characters when supplied. Changes explicit user disposition independently of finding evidence. Rejects stale evidence and revision conflicts. Resolved records an assessment, not proof of a physical fix; Ignored accepts a condition; Open returns it to attention. The prompt requires user instruction for the change. No finding creation/deletion/evidence-edit API is exposed. Committed dispositions restore for matching snapshot and evidence; memory writes do not change them.
+Status: implemented action. Requires issueId, disposition (Open/Resolved/Ignored), expectedEvidenceHash, operationId and expectedRevision, plus project/snapshot identity. reason is optional, 1Ã¢â‚¬â€œ512 characters when supplied. Changes explicit user disposition independently of finding evidence. Rejects stale evidence and revision conflicts. Resolved records an assessment, not proof of a physical fix; Ignored accepts a condition; Open returns it to attention. The prompt requires user instruction for the change. No finding creation/deletion/evidence-edit API is exposed. Committed dispositions restore for matching snapshot and evidence; memory writes do not change them.
 
 Exact emitted declaration:
 
@@ -1303,7 +1374,7 @@ Exact emitted declaration:
 
 ## write_project_memory
 
-Status: implemented action after successful host memory initialization. Requires kind, targetObjectIds, type, key, operationId, expectedRevision plus project/snapshot identity. Supply exactly one of value (nonempty text) or valueJson (encoded structured JSON), each at most 32,000 characters; parsed values are additionally bounded to 32,000 UTF-8 bytes in the primitive's canonical representation. valueJson rejects malformed/duplicate-key/trailing JSON, excessive nesting and null as a value. Optional context is 1â€“512 characters and stores the value as {content, context}. targetObjectIds has 0â€“32 entries; [] explicitly means project scope. kind is memory or requirement, separate from attachment scope. Memory atomically upserts the same type/key slot for every target. Requirement writes one multi-object record with key as the stable requirement ID. lifecycle defaults Active; Retired preserves history, not deletion. Unknown targets and stale Active references fail; eligible historical records can be retired. Failed batch validation or persistence publishes none of it. Receipt contains the memory subsystem revision and result recordIds; retries preserve the original result. Gemini provenance is host-fixed AssistantInferred with no user-authority override, so it cannot overwrite protected UserEstablished entries. Writes preserve source CAD metadata and issue disposition. Persistence survives restart; conversation history remains session-only. Tool journal limits are 10 MB and 10,000 tool operations, with primitive history/capacity bounds also enforced. Capacity failure never silently discards history or receipts.
+Status: implemented action after successful host memory initialization. Requires kind, targetObjectIds, type, key, operationId, expectedRevision plus project/snapshot identity. Supply exactly one of value (nonempty text) or valueJson (encoded structured JSON), each at most 32,000 characters; parsed values are additionally bounded to 32,000 UTF-8 bytes in the primitive's canonical representation. valueJson rejects malformed/duplicate-key/trailing JSON, excessive nesting and null as a value. Optional context is 1Ã¢â‚¬â€œ512 characters and stores the value as {content, context}. targetObjectIds has 0Ã¢â‚¬â€œ32 entries; [] explicitly means project scope. kind is memory or requirement, separate from attachment scope. Memory atomically upserts the same type/key slot for every target. Requirement writes one multi-object record with key as the stable requirement ID. lifecycle defaults Active; Retired preserves history, not deletion. Unknown targets and stale Active references fail; eligible historical records can be retired. Failed batch validation or persistence publishes none of it. Receipt contains the memory subsystem revision and result recordIds; retries preserve the original result. Gemini provenance is host-fixed AssistantInferred with no user-authority override, so it cannot overwrite protected UserEstablished entries. Writes preserve source CAD metadata and issue disposition. Persistence survives restart; conversation history remains session-only. Tool journal limits are 10 MB and 10,000 tool operations, with primitive history/capacity bounds also enforced. Capacity failure never silently discards history or receipts.
 
 Exact emitted declaration:
 
@@ -1480,6 +1551,108 @@ Exact emitted declaration:
         "maximum": 50
       },
       "cursor": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      }
+    },
+    "required": [
+      "projectId",
+      "snapshotId"
+    ]
+  }
+}
+```
+
+## set_scope
+
+Resolve exact object plus all descendants into immutable session scope. Requires valid hierarchy. Atomic replacement; invalid target/cancellation preserves previous scope. No operationId or durable mutation.
+
+Exact emitted declaration:
+
+```json
+{
+  "name": "set_scope",
+  "description": "Set session query scope to an exact object ID and all descendants. Discover names before calling; resolve ambiguity. Does not mutate CAD or durable memory. Explicit targets outside scope fail. Does not select a mechanical configuration.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "projectId": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      },
+      "snapshotId": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      },
+      "objectId": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      }
+    },
+    "required": [
+      "projectId",
+      "snapshotId",
+      "objectId"
+    ]
+  }
+}
+```
+
+## clear_scope
+
+Clear session query scope and invalidate old scope-bound cursors. Original per-tool defaults return; project memory is unchanged.
+
+Exact emitted declaration:
+
+```json
+{
+  "name": "clear_scope",
+  "description": "Clear active session scope, restoring original tool behavior. Invalidates scope-bound cursors; does not clear project memory.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "projectId": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      },
+      "snapshotId": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      }
+    },
+    "required": [
+      "projectId",
+      "snapshotId"
+    ]
+  }
+}
+```
+
+## get_scope
+
+Read active membership descriptor and revision, not the full ID set. No active scope means original model-wide/explicit-target defaults.
+
+Exact emitted declaration:
+
+```json
+{
+  "name": "get_scope",
+  "description": "Read current active query scope and its revision. No active scope means original tool defaults.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "projectId": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      },
+      "snapshotId": {
         "type": "string",
         "minLength": 1,
         "maxLength": 512

@@ -68,7 +68,8 @@ namespace Desktop.Configuration
             string promptPath = Path.Combine(directory, "prompts", "system.md");
             if (!File.Exists(promptPath)) throw new ArgumentException("Missing prompts/system.md in the CADEN configuration directory.");
             return new GeminiSettings(key, Get("GEMINI_MODEL", "gemini-flash-latest").Trim(), File.ReadAllText(promptPath),
-                Number("GEMINI_TIMEOUT_SECONDS", 60), Number("GEMINI_MAX_OUTPUT_TOKENS", 4096));
+                Number("GEMINI_TIMEOUT_SECONDS", 60), Number("GEMINI_MAX_OUTPUT_TOKENS", 4096),
+                Number("GEMINI_MAX_TOOL_ROUNDS", 12), Number("GEMINI_MAX_TOOL_CALLS", 48));
         }
     }
 }

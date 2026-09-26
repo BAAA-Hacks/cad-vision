@@ -74,7 +74,7 @@ internal static class IssueAccessChecks
         var access = await IssueAccess.OpenAsync(snapshot, association, storage); var tools = SemanticQueryTools.Create(snapshot, association, issues: access);
         JObject Args() => new() { ["projectId"] = association.ProjectId, ["snapshotId"] = snapshot.SnapshotId };
         async Task<JObject> Call(string name, JObject? extra = null) { var args = Args(); if (extra != null) args.Merge(extra); return await tools.ExecuteAsync(name, args); }
-        Require(tools.Declarations.Count == 16 && storage.Writes == 1 && access.InitialFindingCount == 4, "Initial scan/registration did not run before chat.");
+        Require(tools.Declarations.Count == 20 && storage.Writes == 1 && access.InitialFindingCount == 4, "Initial scan/registration did not run before chat.");
         Require(!tools.Declarations.Any(d => new[] { "create_issue", "delete_issue", "overwrite_issue" }.Contains((string?)d["name"])), "Forbidden mutation declared.");
         var summary = await Call("get_issue_summary"); long revision = (long)summary["data"]!["revision"]!;
         Require((int)summary["data"]!["count"]! == 4 && (string?)summary["coverage"]!["countUnit"] == "checker_subjects" && (string?)summary["coverage"]!["status"] == "partial", "Summary hides incomplete evaluation.");

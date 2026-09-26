@@ -1,4 +1,4 @@
-﻿# CADEN — standalone C# chat
+# CADEN — standalone C# chat
 
 The current app is a native Windows chat window backed by a reusable C# core.
 It does not require Python, Streamlit, a browser, or a local web server.
@@ -33,6 +33,12 @@ the key to build output. See .env.example for settings:
 - GEMINI_MODEL (default gemini-flash-latest)
 - GEMINI_TIMEOUT_SECONDS (default 60)
 - GEMINI_MAX_OUTPUT_TOKENS (default 4096)
+- GEMINI_MAX_TOOL_ROUNDS (default 12; range 1–128)
+- GEMINI_MAX_TOOL_CALLS (default 48; range 1–1024)
+
+Tool budgets are ceilings, not targets. A turn can use up to the configured number of
+tool rounds followed by a final answer request. The existing whole-turn timeout still
+applies independently; increase GEMINI_TIMEOUT_SECONDS if longer investigations time out.
 
 Process environment variables override their corresponding .env values.
 Click **New chat** after editing configuration to reload it and clear history.
@@ -122,6 +128,10 @@ Unexpected failures now show a diagnostic ID and log location. Full redacted exc
 details are written to `%LOCALAPPDATA%\CADEN\logs\caden-YYYY-MM-DD.jsonl`.
 See [failure diagnostics](Core/Diagnostics/README.md) for coverage and host integration.
 
+Desktop also records [per-turn token usage](Core/Diagnostics/TOKEN_USAGE.md) in
+`%LOCALAPPDATA%\CADEN\logs\usage-YYYY-MM-DD.jsonl`: input, output and cached input,
+summed over every API request in the turn. Partial/missing usage is explicitly marked.
+
 From CADEN (substitute dotnet if using an installed SDK):
 
 ```powershell
@@ -137,7 +147,7 @@ small requests with your configured key and verify follow-up recall:
 
 Live requests use your Google project's quota/billing.
 
-The 20-tool orchestration surface includes hidden local startup context, keyed memory
+The 24-tool orchestration surface includes hidden local startup context, keyed memory
 recall and export/load diagnostic reads. See [orchestration testing](docs/CADEN_Orchestration_Testing.md)
 for the isolated 25-prompt and adversarial suites, and the
 [reevaluation report](docs/CADEN_Orchestration_Reevaluation.md) for results and remaining limits.
@@ -145,6 +155,10 @@ for the isolated 25-prompt and adversarial suites, and the
 The chat host additionally provides session-local `recall_result` and
 [bounded outgoing context](docs/CADEN_Session_Context.md). Old raw tool responses stay
 local; subsequent requests send recent conversation and a small result directory.
+
+[Active scope](docs/CADEN_Active_Scope.md) adds set_scope/clear_scope/get_scope, scoped
+object/issue queries and boundary-aware mates. Its mixed assembly/subassembly/part suite
+uses a labelled synthetic fixture; the original real two-part baseline is preserved.
 
 To verify a live metadata-to-tool-to-answer turn using `data/metadata.json`:
 

@@ -46,7 +46,7 @@ namespace Core
             if (description.Length > 512) description = description.Substring(0, 512) + " [truncated; inspect result]";
             var descriptor = new JObject { ["resultId"] = id, ["tool"] = tool.Length <= 80 ? tool : tool.Substring(0, 80), ["requestSubjects"] = description,
                 ["success"] = response["success"] ?? response["ok"], ["historical"] = true,
-                ["hasReceipt"] = response["receipt"] != null, ["characters"] = json.Length };
+                ["hasReceipt"] = response["receipt"] != null, ["characters"] = json.Length, ["scope"] = response["scope"]?.DeepClone() };
             entries.Add(id, new Entry { Json = json, Descriptor = descriptor }); order.Enqueue(id); characters += json.Length;
             while (entries.Count > MaxEntries || characters > MaxCharacters)
             { string oldest = order.Dequeue(); characters -= entries[oldest].Json.Length; entries.Remove(oldest); }
@@ -93,7 +93,7 @@ namespace Core
             if (selected is JArray values) { pagination = Page(values.Count, offset, limit); selected = new JArray(values.Skip(offset).Take(limit)); }
             else if (args["offset"] != null || args["limit"] != null) return Response(false, null, "INVALID_ARGUMENT", "Pagination requires a selected array or a directory request.");
             var data = new JObject { ["resultId"] = id, ["tool"] = entry.Descriptor["tool"], ["historical"] = true, ["path"] = path ?? "",
-                ["sourceContext"] = new JObject { ["projectId"] = original["projectId"], ["snapshotId"] = original["snapshotId"], ["success"] = original["success"] ?? original["ok"], ["errors"] = original["errors"] ?? original["error"], ["provenance"] = original["provenance"], ["coverage"] = original["coverage"], ["pagination"] = original["pagination"], ["receipt"] = original["receipt"] },
+                ["sourceContext"] = new JObject { ["projectId"] = original["projectId"], ["snapshotId"] = original["snapshotId"], ["scope"] = original["scope"], ["success"] = original["success"] ?? original["ok"], ["errors"] = original["errors"] ?? original["error"], ["provenance"] = original["provenance"], ["coverage"] = original["coverage"], ["pagination"] = original["pagination"], ["receipt"] = original["receipt"] },
                 ["value"] = selected?.DeepClone() };
             var result = Response(true, data, pagination: pagination);
             if (result.ToString(Formatting.None).Length > RecallCharacters)

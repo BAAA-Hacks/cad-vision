@@ -64,7 +64,7 @@ internal static class MechanicalQueryChecks
         Require(islands.Count == 3 && islands[0].SequenceEqual(new[] { "A", "B", "C", "D" }) && islands[1][0] == "X", "Island main/tie/singleton semantics wrong.");
         var association = new ProjectAssociation("caden"); var registry = SemanticQueryTools.Create(snapshot, association);
         JObject Args(string a = "A", string b = "D") => new() { ["projectId"] = association.ProjectId, ["snapshotId"] = snapshot.SnapshotId, ["scopeAssemblyId"] = "R", ["configuration"] = "Default", ["startObjectId"] = a, ["endObjectId"] = b };
-        Require(registry.Declarations.Count == 9, "Mechanical capabilities not advertised.");
+        Require(registry.Declarations.Count == 13, "Mechanical capabilities not advertised.");
         var wrongScope = Args(); wrongScope["configuration"] = "NotExported";
         var scopedFailure = await registry.ExecuteAsync("find_mechanical_path", wrongScope);
         Require((string?)scopedFailure["errors"]![0]!["details"]!["reasonCode"] == "MECHANICAL_SCOPE_MISSING" && !(bool)scopedFailure["errors"]![0]!["details"]!["retryable"]!, "Per-request scope failure lacks shared recovery contract.");

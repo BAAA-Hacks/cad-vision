@@ -1,0 +1,24 @@
+{
+  "schemaVersion":"2.1",
+  "project":{"id":"scope-regression-synthetic","name":"ScopeRig","rootObjectId":"R","units":{"mass":"g","length":"mm","volume":"mm^3","inertia":"g*mm^2"}},
+  "objects":[
+    {"id":"R","name":"ScopeRig","type":"assembly","parentId":null,"childIds":["DRIVE","FRAME","SUPPORT"],"suppressed":false,"mass":370},
+    {"id":"DRIVE","name":"Drivetrain","type":"assembly","parentId":"R","childIds":["MOTOR","GEAR"],"suppressed":false,"mass":170},
+    {"id":"GEAR","name":"Gearbox","type":"assembly","parentId":"DRIVE","childIds":["SHAFT","BOLT_A","BOLT_B"],"suppressed":false,"mass":70},
+    {"id":"FRAME","name":"Frame","type":"assembly","parentId":"R","childIds":["BRACKET"],"suppressed":false,"mass":200},
+    {"id":"SUPPORT","name":"Suppressed support","type":"assembly","parentId":"R","childIds":["SPARE"],"suppressed":true,"mass":5},
+    {"id":"MOTOR","name":"Motor","type":"part","parentId":"DRIVE","childIds":[],"suppressed":false,"fixed":true,"mass":100,"material":{"assigned":true,"name":"Steel"},"definitionStatus":"fully_defined"},
+    {"id":"SHAFT","name":"Shaft","type":"part","parentId":"GEAR","childIds":[],"suppressed":false,"fixed":false,"mass":50,"material":{"assigned":false},"definitionStatus":"under_defined"},
+    {"id":"BOLT_A","name":"Bolt","type":"part","parentId":"GEAR","childIds":[],"suppressed":false,"fixed":true,"mass":10,"material":{"assigned":true,"name":"Steel"},"definitionStatus":"fully_defined"},
+    {"id":"BOLT_B","name":"Bolt","type":"part","parentId":"GEAR","childIds":[],"suppressed":false,"fixed":true,"mass":10,"material":{"assigned":true,"name":"Steel"},"definitionStatus":"fully_defined"},
+    {"id":"BRACKET","name":"Bracket","type":"part","parentId":"FRAME","childIds":[],"suppressed":false,"fixed":true,"mass":200,"material":{"assigned":false},"definitionStatus":"fully_defined"},
+    {"id":"SPARE","name":"Spare","type":"part","parentId":"SUPPORT","childIds":[],"suppressed":true,"fixed":true,"mass":5,"material":{"assigned":false},"definitionStatus":"fully_defined"}
+  ],
+  "mates":[
+    {"id":"M1","name":"Motor to Shaft","type":"concentric","componentIds":["MOTOR","SHAFT"],"suppressed":false,"status":"unknown"},
+    {"id":"M2","name":"Shaft to Bracket","type":"coincident","componentIds":["SHAFT","BRACKET"],"suppressed":false,"status":"unknown"},
+    {"id":"M3","name":"Bracket to Bolt","type":"coincident","componentIds":["BRACKET","BOLT_A"],"suppressed":false,"status":"unknown"}
+  ],
+  "mechanicalScopes":[{"scopeAssemblyId":"R","configuration":"Default","source":"synthetic scope regression, not a production export","membershipCoverage":"Complete","mateCoverage":"Complete","occurrenceIds":["MOTOR","SHAFT","BOLT_A","BOLT_B","BRACKET","SPARE"],"mateIds":["M1","M2","M3"]}],
+  "extractionStatus":{"remainingDOF":"not_implemented","interferences":"disabled","geometry":"not_provided"}
+}

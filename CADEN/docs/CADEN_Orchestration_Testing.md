@@ -5,10 +5,7 @@ mirrors it. Startup initialization obtains a local summary and adds it to hidden
 context without an API call or visible message. Issue scanning/storage initialization remain
 host responsibilities. New chat/metadata reload constructs a fresh client and context.
 
-The current additive V1.1 surface has 20 tools: the previous 18 plus
-`get_diagnostic_summary` and `get_diagnostics`. The existing V1-named declaration files
-contain the regenerated V1.1 runtime schemas. Infrastructure arguments remain explicit;
-the proposed orchestration adapter migration is still separate.
+The current V1.2 semantic surface has 23 tools plus session-local recall_result in the chat host. See [active scope](CADEN_Active_Scope.md) for scope control, migration limits and the mixed fixture. Identity/revision infrastructure fields remain explicit.
 
 Diagnostics expose immutable loader records and reported root `extractionStatus` entries,
 with exact filters, bounded pages and coverage over the original records. They do not
@@ -36,10 +33,10 @@ cannot be overwritten. The runner isolates project identity, memory and issue jo
 under that directory. It does not change the normal desktop sidecars or source metadata.
 
 ```powershell
-.\.tools\dotnet\dotnet.exe run --project Checks/Checks.csproj -- --live --orchestration .tools/live-stress/runs/my-new-run "C:/path/to/metadata.json" . Checks/OrchestrationCases.json
+.\.tools\dotnet\dotnet.exe run --project Checks/Checks.csproj -- --live --orchestration .tools/live-stress/runs/my-new-run Checks/Fixtures/scope_assembly_metadata.json . Checks/OrchestrationCases.json
 ```
 
-The baseline manifest contains 25 sequential prompts; case 22 reopens both the chat and
+The revised mixed manifest contains 25 sequential prompts using the synthetic nested assembly fixture. The original real two-part suite is preserved in OrchestrationCases.PartsBaseline.json; case 22 reopens both the chat and
 durable stores. The five-case adversarial manifest is
 `Checks/OrchestrationCases.Adversarial.json` and uses the synthetic fixture instead.
 Its duplicate-name question follows an object-A discussion, deliberately retaining that

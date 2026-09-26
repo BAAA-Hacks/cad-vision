@@ -19,6 +19,8 @@ internal static class Program
         ApplicationConfiguration.Initialize();
         var diagnostics = new FileDiagnostics(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CADEN", "logs"));
         DiagnosticLog.Configure(diagnostics.Write, diagnostics.DirectoryPath);
+        var tokenUsage = new FileTokenUsage(diagnostics.DirectoryPath);
+        TokenUsageLog.Configure(tokenUsage.Write);
         Application.ThreadException += (_, e) => MessageBox.Show(DiagnosticLog.Report(e.Exception, "desktop.ui").UserMessage, "CADEN error");
         AppDomain.CurrentDomain.UnhandledException += (_, e) => DiagnosticLog.Report(e.ExceptionObject as Exception ?? new Exception("Unknown unhandled failure."), "desktop.unhandled");
         try

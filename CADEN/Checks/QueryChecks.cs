@@ -106,10 +106,17 @@ internal static class QueryChecks
         Require(!queued.Requests.Last().Contains("opaque-signature") && !queued.Requests.Last().Contains("functionResponse") && queued.Requests.Last().Contains("result_"), "Follow-up did not replace old raw exchanges with cache references.");
         chat.Clear(); queued.Responses.Enqueue(FakeHandler.Success); await chat.SendAsync("Fresh");
         Require(!queued.Requests.Last().Contains("opaque-signature"), "Reset retained old tool state.");
-        chat.Clear(); for (int i = 0; i < 7; i++) queued.Responses.Enqueue(calls);
+        chat.Clear(); for (int i = 0; i < 9; i++) queued.Responses.Enqueue(calls);
+        queued.Responses.Enqueue(FakeHandler.Success); await chat.SendAsync("Long valid sequence");
+        Require(client.LastToolCallCount == 18, "Expanded defaults still reject more than six rounds/sixteen calls.");
+        chat.Clear(); for (int i = 0; i < 13; i++) queued.Responses.Enqueue(calls);
         try { await chat.SendAsync("Loop"); throw new Exception("Unbounded tool loop."); }
         catch (ChatException ex) { Require(ex.Message.Contains("query limit"), "Wrong loop-limit error."); }
         Require(chat.Messages.Count == 0, "Failed tool loop entered history.");
+        var limitedClient = new GeminiClient(http, new GeminiSettings("dummy", "test-model", "System", maxToolRounds: 2, maxToolCalls: 1), tools);
+        var limitedChat = new ChatSession(limitedClient); queued.Responses.Enqueue(calls);
+        try { await limitedChat.SendAsync("Batch exceeds call cap"); throw new Exception("Call budget ignored."); }
+        catch (ChatException ex) { Require(ex.Message.Contains("2 rounds / 1 calls") && limitedClient.LastToolCallCount == 0, "Configured budget or atomic batch rejection failed."); }
         Console.WriteLine("PASS: Gemini dispatch, multiple calls, call IDs/signatures, tool errors, follow-up/reset, bounded loops, failed-turn rollback.");
 
         string path = Path.Combine(Desktop.Configuration.LocalConfiguration.FindDirectory(), "data", "metadata.json");

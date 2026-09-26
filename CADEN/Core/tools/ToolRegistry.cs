@@ -45,14 +45,17 @@ namespace Core.Tools
         private readonly ProjectAssociation? association;
         private readonly ToolLimits limits;
         private readonly ToolCapabilities? capabilities;
+        public ScopeManager? Scopes { get; }
+        private readonly SemaphoreSlim scopeGate = new SemaphoreSlim(1, 1);
         public string? ProjectId => semantic ? association?.ProjectId : snapshot?.ProjectId;
         public string? SnapshotId => snapshot?.SnapshotId;
         public bool SupportsStartupContext => capabilities != null;
-        public ToolRegistry(IEnumerable<ICadenTool> handlers, ProjectSnapshot? snapshot = null, bool semantic = false, ProjectAssociation? association = null, ToolLimits? limits = null, ToolCapabilities? capabilities = null)
+        public ToolRegistry(IEnumerable<ICadenTool> handlers, ProjectSnapshot? snapshot = null, bool semantic = false, ProjectAssociation? association = null, ToolLimits? limits = null, ToolCapabilities? capabilities = null, ScopeManager? scopes = null)
         {
             if (semantic && snapshot != null && association == null) throw new ArgumentException("Semantic tools require an explicit host ProjectAssociation.");
             if (association?.TrustedSourceProjectId != null && snapshot != null && association.TrustedSourceProjectId != snapshot.ProjectId) throw new ArgumentException("Trusted source project does not match snapshot.");
             this.association = association;
+            Scopes = scopes;
             this.capabilities = capabilities;
             this.limits = limits ?? new ToolLimits();
             this.snapshot = snapshot; this.semantic = semantic;
@@ -71,6 +74,19 @@ namespace Core.Tools
         public JObject Execute(string name, JToken? arguments) => ExecuteAsync(name, arguments, CancellationToken.None).GetAwaiter().GetResult();
         public async Task<JObject> ExecuteAsync(string name, JToken? arguments, CancellationToken cancellationToken = default)
         {
+            // Serialize scope changes and queries; a response is labelled with the scope actually used.
+            await scopeGate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                var result = await ExecuteCoreAsync(name, arguments, cancellationToken).ConfigureAwait(false);
+                if (Scopes != null) { result["scope"] = Scopes.Describe(); result["scopeBehavior"] = (bool?)result["receipt"]?["replayed"] == true ? "historical_receipt_replay_not_reexecuted_in_current_scope" : name == "get_model_summary" ? "global_discovery" : "active_scope_or_original_defaults"; }
+                return result;
+            }
+            finally { scopeGate.Release(); }
+        }
+        public void ResetScope() { if (!scopeGate.Wait(0)) throw new InvalidOperationException("Finish active tool calls before resetting scope."); try { Scopes?.Clear(); } finally { scopeGate.Release(); } }
+        private async Task<JObject> ExecuteCoreAsync(string name, JToken? arguments, CancellationToken cancellationToken)
+        {
             if (!semantic) cancellationToken.ThrowIfCancellationRequested();
             if (!tools.TryGetValue(name, out var tool)) return Envelope(capabilities?.Failure(name) ?? Error("UNKNOWN_TOOL", "That tool is not available."));
             if (!(arguments is JObject args)) return Envelope(Error("INVALID_ARGUMENTS", "Arguments must be a JSON object."));
@@ -88,6 +104,12 @@ namespace Core.Tools
                 var unavailable = capabilities?.Failure(name, args);
                 if (unavailable != null) return Envelope(unavailable);
                 var copied = (JObject)args.DeepClone();
+                if (Scopes != null && tool is IActionCadenTool replayable)
+                {
+                    var replay = await replayable.RecoverCommittedAsync(copied).ConfigureAwait(false);
+                    if (replay != null) return ActionEnvelope(replay, (string)args["operationId"]!);
+                }
+                Scopes?.Bind(name, copied);
                 if (cancellationToken.IsCancellationRequested && tool is IActionCadenTool recovering)
                 {
                     var recovered = await recovering.RecoverCommittedAsync(copied).ConfigureAwait(false);
@@ -102,6 +124,7 @@ namespace Core.Tools
                     result["capabilityPolicy"] = "Usable means the handler can run, not complete evidence. Inspect response coverage and property availability. Unavailable requirements need host/data changes; do not retry unchanged requests.";
                 }
                 if (tool is IActionCadenTool) return ActionEnvelope(result, (string)args["operationId"]!);
+                if (tool is ScopeTool) return Envelope(new JObject { ["ok"] = true, ["data"] = result });
                 cancellationToken.ThrowIfCancellationRequested();
                 var envelope = Envelope(new JObject { ["contractVersion"] = ContractVersion, ["ok"] = true, ["data"] = result });
                 if (envelope.ToString(Formatting.None).Length > limits.MaxResponseCharacters)

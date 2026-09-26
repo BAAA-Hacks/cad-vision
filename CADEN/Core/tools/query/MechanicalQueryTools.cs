@@ -46,18 +46,20 @@ namespace Core.Tools.Query
             try
             {
                 var graph = MechanicalQueries.RequireGraph(scope);
+                var activeScope = ScopeContext.From(args);
+                Func<string, bool>? includes = activeScope == null ? null : new Func<string, bool>(activeScope.Includes);
                 JObject Object(string id) => new JObject { ["id"] = id, ["name"] = graph.NodesById[id].Name, ["type"] = graph.NodesById[id].Type, ["suppressed"] = false };
                 JObject Edge(MateEdge e) => new JObject { ["id"] = e.Id, ["componentIds"] = new JArray(e.ObjectAId, e.ObjectBId), ["type"] = e.Type, ["status"] = e.Status, ["suppressed"] = e.Suppressed };
                 JObject result; bool bounded;
                 if (Name == "get_mechanical_neighborhood")
                 {
-                    var found = MechanicalQueries.Neighborhood(scope, ids, (int)args["maxHops"]!, token); bounded = found.DepthBoundReached;
+                    var found = MechanicalQueries.Neighborhood(scope, ids, (int)args["maxHops"]!, token, includes); bounded = found.DepthBoundReached;
                     var objects = found.Depths.OrderBy(p => p.Value).ThenBy(p => p.Key, StringComparer.Ordinal).Select(p => { var o = Object(p.Key); o["hopDepth"] = p.Value; return o; });
                     result = new JObject { ["objects"] = new JArray(objects), ["mates"] = new JArray(found.Mates.Select(Edge)), ["excludedStartIds"] = new JArray(found.ExcludedStartIds) };
                 }
                 else
                 {
-                    var path = MechanicalQueries.Path(scope, ids[0], ids[1], (int?)args["maxHops"], token); bounded = path.DepthBoundReached;
+                    var path = MechanicalQueries.Path(scope, ids[0], ids[1], (int?)args["maxHops"], token, includes); bounded = path.DepthBoundReached;
                     result = new JObject { ["pathStatus"] = path.Status.ToString(), ["objects"] = new JArray(path.ObjectIds.Select(Object)), ["mates"] = new JArray(path.Mates.Select(Edge)),
                         ["hopCount"] = path.Status == MechanicalPathStatus.Found ? new JValue(path.Mates.Count) : JValue.CreateNull(),
                         ["shortestPathComplete"] = path.ShortestPathComplete, ["pathCertainty"] = path.Status == MechanicalPathStatus.Found ? "confirmed" : null,
@@ -67,10 +69,17 @@ namespace Core.Tools.Query
                 }
                 result["limitations"] = new JArray("MATE_PATH_DOES_NOT_ESTABLISH_RIGIDITY", "MATE_RELATIONSHIP_DOES_NOT_ESTABLISH_VALID_CONSTRAINT");
                 result["coverage"] = Coverage(scope, bounded, (int?)args["maxHops"]);
+                if (activeScope != null)
+                {
+                    result["coverage"]!["activeScopeBoundaryApplied"] = true;
+                    result["coverage"]!["globalConnectivityEstablished"] = false;
+                    ((JArray)result["limitations"]!).Add("TRAVERSAL_STAYS_INSIDE_ACTIVE_SCOPE_NO_GLOBAL_DISCONNECTION_CLAIM");
+                }
                 result["interpretation"] = new JObject {
                     ["evidenceScope"] = "exported_mate_relationships_only",
-                    ["reportCoverageLimitation"] = !MechanicalQueries.Complete(scope) || bounded,
-                    ["summary"] = !MechanicalQueries.Complete(scope) ? "Export coverage is partial; report this limitation. No solved DOF, rigidity, satisfaction or exhaustive absence claim follows." : bounded ? "Search is depth-bounded; report the boundary." : "Coverage is complete for this scoped exported relationship query, not solver validity." };
+                    ["reportCoverageLimitation"] = activeScope != null || !MechanicalQueries.Complete(scope) || bounded,
+                    ["summary"] = activeScope != null ? "Traversal is restricted to active query scope. Export coverage remains that of the original explicit mechanical scope; no global disconnection or global shortest-path completeness follows. Inspect source coverage as well."
+                        : !MechanicalQueries.Complete(scope) ? "Export coverage is partial; report this limitation. No solved DOF, rigidity, satisfaction or exhaustive absence claim follows." : bounded ? "Search is depth-bounded; report the boundary." : "Coverage is complete for this scoped exported relationship query, not solver validity." };
                 return result;
             }
             catch (MechanicalQueryException ex) { throw new ToolInputException(ex.Code, ex.Message); }

@@ -1,6 +1,6 @@
 # Shared tool capabilities
 
-SemanticQueryTools constructs one ToolCapabilities catalogue for all 20 implemented entry
+SemanticQueryTools constructs one ToolCapabilities catalogue for all 24 implemented entry
 points. It drives model-summary discovery, declaration gating and execution failures.
 get_model_summary remains declared and callable with no metadata; modelLoaded=false and
 the other entries explain MODEL_NOT_LOADED. Loaded snapshots retain their existing summary.
@@ -35,6 +35,6 @@ The system does not disable issue reads merely because some checkers cannot eval
 Failed host initialization disables only its own subsystem. Reload constructs a fresh
 catalogue; it does not silently repair or discard corrupt data.
 
-CapabilityChecks covers discovery without a model, all 20 entries, declaration agreement,
+CapabilityChecks covers discovery without a model, all 24 entries, declaration agreement,
 safe host diagnostics, capability-vs-unknown errors and partial fallback evidence.
 MechanicalQueryChecks additionally covers per-request scope rejection. No live API needed.

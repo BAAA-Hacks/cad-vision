@@ -61,7 +61,26 @@ namespace Core.Tools.Issues
         private JObject Read(IssueStore store, JObject args)
         {
             var view = store.ReadView(); var all = view.Findings;
+            var scope = ScopeContext.From(args);
+            bool Relevant(IssuePresentation p) => scope == null || p.Finding.AffectedObjectIds.Any(scope.Includes) || p.Finding.RelatedMateIds.Any(id => access.Snapshot.MatesById.TryGetValue(id, out var m) && scope.Classify(m.ObjectAId, m.ObjectBId) != "External");
+            if (scope != null && args["issueId"] != null)
+            {
+                var target = all.FirstOrDefault(p => access.Id(p.Finding.Key) == (string?)args["issueId"]);
+                if (target != null && !Relevant(target)) throw new ToolInputException("OUT_OF_SCOPE", "Finding does not affect active scope. Change or clear scope.");
+            }
+            all = all.Where(Relevant).ToArray();
             var evaluations = view.Evaluations.AsEnumerable(); IEnumerable<IssuePresentation> selected = all;
+            if (scope != null)
+            {
+                var relatedSubjects = new HashSet<IssueSubject>();
+                foreach (var p in all)
+                {
+                    foreach (var id in p.Finding.Key.Subjects(false)) relatedSubjects.Add(new IssueSubject(IssueSubjectKind.Object, id));
+                    foreach (var id in p.Finding.Key.Subjects(true)) relatedSubjects.Add(new IssueSubject(IssueSubjectKind.Mate, id));
+                }
+                evaluations = evaluations.Where(e => relatedSubjects.Contains(e.Subject) || (e.Subject.Kind == IssueSubjectKind.Object ? scope.Includes(e.Subject.Id)
+                    : access.Snapshot.MatesById.TryGetValue(e.Subject.Id, out var m) && scope.Classify(m.ObjectAId, m.ObjectBId) != "External"));
+            }
             string? objectId = (string?)args["objectId"], mateId = (string?)args["mateId"];
             void CheckObject(string id) { if (!access.Snapshot.ComponentsById.ContainsKey(id)) throw new ToolInputException("UNKNOWN_OBJECT_ID", "Unknown object: " + id); }
             void CheckMate(string id) { if (!access.Snapshot.MatesById.ContainsKey(id)) throw new ToolInputException("UNKNOWN_MATE_ID", "Unknown or unavailable mate: " + id); }
@@ -76,11 +95,18 @@ namespace Core.Tools.Issues
             if ((bool?)args["includeSuppressedCandidates"] != true) selected = selected.Where(p => p.IsPresented);
             var coverage = IssueToolSerialization.Coverage(evaluations, objectId != null ? "object_and_related_finding_subjects" : mateId != null ? "mate" : "snapshot_registered_checks");
             var result = new JObject { ["revision"] = view.Revision, ["coverage"] = coverage };
+            if (scope != null) coverage["countScope"] = "active_scope_and_related_finding_subjects_before_filters";
+            JObject Serialize(IssuePresentation p, bool evidence = false)
+            {
+                var row = IssueToolSerialization.Finding(access, p, evidence);
+                if (scope != null) row["outsideScopeObjectIds"] = new JArray(p.Finding.AffectedObjectIds.Where(id => !scope.Includes(id)));
+                return row;
+            }
             if (Name == "get_issue" || Name == "get_issue_evidence")
             {
                 var found = selected.FirstOrDefault(p => access.Id(p.Finding.Key) == (string?)args["issueId"]);
                 if (found == null) throw new ToolInputException("UNKNOWN_ISSUE_ID", "Issue is absent from the requested view. IDs are snapshot-scoped; includeSuppressedCandidates is required for precedence-suppressed findings.");
-                result["issue"] = IssueToolSerialization.Finding(access, found, Name == "get_issue_evidence"); return result;
+                result["issue"] = Serialize(found, Name == "get_issue_evidence"); return result;
             }
             if (Name == "get_issue_summary")
             {
@@ -102,7 +128,7 @@ namespace Core.Tools.Issues
             if (args["limit"] == null) args["limit"] = Math.Min(20, limits.MaxResults);
             int limit = (int)args["limit"]!, offset = cursors.Resolve(Name, access.Association.ProjectId, access.Snapshot.SnapshotId, args, "issues", view.Revision);
             var ordered = selected.OrderByDescending(p => p.Finding.Severity).ThenBy(p => access.Id(p.Finding.Key), StringComparer.Ordinal).ToArray();
-            var page = ordered.Skip(offset).Take(limit).ToArray(); result["items"] = new JArray(page.Select(p => IssueToolSerialization.Finding(access, p)));
+            var page = ordered.Skip(offset).Take(limit).ToArray(); result["items"] = new JArray(page.Select(p => Serialize(p)));
             result["pagination"] = new JObject { ["limit"] = limit, ["total"] = ordered.Length, ["nextCursor"] = offset + page.Length < ordered.Length ? cursors.Issue(Name, access.Association.ProjectId, access.Snapshot.SnapshotId, args, offset + page.Length, "issues", view.Revision) : null };
             return result;
         }
@@ -110,7 +136,17 @@ namespace Core.Tools.Issues
     internal sealed class IssueActionTool : IssueReadTool, IActionCadenTool
     {
         internal IssueActionTool(string name, IssueAccess access, ToolLimits limits, QueryCursors cursors) : base(name, access, limits, cursors) { }
-        public override Task<JObject> ExecuteAsync(JObject args, CancellationToken token) => Name == "set_issue_disposition" ? access.SetDispositionAsync(args, token) : access.RevalidateAsync(Name, args, token);
+        public override async Task<JObject> ExecuteAsync(JObject args, CancellationToken token)
+        {
+            var scope = ScopeContext.From(args);
+            if (scope != null && args["issueId"] != null) await access.ReadAsync(store => {
+                var p = store.ReadView().Findings.FirstOrDefault(f => access.Id(f.Finding.Key) == (string?)args["issueId"]);
+                if (p != null && !p.Finding.AffectedObjectIds.Any(scope.Includes) && !p.Finding.RelatedMateIds.Any(id => access.Snapshot.MatesById.TryGetValue(id, out var m) && scope.Classify(m.ObjectAId, m.ObjectBId) != "External"))
+                    throw new ToolInputException("OUT_OF_SCOPE", "Finding is external to active scope. Change or clear scope.");
+                return new JObject();
+            }, token).ConfigureAwait(false);
+            return Name == "set_issue_disposition" ? await access.SetDispositionAsync(args, token).ConfigureAwait(false) : await access.RevalidateAsync(Name, args, token).ConfigureAwait(false);
+        }
         public Task<JObject?> RecoverCommittedAsync(JObject args) => access.RecoverAsync(Name, args);
     }
     internal static class IssueTools

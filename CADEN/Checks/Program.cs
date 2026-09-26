@@ -147,7 +147,7 @@ Console.WriteLine("PASS: cancellation leaves history intact.");
 // Temporary fixtures contain dummy credentials only. No real .env is read by offline checks.
 string temp = Path.Combine(Path.GetTempPath(), "caden-check-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(Path.Combine(temp, "prompts"));
-string[] names = { "GEMINI_API_KEY", "GOOGLE_API_KEY", "GEMINI_MODEL", "GEMINI_TIMEOUT_SECONDS", "GEMINI_MAX_OUTPUT_TOKENS" };
+string[] names = { "GEMINI_API_KEY", "GOOGLE_API_KEY", "GEMINI_MODEL", "GEMINI_TIMEOUT_SECONDS", "GEMINI_MAX_OUTPUT_TOKENS", "GEMINI_MAX_TOOL_ROUNDS", "GEMINI_MAX_TOOL_CALLS" };
 var old = names.ToDictionary(n => n, Environment.GetEnvironmentVariable);
 try
 {
@@ -156,6 +156,14 @@ try
     File.WriteAllText(Path.Combine(temp, ".env"), "export GEMINI_API_KEY='dummy-key' # comment\nGEMINI_MODEL=test-model\nGEMINI_TIMEOUT_SECONDS=22 # timeout\n");
     var loaded = LocalConfiguration.Load(temp);
     Require(loaded.TimeoutSeconds == 22 && loaded.Model == "test-model", "Local config parsing failed.");
+    Require(loaded.MaxToolRounds == 12 && loaded.MaxToolCalls == 48, "Default tool budgets missing.");
+    File.AppendAllText(Path.Combine(temp, ".env"), "GEMINI_MAX_TOOL_ROUNDS=20\nGEMINI_MAX_TOOL_CALLS=80\n");
+    Require(LocalConfiguration.Load(temp).MaxToolRounds == 20 && LocalConfiguration.Load(temp).MaxToolCalls == 80, "Tool budget config ignored.");
+    Environment.SetEnvironmentVariable("GEMINI_MAX_TOOL_CALLS", "96");
+    Require(LocalConfiguration.Load(temp).MaxToolCalls == 96, "Tool budget environment precedence failed.");
+    Environment.SetEnvironmentVariable("GEMINI_MAX_TOOL_CALLS", "0");
+    try { LocalConfiguration.Load(temp); throw new Exception("Invalid tool budget accepted."); } catch (ArgumentException) { }
+    Environment.SetEnvironmentVariable("GEMINI_MAX_TOOL_CALLS", null);
     Environment.SetEnvironmentVariable("GEMINI_MODEL", "environment-model");
     Require(LocalConfiguration.Load(temp).Model == "environment-model", "Environment precedence failed.");
     File.WriteAllText(Path.Combine(temp, ".env"), "GEMINI_API_KEY='dummy-key\n");
@@ -178,6 +186,9 @@ await MemoryToolChecks.RunAsync();
 await CapabilityChecks.RunAsync();
 await OrchestrationChecks.RunAsync();
 await ContextCacheChecks.RunAsync();
+await ActiveScopeChecks.RunAsync();
+await ConnectionQueryChecks.RunAsync();
+await TokenUsageChecks.RunAsync();
 await MechanicalQueryChecks.RunAsync();
 await Schema21Checks.RunAsync();
 await DiagnosticChecks.RunAsync();

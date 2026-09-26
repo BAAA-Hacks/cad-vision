@@ -70,6 +70,10 @@ if (turns.Count == prompts.Length)
     a["objectIds"] = new JArray(snapshot.ComponentsById.Keys); a["includeRetired"] = true;
     report["finalMemoryAfterReopen"] = await registry.ExecuteAsync("get_project_memory", a);
 }
+var times = turns.Select(t => (double)t["elapsedSeconds"]!).OrderBy(t => t).ToArray();
+if (times.Length > 0) report["timingSummary"] = new JObject { ["count"] = times.Length, ["meanSeconds"] = Math.Round(times.Average(), 3),
+    ["medianSeconds"] = Math.Round(times.Length % 2 == 1 ? times[times.Length / 2] : (times[times.Length / 2 - 1] + times[times.Length / 2]) / 2, 3),
+    ["slowestSeconds"] = times.Last(), ["scope"] = "end_to_end_turn_including_all_model_requests_and_tool_rounds" };
 report["finishedUtc"] = DateTimeOffset.UtcNow.ToString("O"); File.WriteAllText(Path.Combine(root, "results.json"), report.ToString(Formatting.Indented));
 Console.WriteLine("RESULTS=" + Path.Combine(root, "results.json"));
 
@@ -79,7 +83,7 @@ internal static class OrchestrationAssessment
 {
     internal static JObject Assess(JToken turn, JToken testCase)
     {
-        var actions = new[] { "write_project_memory", "set_issue_disposition", "revalidate_issue", "revalidate_object_issues" };
+        var actions = new[] { "write_project_memory", "set_issue_disposition", "revalidate_issue", "revalidate_object_issues", "set_scope", "clear_scope" };
         var allowed = testCase["allowedMutationTools"]?.Values<string>().ToArray() ?? Array.Empty<string>();
         var forbidden = testCase["forbiddenTools"]?.Values<string>().ToArray() ?? Array.Empty<string>();
         var calls = turn["exchanges"]!.SelectMany(e => e["calls"] ?? new JArray()).Select(c => (string)c["name"]!).ToArray();
@@ -87,7 +91,10 @@ internal static class OrchestrationAssessment
         var missing = (testCase["requiredTools"]?.Values<string>() ?? Enumerable.Empty<string>()).Where(t => !calls.Contains(t)).Select(t => t!).ToArray();
         var errors = turn["exchanges"]!.SelectMany(e => e["sentToolResults"] ?? new JArray())
             .Where(r => (bool?)r["response"]?["success"] == false).SelectMany(r => r["response"]?["errors"] ?? new JArray()).Select(e => (string?)e["code"] ?? "UNSPECIFIED_ERROR").ToArray();
-        return new JObject { ["passed"] = (bool?)turn["completed"] == true && unexpected.Length == 0 && missing.Length == 0 && errors.Length == 0,
+        var expectedErrors = testCase["expectedErrorCodes"]?.Values<string>().ToArray() ?? Array.Empty<string>();
+        bool sequenceMatches = !(testCase["expectedToolSequence"] is JArray sequence) || calls.SequenceEqual(sequence.Values<string>());
+        return new JObject { ["passed"] = (bool?)turn["completed"] == true && sequenceMatches && unexpected.Length == 0 && missing.Length == 0 && errors.All(e => expectedErrors.Contains(e)) && expectedErrors.All(e => errors.Contains(e)),
+            ["toolSequenceMatches"] = sequenceMatches,
             ["unexpectedTools"] = new JArray(unexpected), ["missingRequiredTools"] = new JArray(missing), ["toolErrors"] = new JArray(errors),
             ["semanticReviewRequired"] = true };
     }

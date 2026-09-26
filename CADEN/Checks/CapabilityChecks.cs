@@ -13,7 +13,7 @@ internal static class CapabilityChecks
         Require(empty.Declarations.Count == 1 && (string?)empty.Declarations[0]!["name"] == "get_model_summary", "No-model session advertises unusable tools.");
         var summary = await empty.ExecuteAsync("get_model_summary", new JObject());
         var catalogue = (JArray)summary["data"]!["toolCapabilities"]!;
-        Require((bool)summary["success"]! && !(bool)summary["data"]!["modelLoaded"]! && catalogue.Count == 20 && catalogue.Count(c => (bool)c["usable"]!) == 1, "No-model discovery missing.");
+        Require((bool)summary["success"]! && !(bool)summary["data"]!["modelLoaded"]! && catalogue.Count == 24 && catalogue.Count(c => (bool)c["usable"]!) == 1, "No-model discovery missing.");
         var missing = await empty.ExecuteAsync("write_project_memory", new JObject());
         Require((string?)missing["errors"]![0]!["details"]!["reasonCode"] == "MODEL_NOT_LOADED" && !(bool)missing["errors"]![0]!["details"]!["retryable"]!, "Missing handler lost capability reason.");
         Require((string?)(await empty.ExecuteAsync("invented_tool", new JObject()))["errors"]![0]!["code"] == "UNKNOWN_TOOL", "Unknown tool confused with unavailable capability.");
@@ -38,6 +38,6 @@ internal static class CapabilityChecks
         var mateArgs = new JObject { ["projectId"] = "host", ["snapshotId"] = snapshot.SnapshotId, ["objectIds"] = new JArray("A") };
         var mate = await tools.ExecuteAsync("get_mates", mateArgs);
         Require((bool)mate["success"]! && (string?)mate["coverage"]!["status"] == "partial", "Fallback erased usable partial evidence.");
-        Console.WriteLine("PASS: 20-tool capability discovery, no-model summary, declaration gating, structured recovery, host diagnostics and partial-evidence fallback.");
+        Console.WriteLine("PASS: 24-tool capability discovery, no-model summary, declaration gating, structured recovery, host diagnostics and partial-evidence fallback.");
     }
 }

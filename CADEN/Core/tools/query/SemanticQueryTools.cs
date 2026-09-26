@@ -20,6 +20,7 @@ namespace Core.Tools.Query
             limits ??= new ToolLimits();
             var hierarchy = new Dictionary<string, JObject>(StringComparer.Ordinal);
             var cursors = new QueryCursors();
+            var scopes = new ScopeManager(snapshot, association?.ProjectId);
             if (snapshot != null) foreach (var component in snapshot.ComponentsById.Values)
             {
                 var raw = component.CopyRawRecord();
@@ -28,11 +29,12 @@ namespace Core.Tools.Query
             var handlers = new[] { "get_model_summary", "get_object_details", "find_objects", "query_hierarchy" }
                 .Select(name => (ICadenTool)new SemanticQueryTool(name, snapshot, hierarchy, association, cursors, limits, issues, memory))
                 .Concat(new[] { "get_mechanical_neighborhood", "find_mechanical_path" }.Select(name => (ICadenTool)new MechanicalQueryTool(name, snapshot, limits)))
-                .Concat(new ICadenTool[] { new MateQueryTool(snapshot, limits) })
+                .Concat(new ICadenTool[] { new MateQueryTool(snapshot, limits), new ConnectionQueryTool(snapshot, limits) })
                 .Concat(new[] { "get_diagnostic_summary", "get_diagnostics" }.Select(name => (ICadenTool)new DiagnosticTool(name, snapshot, limits)))
-                .Concat(IssueTools.Create(issues, limits)).Concat(MemoryTools.Create(memory, limits)).ToArray();
+                .Concat(IssueTools.Create(issues, limits)).Concat(MemoryTools.Create(memory, limits))
+                .Concat(new[] { "set_scope", "clear_scope", "get_scope" }.Select(name => (ICadenTool)new ScopeTool(name, scopes))).ToArray();
             return new ToolRegistry(handlers, snapshot, semantic: true, association: association, limits: limits,
-                capabilities: new ToolCapabilities(snapshot, handlers, initializationFailures));
+                capabilities: new ToolCapabilities(snapshot, handlers, initializationFailures), scopes: scopes);
         }
     }
 
@@ -232,6 +234,8 @@ namespace Core.Tools.Query
                 if (op != "in" && op != "equals" && op != "not_equals" && PropertyType(property!) != "number") throw new ToolInputException("INVALID_ARGUMENTS", "Ordered comparisons require a numeric property.");
             }
             var scoped = args["scopeObjectIds"] is JArray scope ? scope.Select(v => Get((string)v!)).Distinct().ToArray() : Store.ComponentsById.Values.ToArray();
+            var activeScope = ScopeContext.From(args);
+            if (activeScope != null) scoped = scoped.Where(c => activeScope.Includes(c.Id)).ToArray();
             var rows = new List<JObject>(); int unknown = 0; var unknownIds = new List<string>();
             string[] words = query?.Trim().Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries) ?? System.Array.Empty<string>();
             foreach (var c in scoped.OrderBy(c => lexical && string.Equals(c.Id, query?.Trim(), StringComparison.OrdinalIgnoreCase) ? 0 : 1).ThenBy(c => c.Name, StringComparer.OrdinalIgnoreCase).ThenBy(c => c.Id, StringComparer.Ordinal))
@@ -272,12 +276,14 @@ namespace Core.Tools.Query
             {
                 token.ThrowIfCancellationRequested(); var current = queue.Dequeue();
                 if (current.Depth > 0) { var row = Identity(current.Id); row["depth"] = current.Depth; rows.Add(row); }
-                var adjacent = Adjacent(current.Id).ToArray();
+                var adjacent = Adjacent(current.Id).Where(next => ScopeContext.From(args)?.Includes(next) ?? true).ToArray();
                 if (current.Depth == depth) { if (adjacent.Length > 0) limited = true; }
                 else foreach (var next in adjacent) queue.Enqueue((next, current.Depth + 1));
             }
             var result = Page(rows, args); result["root"] = Identity(id); result["direction"] = direction; result["maxDepth"] = depth;
-            result["coverage"] = Coverage("Complete", rows.Count, 0); result["coverage"]!["depthLimited"] = limited; result["coverage"]!["requestedMaxDepth"] = depth; return result;
+            result["coverage"] = Coverage("Complete", rows.Count, 0); result["coverage"]!["depthLimited"] = limited; result["coverage"]!["requestedMaxDepth"] = depth;
+            if (ScopeContext.From(args) != null) result["coverage"]!["activeScopeBoundaryApplied"] = true;
+            return result;
         }
     }
 }

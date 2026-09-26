@@ -22,10 +22,11 @@ internal static class ContextCacheChecks
     sealed class Wire : HttpMessageHandler
     {
         internal Queue<string> Replies = new(); internal List<JObject> Requests = new();
+        internal Func<JObject, string>? Respond;
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
         {
             Requests.Add(JObject.Parse(await request.Content!.ReadAsStringAsync(token)));
-            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(Replies.Dequeue()) };
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(Respond?.Invoke(Requests.Last()) ?? Replies.Dequeue()) };
         }
     }
     static string Call(string name, JObject args) => new JObject { ["candidates"] = new JArray(new JObject { ["content"] = new JObject { ["role"] = "model", ["parts"] = new JArray(new JObject {
@@ -88,5 +89,82 @@ internal static class ContextCacheChecks
         for (int i = 0; i < 3; i++) { wire.Replies.Enqueue(FakeHandler.Success); await chat.SendAsync(new string('z', 9000)); }
         Require(wire.Requests.Last()["contents"]!.Count() == 3, "Character budget did not bound long completed turns.");
         Console.WriteLine($"PASS: context cache, exact/paged recall, strict arguments, missing units/state, active signatures, bounded history/eviction/reset. Synthetic follow-up request: {fullSize:N0} -> {compactSize:N0} JSON characters (not measured tokens); no live API.");
+        await WithinTurn();
+    }
+
+    static async Task WithinTurn()
+    {
+        var raw = JObject.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "scope_assembly_metadata.json")));
+        // Inflate only the unselected discovery row, to verify it is not resent as a summary.
+        raw["objects"]!.First(o => (string?)o["id"] == "BOLT_B")["name"] = "Bolt_UNSELECTED_" + new string('x', 300);
+        for (int i = 0; i < 18; i++)
+        {
+            var extra = (JObject)raw["objects"]!.First(o => (string?)o["id"] == "BOLT_B").DeepClone();
+            extra["id"] = "EXTRA_" + i; extra["name"] = "Bolt_Z_" + i + new string('x', 300);
+            ((JArray)raw["objects"]!).Add(extra);
+            ((JArray)raw["objects"]!.First(o => (string?)o["id"] == "GEAR")["childIds"]!).Add((string)extra["id"]!);
+        }
+        var load = Core.Primitives.Operations.Project.LoadProject.Load(raw.ToString());
+        Require(load.Success, "Pruning fixture import failed.");
+        var snapshot = load.Snapshot!;
+        var association = new Core.Primitives.DataStructures.Memory.ProjectAssociation("pruning");
+        var tools = Core.Tools.Query.SemanticQueryTools.Create(snapshot, association);
+        JObject Args(JObject fields) { fields["projectId"] = association.ProjectId; fields["snapshotId"] = snapshot.SnapshotId; return fields; }
+        using var wire = new Wire(); using var http = new HttpClient(wire);
+        var chat = new ChatSession(new GeminiClient(http, new GeminiSettings("offline", "test", "System"), tools));
+        string id = ""; JObject? original = null;
+        wire.Respond = request =>
+        {
+            switch (wire.Requests.Count)
+            {
+                case 1: return Call("find_objects", Args(new JObject { ["query"] = "Bolt" }));
+                case 2:
+                    original = (JObject)Returned(wire).DeepClone(); id = (string)original["sessionResultId"]!;
+                    Require(original["data"]!["items"]!.Count() == 20, "Discovery pruned before model could select.");
+                    return Call("get_object_details", Args(new JObject { ["objectIds"] = new JArray("BOLT_A"), ["fields"] = new JArray("mass") }));
+                case 3:
+                    var older = (JObject)request["contents"]![2]!["parts"]![0]!["functionResponse"]!["response"]!;
+                    Require(older["data"]!["items"]!.Count() == 1 && (string?)older["data"]!["items"]![0]!["id"] == "BOLT_A", "Unfollowed discovery rows not removed.");
+                    Require(!request.ToString().Contains("Bolt_UNSELECTED_"), "Unselected details still in request.");
+                    Require(JToken.DeepEquals(older["coverage"], original!["coverage"]) && JToken.DeepEquals(older["pagination"], original["pagination"]), "Pruning changed original coverage or pagination.");
+                    Require((int)older["contextPruning"]!["references"]![0]!["omittedCount"]! == 19, "Missing reference/count safeguard.");
+                    Require(request.ToString().Contains("preserve-within-turn"), "Pruning lost model signatures.");
+                    return Call("recall_result", new JObject { ["resultId"] = id, ["path"] = "/data/items", ["offset"] = 1, ["limit"] = 1 });
+                case 4:
+                    Require(Returned(wire)["data"]!["value"]!.ToString().Contains("Bolt_UNSELECTED_"), "Pruned evidence not recoverable from original cache.");
+                    return Call("get_object_details", Args(new JObject { ["objectIds"] = new JArray("BOLT_B"), ["fields"] = new JArray("mass") }));
+                case 5:
+                    Require(request["contents"]![2]!["parts"]![0]!["functionResponse"]!["response"]!["data"]!["items"]!.Count() == 2,
+                        "Following a previously pruned ID did not restore original evidence.");
+                    return FakeHandler.Success;
+                default: throw new Exception("Unexpected pruning request.");
+            }
+        };
+        await chat.SendAsync("Find bolts, inspect A, then recover the alternative.");
+        int full = original!.ToString(Formatting.None).Length;
+        int compact = wire.Requests[2]["contents"]![2]!["parts"]![0]!["functionResponse"]!["response"]!.ToString(Formatting.None).Length;
+        Require(compact < full / 2, "Discovery pruning did not materially reduce context.");
+        Console.WriteLine($"PASS: within-turn selection pruning, reference-only alternatives, unchanged coverage/pagination/signatures and exact recall. Discovery response {full:N0} -> {compact:N0} characters; no live API.");
+        chat.Clear(); wire.Requests.Clear();
+        JObject? connections = null;
+        wire.Respond = request =>
+        {
+            switch (wire.Requests.Count)
+            {
+                case 1: return Call("find_connections", Args(new JObject { ["objectId"] = "DRIVE", ["relation"] = "all" }));
+                case 2:
+                    connections = (JObject)Returned(wire).DeepClone();
+                    return Call("get_object_details", Args(new JObject { ["objectIds"] = new JArray("SHAFT"), ["fields"] = new JArray("mass") }));
+                case 3:
+                    var retained = request["contents"]![2]!["parts"]![0]!["functionResponse"]!["response"]!["data"]!["items"]!;
+                    Require(retained.Count() == 2, "Selected endpoint failed to retain connecting mate evidence.");
+                    foreach (var mate in retained)
+                        Require(JToken.DeepEquals(mate, connections!["data"]!["items"]!.First(m => (string?)m["mateId"] == (string?)mate["mateId"])),
+                            "Mate endpoints/status/provenance were stripped.");
+                    return FakeHandler.Success;
+                default: throw new Exception("Unexpected mate-pruning request.");
+            }
+        };
+        await chat.SendAsync("Inspect drivetrain connections, then shaft mass.");
     }
 }

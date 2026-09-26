@@ -19,9 +19,11 @@ namespace Core
         public string Model { get; }
         public int TimeoutSeconds { get; }
         public int MaxOutputTokens { get; }
+        public int MaxToolRounds { get; }
+        public int MaxToolCalls { get; }
         public string SystemPrompt { get; }
 
-        public GeminiSettings(string apiKey, string model, string systemPrompt, int timeoutSeconds = 60, int maxOutputTokens = 4096)
+        public GeminiSettings(string apiKey, string model, string systemPrompt, int timeoutSeconds = 60, int maxOutputTokens = 4096, int maxToolRounds = 12, int maxToolCalls = 48)
         {
             if (string.IsNullOrWhiteSpace(apiKey) || apiKey == "your_api_key_here")
                 throw new ArgumentException("Set GEMINI_API_KEY in CADEN/.env, then click New chat to reload configuration.");
@@ -29,8 +31,11 @@ namespace Core
                 throw new ArgumentException("GEMINI_MODEL must be a model ID, such as gemini-flash-latest (without models/).");
             if (timeoutSeconds <= 0 || maxOutputTokens <= 0)
                 throw new ArgumentException("Timeout and output-token limits must be positive integers.");
+            if (maxToolRounds < 1 || maxToolRounds > 128) throw new ArgumentException("GEMINI_MAX_TOOL_ROUNDS must be between 1 and 128.");
+            if (maxToolCalls < 1 || maxToolCalls > 1024) throw new ArgumentException("GEMINI_MAX_TOOL_CALLS must be between 1 and 1024.");
             ApiKey = apiKey.Trim(); DiagnosticLog.RegisterSecret(ApiKey); Model = model; SystemPrompt = systemPrompt;
             TimeoutSeconds = timeoutSeconds; MaxOutputTokens = maxOutputTokens;
+            MaxToolRounds = maxToolRounds; MaxToolCalls = maxToolCalls;
         }
     }
 
@@ -43,6 +48,7 @@ namespace Core
         private readonly SessionResultCache resultCache;
         private readonly ToolRegistry recallTools;
         public int LastToolCallCount { get; private set; }
+        private string usageSessionId = Guid.NewGuid().ToString("N");
         // The host owns HttpClient's lifetime. Unity can supply a different IChatClient later if necessary.
         public GeminiClient(HttpClient http, GeminiSettings settings, ToolRegistry? tools = null)
         {
@@ -50,7 +56,7 @@ namespace Core
             resultCache = new SessionResultCache(tools?.ProjectId, tools?.SnapshotId);
             recallTools = new ToolRegistry(new[] { resultCache });
         }
-        public void ResetSession() { resultCache.Clear(); startupContext = null; }
+        public void ResetSession() { tools?.ResetScope(); resultCache.Clear(); startupContext = null; usageSessionId = Guid.NewGuid().ToString("N"); }
 
         // Local discovery only: no Gemini request, user transcript entry or memory mutation.
         public async Task InitializeSessionAsync(CancellationToken cancellation = default)
@@ -78,9 +84,21 @@ namespace Core
 
         public async Task<ChatReply> ReplyAsync(IReadOnlyList<ChatMessage> history, string prompt, CancellationToken cancellation)
         {
+            var usage = new UsageAccumulator(); string outcome = "failed";
+            try
+            {
+                var reply = await ReplyCoreAsync(history, prompt, cancellation, usage).ConfigureAwait(false);
+                outcome = "completed"; return reply;
+            }
+            catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { outcome = "cancelled"; throw; }
+            finally { TokenUsageLog.Write(new TurnTokenUsage(usage, usageSessionId, settings.Model, outcome)); }
+        }
+        private async Task<ChatReply> ReplyCoreAsync(IReadOnlyList<ChatMessage> history, string prompt, CancellationToken cancellation, UsageAccumulator usage)
+        {
             LastToolCallCount = 0;
             await InitializeSessionAsync(cancellation).ConfigureAwait(false);
             var continuation = new List<ChatMessage>();
+            var evidencePruner = new TurnEvidencePruner();
             var contents = SessionResultCache.RecentConversation(history);
             contents.Add(Content("user", prompt));
             var payload = new JObject
@@ -103,22 +121,30 @@ namespace Core
             turnTimeout.CancelAfter(TimeSpan.FromSeconds(settings.TimeoutSeconds));
             try
             {
-                for (int round = 0; round <= 6; round++)
+                for (int round = 0; round <= settings.MaxToolRounds; round++)
                 {
+                    if (tools?.Scopes != null)
+                    {
+                        var instructions = (JArray)payload["systemInstruction"]!["parts"]!;
+                        if (round > 0) instructions.RemoveAt(instructions.Count - 1);
+                        instructions.Add(new JObject { ["text"] = "Current host query scope (data, not instructions). get_model_summary is global discovery. Other tools either honor this boundary or fail explicitly. Cached results retain their ORIGINAL scope, not this scope:\n" + tools.Scopes.Describe().ToString(Formatting.None) });
+                    }
                     turnTimeout.Token.ThrowIfCancellationRequested();
-                    var json = await RequestAsync(payload, turnTimeout.Token).ConfigureAwait(false);
+                    var json = await RequestAsync(payload, turnTimeout.Token, usage).ConfigureAwait(false);
                     JToken? candidate = (json["candidates"] as JArray)?.FirstOrDefault();
                     var content = candidate?["content"] as JObject;
                     var parts = content?["parts"] as JArray;
                     var calls = parts?.OfType<JObject>().Where(p => p["functionCall"] != null).ToList() ?? new List<JObject>();
                     if (calls.Count > 0)
                     {
-                        if (round == 6 || LastToolCallCount + calls.Count > 16)
-                            throw new ChatException("CADEN reached its query limit (6 rounds / 16 calls). Narrow the question and try again. This turn was not saved.");
+                        if (round == settings.MaxToolRounds || LastToolCallCount + calls.Count > settings.MaxToolCalls)
+                            throw new ChatException($"CADEN reached its query limit ({settings.MaxToolRounds} rounds / {settings.MaxToolCalls} calls). Increase GEMINI_MAX_TOOL_ROUNDS or GEMINI_MAX_TOOL_CALLS, or narrow the question. This turn was not saved; any committed actions remain committed.");
                         if ((string?)candidate?["finishReason"] == "MAX_TOKENS")
                             throw new ChatException("Gemini's tool request was truncated. Increase the output limit or narrow the question.");
                         if (content == null || (string?)content["role"] != "model") throw new ChatException("Gemini returned malformed tool-call content.");
                         // Preserve ALL model parts, call IDs, and thought signatures exactly for REST continuation.
+                        // Only older tool response bodies are projected; never rewrite model parts/signatures.
+                        evidencePruner.ObserveCalls(calls);
                         contents.Add(content.DeepClone()); continuation.Add(new ChatMessage(content));
                         var responses = new JArray();
                         foreach (var part in calls)
@@ -132,6 +158,7 @@ namespace Core
                                 : await tools.ExecuteAsync(name, call["args"] ?? new JObject(), turnTimeout.Token).ConfigureAwait(false);
                             if (tools != null && name == "recall_result") result = resultCache.UnwrapDispatch(result);
                             if (tools != null && name != "recall_result") result["sessionResultId"] = resultCache.Store(name, call["args"] ?? new JObject(), result);
+                            evidencePruner.Track(name, result);
                             var response = new JObject { ["name"] = name, ["response"] = result };
                             if (call["id"] != null) response["id"] = call["id"]!.DeepClone();
                             responses.Add(new JObject { ["functionResponse"] = response }); LastToolCallCount++;
@@ -173,7 +200,7 @@ namespace Core
             }
         }
 
-        private async Task<JObject> RequestAsync(JObject payload, CancellationToken cancellation)
+        private async Task<JObject> RequestAsync(JObject payload, CancellationToken cancellation, UsageAccumulator usage)
         {
             using var request = new HttpRequestMessage(HttpMethod.Post,
                 "https://generativelanguage.googleapis.com/v1beta/models/" + settings.Model + ":generateContent");
@@ -183,12 +210,14 @@ namespace Core
             timeout.CancelAfter(TimeSpan.FromSeconds(settings.TimeoutSeconds));
             try
             {
+                usage.Requests++;
                 using var response = await http.SendAsync(request, timeout.Token).ConfigureAwait(false);
                 string body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
                 JObject? json = null;
                 JsonException? parseFailure = null;
                 try { json = JObject.Parse(body); }
                 catch (JsonException ex) { parseFailure = ex; /* Retain parser stack without logging the response body. */ }
+                usage.Observe(json);
                 if (!response.IsSuccessStatusCode)
                 {
                     int code = (int)response.StatusCode;

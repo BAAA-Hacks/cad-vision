@@ -254,13 +254,12 @@
   },
   {
     "name": "get_mates",
-    "description": "Read exported mates incident to ANY requested object, deduplicated by mate ID. Does not traverse or prove valid constraints. Explicitly suppressed mates excluded by default; unknown suppression retained and labeled unknown, never assumed active. Includes availability/provenance for optional fields. Missing export coverage is partial even when the list is empty. Raw spatial fields are not usable geometry without explicit frame/units.",
+    "description": "Read exported mates incident to ANY requested object, deduplicated by mate ID. objectIds is required without active scope; omit it with active scope to list all incident internal/boundary mates. External explicit targets fail OUT_OF_SCOPE. Does not traverse or prove valid constraints. Explicitly suppressed mates excluded by default; unknown suppression retained and labeled unknown, never assumed active. Includes availability/provenance for optional fields. Missing export coverage is partial even when the list is empty. Raw spatial fields are not usable geometry without explicit frame/units.",
     "parameters": {
       "type": "object",
       "required": [
         "projectId",
-        "snapshotId",
-        "objectIds"
+        "snapshotId"
       ],
       "properties": {
         "projectId": {
@@ -285,6 +284,70 @@
         },
         "includeSuppressed": {
           "type": "boolean"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        },
+        "cursor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      }
+    }
+  },
+  {
+    "name": "find_connections",
+    "description": "First choice for whether parts/assemblies are mated or connected. Supply query (name/ID words) OR exact objectId. Resolves matching occurrences and assembly descendants locally; returns connected endpoint names, mate types/references and native fixed/constraint states in one call. Exact IDs/names preferred; otherwise matching descendants under matching assemblies are folded into those assembly candidates. otherQuery is an optional name hint, NEVER a hard filter: unmatched informal names still return connected alternatives, not confirmed aliases. Default relation=boundary includes mates crossing each candidate's subtree; all also includes internal mates. Active scope limits primary candidates, not visibility of their boundary endpoints. No scope change or graph traversal. Empty results never prove no connection. Results are bounded; if candidatesTruncated, narrow query or use objectId. Repeat unchanged query with cursor for remaining connections.",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "projectId",
+        "snapshotId"
+      ],
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "snapshotId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "objectId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "otherQuery": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "relation": {
+          "type": "string",
+          "enum": [
+            "boundary",
+            "internal",
+            "all"
+          ]
+        },
+        "includeSuppressed": {
+          "type": "boolean"
+        },
+        "candidateLimit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
         },
         "limit": {
           "type": "integer",
@@ -1116,6 +1179,81 @@
           "maximum": 50
         },
         "cursor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      },
+      "required": [
+        "projectId",
+        "snapshotId"
+      ]
+    }
+  },
+  {
+    "name": "set_scope",
+    "description": "Set session query scope to an exact object ID and all descendants. Discover names before calling; resolve ambiguity. Does not mutate CAD or durable memory. Explicit targets outside scope fail. Does not select a mechanical configuration.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "snapshotId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "objectId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      },
+      "required": [
+        "projectId",
+        "snapshotId",
+        "objectId"
+      ]
+    }
+  },
+  {
+    "name": "clear_scope",
+    "description": "Clear active session scope, restoring original tool behavior. Invalidates scope-bound cursors; does not clear project memory.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "snapshotId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      },
+      "required": [
+        "projectId",
+        "snapshotId"
+      ]
+    }
+  },
+  {
+    "name": "get_scope",
+    "description": "Read current active query scope and its revision. No active scope means original tool defaults.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "snapshotId": {
           "type": "string",
           "minLength": 1,
           "maxLength": 512
