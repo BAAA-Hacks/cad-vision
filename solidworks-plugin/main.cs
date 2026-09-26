@@ -426,11 +426,22 @@ namespace CADVision.SolidWorks
         private SldWorks application;
         private ExtractionOptions options;
         private MathUtility nativeMath;
+        private readonly PropertyReadCache propertyReads = new PropertyReadCache();
+        private readonly Dictionary<Component2, Component2[]> childReads = new Dictionary<Component2, Component2[]>();
+        private Component2[] Children(Component2 component)
+        {
+            Component2[] children;
+            if (!childReads.TryGetValue(component, out children)) {
+                children = Items(component.GetChildren()).Cast<Component2>().ToArray();
+                childReads.Add(component, children);
+            }
+            return children;
+        }
         private int completedOccurrences, totalOccurrences;
         private void Completion(double fraction, string stage) { if (options.Completion != null) options.Completion(fraction, stage); }
-        private static int CountOccurrences(Component2 component)
+        private int CountOccurrences(Component2 component)
         {
-            return 1 + (component.IsSuppressed() ? 0 : Items(component.GetChildren()).Cast<Component2>().Sum(c => CountOccurrences(c)));
+            return 1 + (component.IsSuppressed() ? 0 : Children(component).Sum(c => CountOccurrences(c)));
         }
         private void OccurrenceCompleted()
         {
@@ -449,6 +460,7 @@ namespace CADVision.SolidWorks
             application = app;
             options = extractionOptions ?? new ExtractionOptions();
             completedOccurrences = totalOccurrences = 0;
+            propertyReads.Clear(); childReads.Clear();
             Completion(0, "Preparing metadata");
             materialDatabases.Clear(); nativeMath = null;
             if (System.Threading.Thread.CurrentThread.GetApartmentState() != System.Threading.ApartmentState.STA)
@@ -481,7 +493,7 @@ namespace CADVision.SolidWorks
             {
             var rootComponent = config.GetRootComponent3(false);
             if (rootComponent == null) throw new InvalidOperationException("Assembly tree unavailable. Open the assembly in resolved mode.");
-            var children = Items(rootComponent.GetChildren()).Cast<Component2>().ToArray();
+            var children = Children(rootComponent);
             if (options.Completion != null) totalOccurrences = children.Sum(c => CountOccurrences(c));
             Completion(0.05, "Reading component metadata");
             foreach (var child in children) Visit(child, root);
@@ -578,7 +590,7 @@ namespace CADVision.SolidWorks
             occurrences.Add(path, o); components.Add(Tuple.Create(component, o)); result.objects.Add(o); parent.childIds.Add(id);
             Try(id, "suppression", () => o.suppressed = component.IsSuppressed());
             Try(id, "fixed state", () => { o.@fixed = component.IsFixed(); o.fixedState = o.@fixed.Value ? "fixed" : "floating"; });
-            Try(id, "transform", () => o.transform = component.Transform2 == null ? null : component.Transform2.ArrayData as double[]);
+            Try(id, "transform", () => { var transform = component.Transform2; o.transform = transform == null ? null : transform.ArrayData as double[]; });
             if (o.suppressed != false) { result.warnings.Add(id + ": suppressed/unavailable occurrence; descendants and engineering properties not assessed."); OccurrenceCompleted(); return; }
             Try(id, "definition status", () => {
                 int native = component.GetConstrainedStatus();
@@ -595,7 +607,7 @@ namespace CADVision.SolidWorks
             // Explicit occurrence selection uses the referenced configuration in assembly context.
             Try(id, "mass properties", () => ReadMass(o, new object[] { component }));
             OccurrenceCompleted();
-            if (type == "assembly") foreach (var child in Items(component.GetChildren()).Cast<Component2>()) Visit(child, o);
+            if (type == "assembly") foreach (var child in Children(component)) Visit(child, o);
         }
 
         private void Report(string message) { if (options.Progress != null) options.Progress(message); }
@@ -688,8 +700,8 @@ namespace CADVision.SolidWorks
         // convenience fields, while every discovered property remains in the dictionaries.
         private void ReadProperties(ModelDoc2 doc, CadObject o)
         {
-            Try(o.id, "document properties", () => ReadPropertyManager(doc.Extension.CustomPropertyManager[""], o.documentProperties));
-            Try(o.id, "configuration properties", () => ReadPropertyManager(doc.Extension.CustomPropertyManager[o.configuration], o.configurationProperties));
+            Try(o.id, "document properties", () => propertyReads.Read(doc, "", o.documentProperties, target => ReadPropertyManager(doc.Extension.CustomPropertyManager[""], target)));
+            Try(o.id, "configuration properties", () => propertyReads.Read(doc, o.configuration, o.configurationProperties, target => ReadPropertyManager(doc.Extension.CustomPropertyManager[o.configuration], target)));
             foreach (var p in o.documentProperties) o.customProperties[p.Key] = p.Value;
             foreach (var p in o.configurationProperties) o.customProperties[p.Key] = p.Value;
             string value;
@@ -852,6 +864,22 @@ namespace CADVision.SolidWorks
         public Action<string> Progress;
         // Fraction completed within extraction, kept separate from diagnostic text.
         public Action<double, string> Completion;
+    }
+
+    // Per-export snapshots only. Cache successful reads, copy values into each
+    // occurrence, and retain partial results if a native read throws.
+    public sealed class PropertyReadCache
+    {
+        private readonly Dictionary<Tuple<object,string>, Dictionary<string,string>> values = new Dictionary<Tuple<object,string>, Dictionary<string,string>>();
+        public void Clear() { values.Clear(); }
+        public void Read(object document, string configuration, Dictionary<string,string> target, Action<Dictionary<string,string>> read)
+        {
+            var key=Tuple.Create(document,configuration);
+            Dictionary<string,string> snapshot;
+            if(values.TryGetValue(key,out snapshot)) { foreach(var p in snapshot) target[p.Key]=p.Value; return; }
+            read(target);
+            values.Add(key,new Dictionary<string,string>(target,target.Comparer));
+        }
     }
 
     // Work-weighted estimate, not a promise: native calls vary with model complexity.
@@ -1131,7 +1159,8 @@ namespace CADVision.SolidWorks
                         if (dim == null) continue;
                         var name = dim.FullName;
                         if (!dimensions.Add(name)) continue;
-                        var record = new DimensionRecord { id = SourceId(doc, dim, "DIM", owner.id, name), name = name, nativeDisplayType = display.Type2, nativeParameterType = dim.GetType(), type = MetadataMath.DimensionType(display.Type2) };
+                        int displayType = display.Type2;
+                        var record = new DimensionRecord { id = SourceId(doc, dim, "DIM", owner.id, name), name = name, nativeDisplayType = displayType, nativeParameterType = dim.GetType(), type = MetadataMath.DimensionType(displayType) };
                         owner.dimensions.Add(record);
                         // Tolerance methods read the source document's active configuration.
                         // Do not infer them from a different configuration or annotation text.
@@ -1331,7 +1360,7 @@ namespace CADVision.SolidWorks
         {
             var config = doc.GetConfigurationByName(o.configuration) as Configuration;
             if (config == null) return;
-            if (String.IsNullOrEmpty(o.description)) o.description = String.IsNullOrEmpty(config.Description) ? null : config.Description;
+            if (String.IsNullOrEmpty(o.description)) { string description = config.Description; o.description = String.IsNullOrEmpty(description) ? null : description; }
             var seen = new HashSet<string>(StringComparer.Ordinal);
             while (config != null && seen.Add(config.Name))
             {
@@ -1509,7 +1538,14 @@ namespace CADVision.SolidWorks
             public List<float> Positions = new List<float>(), Normals = new List<float>();
         }
         private static IEnumerable<object> Items(object value) { return value is Array ? ((Array)value).Cast<object>() : Enumerable.Empty<object>(); }
-        private static float[] Floats(object value) { return value is Array ? ((Array)value).Cast<object>().Select(Convert.ToSingle).ToArray() : null; }
+        private static float[] Floats(object value)
+        {
+            // Native tessellation normally already arrives as float[]. Do not box
+            // and duplicate every coordinate; AppendFace only reads these arrays.
+            var floats = value as float[];
+            if (floats != null) return floats;
+            return value is Array ? ((Array)value).Cast<object>().Select(Convert.ToSingle).ToArray() : null;
+        }
         private static bool Finite(double v) { return !Double.IsNaN(v) && !Double.IsInfinity(v); }
 
         // Convert root-space occurrence transforms to glTF parent-local matrices.
@@ -1634,13 +1670,22 @@ namespace CADVision.SolidWorks
             public List<float> Positions=new List<float>(),Normals=new List<float>();
             public List<uint> Indices=new List<uint>();
         }
+        private struct VertexKey : IEquatable<VertexKey>
+        {
+            private readonly float x, y, z, nx, ny, nz;
+            public VertexKey(List<float> p, List<float> n, int i) { x=p[i];y=p[i+1];z=p[i+2];nx=n[i];ny=n[i+1];nz=n[i+2]; }
+            public bool Equals(VertexKey other) { return x.Equals(other.x)&&y.Equals(other.y)&&z.Equals(other.z)&&nx.Equals(other.nx)&&ny.Equals(other.ny)&&nz.Equals(other.nz); }
+            public override bool Equals(object other) { return other is VertexKey && Equals((VertexKey)other); }
+            public override int GetHashCode() { unchecked { int h=x.GetHashCode();h=h*31+y.GetHashCode();h=h*31+z.GetHashCode();h=h*31+nx.GetHashCode();h=h*31+ny.GetHashCode();return h*31+nz.GetHashCode(); } }
+        }
         public static IndexedMesh Index(MeshNode mesh)
         {
             var output=new IndexedMesh();
-            var seen=new Dictionary<Tuple<float,float,float,float,float,float>,uint>();
+            output.Indices.Capacity=mesh.Positions.Count/3;
+            var seen=new Dictionary<VertexKey,uint>();
             for(int i=0;i<mesh.Positions.Count;i+=3) {
                 var p=mesh.Positions;var n=mesh.Normals;
-                var key=Tuple.Create(p[i],p[i+1],p[i+2],n[i],n[i+1],n[i+2]);uint index;
+                var key=new VertexKey(p,n,i);uint index;
                 if(!seen.TryGetValue(key,out index)) {
                     index=(uint)(output.Positions.Count/3);seen.Add(key,index);
                     for(int k=0;k<3;k++){output.Positions.Add(p[i+k]);output.Normals.Add(n[i+k]);}
@@ -1661,8 +1706,8 @@ namespace CADVision.SolidWorks
                 if(x*x+y*y+z*z==0) continue;
                 double dot=x*(n[i]+n[i+3]+n[i+6])+y*(n[i+1]+n[i+4]+n[i+7])+z*(n[i+2]+n[i+5]+n[i+8]);
                 if(dot==0) throw new InvalidDataException("Native normals cannot establish triangle winding.");
-                int[] order=dot<0?new[]{0,6,3}:new[]{0,3,6};
-                foreach(int v in order) {
+                for(int corner=0;corner<3;corner++) {
+                    int v=corner==0?0:(dot<0?3-corner:corner)*3;
                     double length=Math.Sqrt(n[i+v]*n[i+v]+n[i+v+1]*n[i+v+1]+n[i+v+2]*n[i+v+2]);
                     if(length<1e-12) throw new InvalidDataException("Zero native normal.");
                     for(int k=0;k<3;k++) {node.Positions.Add(p[i+v+k]);node.Normals.Add((float)(n[i+v+k]/length));}
@@ -1675,13 +1720,22 @@ namespace CADVision.SolidWorks
         {
             if(input.Count==0 || input[0].Parent!=-1 || input.Select(n=>n.Id).Distinct().Count()!=input.Count) throw new InvalidDataException("Invalid mesh hierarchy/IDs.");
             var nodes=new List<Dictionary<string,object>>();var meshes=new List<object>();var views=new List<object>();var accessors=new List<object>();var materials=new List<object>();
+            // Build adjacency and inverse matrices once, instead of rescanning the
+            // whole assembly and reinverting a shared parent for every occurrence.
+            var childLists=new List<int>[input.Count];
+            var inverses=new double[input.Count][];
+            for(int i=0;i<input.Count;i++) {
+                childLists[i]=new List<int>();
+                if(i>0 && (input[i].Parent<0 || input[i].Parent>=i)) throw new InvalidDataException("Parent must precede child.");
+                if(i>0) childLists[input[i].Parent].Add(i);
+                inverses[i]=Inverse(input[i].World);
+            }
             using(var data=new MemoryStream()) using(var bin=new BinaryWriter(data)) {
                 for(int i=0;i<input.Count;i++) {
                     var n=input[i];if(i>0 && (n.Parent<0 || n.Parent>=i)) throw new InvalidDataException("Parent must precede child.");
-                    Inverse(n.World);
-                    var local=n.Parent<0?n.World:GlbMapping.Multiply(Inverse(input[n.Parent].World),n.World);
+                    var local=n.Parent<0?n.World:GlbMapping.Multiply(inverses[n.Parent],n.World);
                     var node=new Dictionary<string,object>{{"name",n.Name},{"matrix",local},{"extras",new {cadObjectId=n.Id,geometryStatus=n.Exclusion??"included"}}};
-                    int[] children=Enumerable.Range(0,input.Count).Where(j=>input[j].Parent==i).ToArray();if(children.Length>0)node["children"]=children;
+                    if(childLists[i].Count>0)node["children"]=childLists[i].ToArray();
                     var primitives=new List<object>();
                     foreach(var surface in n.Surfaces.Count>0?n.Surfaces:new List<MeshNode>{n}) {
                         if(surface.Positions.Count==0)continue;
@@ -1722,7 +1776,8 @@ namespace CADVision.SolidWorks
                 using(var file=new BinaryWriter(new FileStream(path,FileMode.CreateNew))) {
                     file.Write(0x46546C67u);file.Write(2u);file.Write((uint)size);file.Write((uint)padded);file.Write(0x4E4F534Au);file.Write(json);
                     for(int j=json.Length;j<padded;j++)file.Write((byte)32);
-                    file.Write((uint)data.Length);file.Write(0x004E4942u);file.Write(data.ToArray());
+                    file.Write((uint)data.Length);file.Write(0x004E4942u);
+                    file.Flush();data.Position=0;data.CopyTo(file.BaseStream);
                 }
             }
             GlbExporter.CheckContainer(path);
