@@ -41,6 +41,7 @@ namespace CADVision.SolidWorks
         public List<string> notices = new List<string>();
         public string mappingStatus = "not_correlated_to_glb";
         public GlbAsset glbAsset;
+        public MappingReport glbMapping;
         public string coordinateSystem = "SolidWorks root assembly; SI; inertia about center of mass aligned with root axes";
         public string valuePolicy = "Prefer authoritative SolidWorks API values; only normalize representation or derive unavailable fields with explicit provenance.";
 
@@ -142,6 +143,23 @@ namespace CADVision.SolidWorks
         public long byteLength;
         public string correspondenceStatus = "unverified";
         public string lengthUnitConvention = "m", scaleVerification = "not_verified";
+    }
+    public sealed class MappingReport
+    {
+        public string method = "exact_parent_hierarchy_name_and_world_transform";
+        public string glbSha256, status;
+        public double positionToleranceMeters = 0.00001, matrixTolerance = 0.00001;
+        public string verificationScope = "node correspondence only; geometry, CAD revision and Unity axis conversion are not verified";
+        public List<NodeMapping> objects = new List<NodeMapping>();
+        public List<int> unmappedMeshNodeIndices = new List<int>();
+    }
+    public sealed class NodeMapping
+    {
+        public string objectId, status = "unmatched", reason;
+        public int? glbNodeIndex;
+        public string glbNodeName, glbNodePath;
+        public List<int> candidateNodeIndices = new List<int>();
+        public double? positionErrorMeters, matrixError;
     }
     // Version 2 uses the active root document's units for every numeric field.
     // ToSI factors are for metadata only, not an instruction to scale a GLB mesh.
@@ -1481,6 +1499,9 @@ namespace CADVision.SolidWorks
                 metadata.extractionStatus["exportPair"] = existingGlb == null ? "same_document_configuration_root_update_stamp_checked" : "supplied_glb_plus_active_CAD_metadata_correspondence_unverified";
                 if (existingGlb != null) metadata.warnings.Add("Supplied GLB: matching CAD document, configuration, revision, scale and node mapping have not been verified. A matching filename is not proof of correspondence.");
                 if (warnings != 0) metadata.warnings.Add("Native GLB export warnings=" + warnings + " (" + (swFileSaveWarning_e)warnings + ").");
+                if (progress != null) progress("Preprocessing GLB hierarchy and transform mapping...");
+                GlbMapping.Apply(glbPath, metadata);
+                if (progress != null) progress("Mapping: " + metadata.mappingStatus);
                 if (progress != null) progress("Writing metadata.json (schema " + metadata.schemaVersion + ")...");
                 metadata.Write(Path.Combine(stage, "metadata.json"));
                 // Publish both files together, only after both exporters have succeeded.
@@ -1521,6 +1542,169 @@ namespace CADVision.SolidWorks
 
 namespace CADVision.SolidWorks
 {
+    // File-only preprocessing: no SolidWorks COM calls. Kept separate from extraction
+    // so the shipper can run it on a completed pair without a CAD installation.
+    public static class GlbMapping
+    {
+        public sealed class Document { public int? scene; public Scene[] scenes; public Node[] nodes; }
+        public sealed class Scene { public int[] nodes; }
+        public sealed class Node
+        {
+            public string name;
+            public int[] children;
+            public int? mesh, camera;
+            public double[] matrix, translation, rotation, scale;
+        }
+        private sealed class Located { public double[] world; public string path; }
+
+        public static void Apply(string file, Metadata metadata)
+        {
+            Document glb;
+            string sha;
+            using (var stream = File.OpenRead(file))
+            using (var reader = new BinaryReader(stream))
+            {
+                if (stream.Length < 20 || reader.ReadUInt32() != 0x46546C67 || reader.ReadUInt32() != 2 || reader.ReadUInt32() != stream.Length)
+                    throw new InvalidDataException("Invalid GLB header for mapping.");
+                uint length = reader.ReadUInt32();
+                if (reader.ReadUInt32() != 0x4E4F534A || length > 64*1024*1024 || length > stream.Length-20 || length%4 != 0)
+                    throw new InvalidDataException("Invalid or oversized GLB JSON chunk.");
+                glb = new JavaScriptSerializer { MaxJsonLength=64*1024*1024, RecursionLimit=256 }.Deserialize<Document>(Encoding.UTF8.GetString(reader.ReadBytes((int)length)));
+                stream.Position = 0;
+                using (var hash = SHA256.Create()) sha = BitConverter.ToString(hash.ComputeHash(stream)).Replace("-", "").ToLowerInvariant();
+            }
+            if (metadata.glbAsset != null && metadata.glbAsset.sha256 != sha) throw new InvalidDataException("GLB hash does not match metadata; refusing stale mapping.");
+            metadata.glbMapping = Match(glb, metadata, sha);
+            metadata.mappingStatus = metadata.glbMapping.status;
+            metadata.extractionStatus["glbMapping"] = metadata.glbMapping.status;
+            metadata.warnings.RemoveAll(w=>w.StartsWith("GLB mapping is pending:",StringComparison.Ordinal) || w.StartsWith("GLB mapping check:",StringComparison.Ordinal));
+            metadata.warnings.Add("GLB mapping check: " + metadata.mappingStatus + ". Checks hierarchy and transforms only; geometry/revision and Unity axis conversion still require validation.");
+            metadata.warnings.RemoveAll(w=>w.StartsWith("Supplied GLB: matching CAD document, configuration, revision, scale and node mapping",StringComparison.Ordinal));
+            if(metadata.glbAsset != null && metadata.glbAsset.sourceMode == "supplied_glb" && !metadata.warnings.Contains("Supplied GLB: geometry, revision and physical mesh size remain unverified despite node correspondence checks."))
+                metadata.warnings.Add("Supplied GLB: geometry, revision and physical mesh size remain unverified despite node correspondence checks.");
+            // Matching hierarchy/transforms is evidence of node correspondence, not
+            // proof that two designs have the same dimensions, material or revision.
+            if (metadata.glbAsset != null) metadata.glbAsset.correspondenceStatus = metadata.glbMapping.status;
+        }
+
+        public static MappingReport Match(Document glb, Metadata metadata, string sha)
+        {
+            metadata.Validate();
+            if (glb == null || glb.nodes == null || glb.scenes == null || glb.scenes.Length == 0) throw new InvalidDataException("GLB scene/nodes unavailable.");
+            int scene = glb.scene ?? (glb.scenes.Length == 1 ? 0 : -1);
+            if (scene < 0 || scene >= glb.scenes.Length || glb.scenes[scene] == null) throw new InvalidDataException("No unambiguous default GLB scene.");
+            double meters;
+            if (metadata.project.documentUnits != null) meters = metadata.project.documentUnits.lengthToMeters;
+            else if (metadata.project.units["length"] == "m") meters = 1;
+            else throw new InvalidDataException("Missing metadata length conversion.");
+            if (!Finite(meters) || meters <= 0) throw new InvalidDataException("Invalid metadata length conversion.");
+            var roots = glb.scenes[scene].nodes ?? new int[0];
+            var locations = new Dictionary<int,Located>();
+            Action<int,double[],string,int> walk = null;
+            walk = (index,parent,path,depth) => {
+                if (depth > 256 || index < 0 || index >= glb.nodes.Length || locations.ContainsKey(index) || glb.nodes[index] == null)
+                    throw new InvalidDataException("Invalid GLB hierarchy: cycle, shared node or bad index.");
+                var n = glb.nodes[index];
+                var location = new Located { world=Multiply(parent,Local(n)), path=path+"/"+(n.name ?? "")+"["+index+"]" };
+                locations.Add(index,location);
+                foreach (int child in n.children ?? new int[0]) walk(child,location.world,location.path,depth+1);
+            };
+            foreach (int root in roots) walk(root,IdentityMatrix(),"",0);
+            var report = new MappingReport { glbSha256=sha };
+            var objects = metadata.objects.ToDictionary(o=>o.id);
+            var records = new Dictionary<string,NodeMapping>();
+            Action<CadObject,int[]> match = null;
+            match = (obj,pool) => {
+                var record = new NodeMapping { objectId=obj.id };
+                report.objects.Add(record); records.Add(obj.id,record);
+                string expectedName = obj.parentId == null ? Path.GetFileNameWithoutExtension(obj.name) : obj.name;
+                var named = pool.Where(i=>glb.nodes[i].camera == null && String.Equals(glb.nodes[i].name,expectedName,StringComparison.Ordinal)).ToArray();
+                double[] expected = obj.parentId == null ? IdentityMatrix() : CadMatrix(obj.transform,meters);
+                if (obj.suppressed != false) record.reason = "suppressed_or_unknown_suppression";
+                else if (expected == null) record.reason = "missing_CAD_transform";
+                else
+                {
+                    foreach (var i in named)
+                    {
+                        double pe, me; Errors(expected,locations[i].world,out pe,out me);
+                        if (pe <= report.positionToleranceMeters && me <= report.matrixTolerance) record.candidateNodeIndices.Add(i);
+                    }
+                    if (record.candidateNodeIndices.Count == 1)
+                    {
+                        int i=record.candidateNodeIndices[0]; double pe,me; Errors(expected,locations[i].world,out pe,out me);
+                        record.status="matched"; record.glbNodeIndex=i; record.glbNodeName=glb.nodes[i].name; record.glbNodePath=locations[i].path;
+                        record.positionErrorMeters=pe; record.matrixError=me; record.reason="parent_hierarchy_name_and_transform_agree";
+                    }
+                    else { record.status=record.candidateNodeIndices.Count>1 ? "ambiguous" : "unmatched"; record.reason=named.Length==0 ? "no_exact_name_under_matched_parent" : "transform_mismatch_or_multiple_candidates"; }
+                }
+                foreach (string child in obj.childIds) match(objects[child],record.glbNodeIndex.HasValue ? glb.nodes[record.glbNodeIndex.Value].children ?? new int[0] : new int[0]);
+            };
+            match(objects[metadata.project.rootObjectId],roots);
+            // Do not allow two CAD occurrences to silently claim the same GLB node.
+            foreach (var collision in report.objects.Where(r=>r.glbNodeIndex.HasValue).GroupBy(r=>r.glbNodeIndex.Value).Where(g=>g.Count()>1))
+                foreach (var r in collision) { r.glbNodeIndex=null; r.status="ambiguous"; r.reason="node_claimed_by_multiple_CAD_objects"; }
+            foreach (var obj in report.objects.Select(r=>objects[r.objectId]).Where(o=>o.parentId!=null))
+                if (records[obj.parentId].status!="matched") { var r=records[obj.id]; r.glbNodeIndex=null; r.status="unmatched"; r.reason="parent_not_matched"; }
+            var claimed=new HashSet<int>(report.objects.Where(r=>r.glbNodeIndex.HasValue).Select(r=>r.glbNodeIndex.Value));
+            report.unmappedMeshNodeIndices=locations.Keys.Where(i=>glb.nodes[i].mesh.HasValue && !claimed.Contains(i)).OrderBy(i=>i).ToList();
+            report.status=report.objects.All(r=>r.status=="matched") && report.unmappedMeshNodeIndices.Count==0 ? "hierarchy_transform_matched" : "partial_or_unmatched";
+            return report;
+        }
+        public static double[] IdentityMatrix() { return new double[] {1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1}; }
+        public static double[] Multiply(double[] a,double[] b)
+        {
+            var r=new double[16];
+            for(int c=0;c<4;c++) for(int row=0;row<4;row++) for(int k=0;k<4;k++) r[c*4+row]+=a[k*4+row]*b[c*4+k];
+            return r;
+        }
+        private static double[] CadMatrix(double[] t,double meters)
+        {
+            if(t==null || t.Length<13 || t.Take(13).Any(v=>!Finite(v))) return null;
+            var m=IdentityMatrix();
+            for(int c=0;c<3;c++) for(int r=0;r<3;r++) m[c*4+r]=t[c*3+r]*t[12];
+            for(int r=0;r<3;r++) m[12+r]=t[9+r]*meters;
+            return m;
+        }
+        public static double[] Local(Node n)
+        {
+            if(n.matrix!=null)
+            {
+                if(n.matrix.Length!=16 || n.matrix.Any(v=>!Finite(v)) || n.translation!=null || n.rotation!=null || n.scale!=null || n.matrix[3]!=0 || n.matrix[7]!=0 || n.matrix[11]!=0 || n.matrix[15]!=1) throw new InvalidDataException("Invalid GLB node matrix.");
+                return n.matrix;
+            }
+            var t=n.translation??new double[3]; var s=n.scale??new double[]{1,1,1}; var q=n.rotation??new double[]{0,0,0,1};
+            if(t.Length!=3 || s.Length!=3 || q.Length!=4 || t.Concat(s).Concat(q).Any(v=>!Finite(v)) || Math.Abs(q.Sum(v=>v*v)-1)>1e-5) throw new InvalidDataException("Invalid GLB TRS.");
+            double x=q[0],y=q[1],z=q[2],w=q[3];
+            return new double[]{(1-2*y*y-2*z*z)*s[0],(2*x*y+2*z*w)*s[0],(2*x*z-2*y*w)*s[0],0,
+                (2*x*y-2*z*w)*s[1],(1-2*x*x-2*z*z)*s[1],(2*y*z+2*x*w)*s[1],0,
+                (2*x*z+2*y*w)*s[2],(2*y*z-2*x*w)*s[2],(1-2*x*x-2*y*y)*s[2],0,t[0],t[1],t[2],1};
+        }
+        private static void Errors(double[] a,double[] b,out double position,out double matrix)
+        {
+            position=0; matrix=0;
+            for(int i=0;i<16;i++) if(i>=12 && i<=14) position+=(a[i]-b[i])*(a[i]-b[i]); else matrix=Math.Max(matrix,Math.Abs(a[i]-b[i]));
+            position=Math.Sqrt(position);
+        }
+        private static bool Finite(double v) { return !Double.IsNaN(v) && !Double.IsInfinity(v); }
+        public static Metadata ProcessPair(string input,string output)
+        {
+            if(Directory.Exists(output) || File.Exists(output)) throw new IOException("Choose a new output directory.");
+            var serializer=new JavaScriptSerializer { MaxJsonLength=Int32.MaxValue,RecursionLimit=256 };
+            var metadata=serializer.Deserialize<Metadata>(File.ReadAllText(Path.Combine(input,"metadata.json")));
+            string stage=Path.GetFullPath(output)+".partial-"+Guid.NewGuid().ToString("N");
+            Directory.CreateDirectory(stage);
+            string glb=Path.Combine(stage,"model.glb");
+            File.Copy(Path.Combine(input,"model.glb"),glb,false);
+            Apply(glb,metadata);
+            metadata.Write(Path.Combine(stage,"metadata.json"));
+            Directory.Move(stage,Path.GetFullPath(output));
+            return metadata;
+        }
+    }
+}
+
+namespace CADVision.SolidWorks
+{
     internal static class ExportProgram
     {
         [STAThread]
@@ -1532,11 +1716,19 @@ namespace CADVision.SolidWorks
             {
                 Console.Error.WriteLine(ex.Message);
                 Console.Error.WriteLine("Usage: CADVision.Export.exe [new-output-directory] [--glb existing.glb] [--skip-interferences] [--shipper CadenShipper.exe]");
+                Console.Error.WriteLine("Offline: CADVision.Export.exe [new-output-directory] --map-pair existing-pair-directory");
                 return 2;
             }
             try
             {
                 string folder = command.Directory ?? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "export-" + DateTime.Now.ToString("yyyyMMdd-HHmmss-fff"));
+                if (command.MapPair != null)
+                {
+                    var mapped = GlbMapping.ProcessPair(command.MapPair, folder);
+                    PrintMapping(mapped);
+                    Console.WriteLine("Preprocessed pair saved to " + Path.GetFullPath(folder));
+                    return 0;
+                }
                 // Check requested handoff configuration before an expensive CAD export.
                 if (command.Shipper != null && !File.Exists(command.Shipper)) throw new FileNotFoundException("Requested shipper executable not found.", command.Shipper);
                 var clock = Stopwatch.StartNew();
@@ -1549,6 +1741,7 @@ namespace CADVision.SolidWorks
                     new ExtractionOptions { RunInterferenceDetection = !command.SkipInterferences }, progress, command.Glb);
                 Console.WriteLine("Exported model.glb + metadata.json to " + Path.GetFullPath(folder));
                 Console.WriteLine(metadata.objects.Count + " objects; " + metadata.mates.Count + " mates; " + clock.Elapsed.TotalSeconds.ToString("F1") + " seconds.");
+                PrintMapping(metadata);
                 foreach (string warning in metadata.warnings) Console.Error.WriteLine("Warning: " + warning);
                 if (metadata.notices.Count > 0) Console.WriteLine("Info: " + metadata.notices.Count + " identity notices recorded in metadata.json.");
                 // Show present or unresolved tolerances; omit confirmed 'none' entries.
@@ -1583,11 +1776,18 @@ namespace CADVision.SolidWorks
             }
             catch (Exception ex) { Console.Error.WriteLine(ex.Message); return 1; }
         }
+        private static void PrintMapping(Metadata metadata)
+        {
+            if (metadata.glbMapping == null) return;
+            Console.WriteLine("GLB mapping: " + metadata.glbMapping.status);
+            foreach (var m in metadata.glbMapping.objects)
+                Console.WriteLine("  " + m.objectId + " -> " + (m.glbNodeIndex.HasValue ? "node " + m.glbNodeIndex.Value : "no node") + ": " + m.status + " (" + m.reason + ")");
+        }
     }
     // CLI parsing has no SolidWorks dependency. No model/source-file path is required.
     public sealed class ExportCommand
     {
-        public string Directory, Shipper, Glb;
+        public string Directory, Shipper, Glb, MapPair;
         public bool SkipInterferences;
         public static ExportCommand Parse(string[] args)
         {
@@ -1595,6 +1795,8 @@ namespace CADVision.SolidWorks
             for (int i = 0; i < args.Length; i++)
             {
                 if (args[i] == "--skip-interferences" && !result.SkipInterferences) result.SkipInterferences = true;
+                else if (args[i] == "--map-pair" && result.MapPair == null && i+1 < args.Length && !args[i+1].StartsWith("--"))
+                    result.MapPair = Path.GetFullPath(args[++i]);
                 else if (args[i] == "--glb" && result.Glb == null && i+1 < args.Length && !args[i+1].StartsWith("--"))
                     result.Glb = Path.GetFullPath(args[++i]);
                 else if (args[i] == "--shipper" && result.Shipper == null && i+1 < args.Length && !args[i+1].StartsWith("--"))
@@ -1602,6 +1804,7 @@ namespace CADVision.SolidWorks
                 else if (!args[i].StartsWith("--") && result.Directory == null) result.Directory = Path.GetFullPath(args[i]);
                 else throw new ArgumentException("Unknown, duplicate, or incomplete argument: " + args[i]);
             }
+            if (result.MapPair != null && (result.Glb != null || result.Shipper != null || result.SkipInterferences)) throw new ArgumentException("--map-pair is an offline-only mode; do not combine it with CAD export/shipper options.");
             return result;
         }
     }
