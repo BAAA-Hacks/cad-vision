@@ -42,7 +42,7 @@ Shader "CADVision/GradientSky"
             {
                 UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(i);
                 float height = saturate(normalize(i.direction).y);
-                float blend = smoothstep(0.0, 0.22, height);
+                float blend = smoothstep(0.0, 0.08, height);
                 return half4(lerp(_HorizonColor.rgb, _ZenithColor.rgb, blend), 1);
             }
             ENDCG
