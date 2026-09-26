@@ -1529,20 +1529,7 @@ namespace CADVision.SolidWorks
             Directory.CreateDirectory(stage);
             try
             {
-                int warnings = 0;
-                string glbPath = Path.Combine(stage, "model.glb");
-                if (existingGlb == null)
-                {
-                    if (progress != null) progress("Exporting native model.glb...");
-                    warnings = GlbExporter.Export(app, model, glbPath);
-                }
-                else
-                {
-                    if (progress != null) progress("Copying supplied GLB unchanged; CAD correspondence remains unverified...");
-                    CopySuppliedGlb(existingGlb, glbPath);
-                }
-                EnsureSameModel(app, model, source, configuration, updateStamp);
-                if (progress != null) progress("Extracting metadata from the same model/configuration...");
+                if (progress != null) progress("Extracting SolidWorks metadata first...");
                 // Pass detailed metadata progress through the combined runner without
                 // mutating the caller's options or dropping its existing callback.
                 var metadataOptions = new ExtractionOptions {
@@ -1557,6 +1544,26 @@ namespace CADVision.SolidWorks
                 var root = metadata.objects.Find(o => o.id == metadata.project.rootObjectId);
                 if (root == null || !String.Equals(root.sourceDocument, source, StringComparison.OrdinalIgnoreCase) || root.configuration != configuration)
                     throw new InvalidOperationException("Metadata source differs from the captured active CAD document; export was not published.");
+                // Save complete CAD metadata before requesting the visualization file.
+                // If GLB export fails, this JSON remains in the unpublished diagnostic folder.
+                metadata.extractionStatus["glb"] = "pending";
+                metadata.extractionStatus["exportPair"] = "pending_glb";
+                if (progress != null) progress("Writing metadata.json before GLB export...");
+                metadata.Write(Path.Combine(stage, "metadata.json"));
+                EnsureSameModel(app, model, source, configuration, updateStamp);
+                int warnings = 0;
+                string glbPath = Path.Combine(stage, "model.glb");
+                if (existingGlb == null)
+                {
+                    if (progress != null) progress("Metadata ready. Exporting native model.glb...");
+                    warnings = GlbExporter.Export(app, model, glbPath);
+                }
+                else
+                {
+                    if (progress != null) progress("Metadata ready. Copying supplied GLB unchanged...");
+                    CopySuppliedGlb(existingGlb, glbPath);
+                }
+                EnsureSameModel(app, model, source, configuration, updateStamp);
                 metadata.glbAsset = DescribeGlb(glbPath, existingGlb);
                 metadata.extractionStatus["glb"] = existingGlb == null ? "native_export_container_checked_mapping_unverified" : "supplied_glb_container_checked_correspondence_unverified";
                 // The native GLB is never rescaled to the JSON display units. GLB
@@ -1565,10 +1572,10 @@ namespace CADVision.SolidWorks
                 if (existingGlb != null) metadata.warnings.Add("Supplied GLB: matching CAD document, configuration, revision, scale and node mapping have not been verified. A matching filename is not proof of correspondence.");
                 if (existingGlb == null) metadata.notices.Add("Native GLB uses recorded IModelDoc2.SaveAs3 with Copy; this API does not expose a separate export warning code.");
                 if (warnings != 0) metadata.warnings.Add("Native GLB export warnings=" + warnings + " (" + (swFileSaveWarning_e)warnings + ").");
-                if (progress != null) progress("Preprocessing GLB hierarchy and transform mapping...");
-                GlbMapping.Apply(glbPath, metadata);
-                if (progress != null) progress("Mapping: " + metadata.mappingStatus);
-                if (progress != null) progress("Writing metadata.json (schema " + metadata.schemaVersion + ")...");
+                // Deliver the native/copied GLB unchanged. Optional node mapping remains
+                // available separately through --map-pair; it is not part of this export.
+                metadata.extractionStatus["glbMapping"] = "not_read";
+                if (progress != null) progress("Finalizing pair information in metadata.json (schema " + metadata.schemaVersion + ")...");
                 metadata.Write(Path.Combine(stage, "metadata.json"));
                 // Publish both files together, only after both exporters have succeeded.
                 Directory.Move(stage, destination);
