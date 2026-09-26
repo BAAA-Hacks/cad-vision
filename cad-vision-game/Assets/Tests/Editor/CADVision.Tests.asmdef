@@ -1,0 +1,8 @@
+{
+  "name": "CADVision.Tests",
+  "references": ["CADVision.Runtime"],
+  "overrideReferences": true,
+  "precompiledReferences": ["nunit.framework.dll", "Newtonsoft.Json.dll"],
+  "includePlatforms": ["Editor"],
+  "optionalUnityReferences": ["TestAssemblies"]
+}
