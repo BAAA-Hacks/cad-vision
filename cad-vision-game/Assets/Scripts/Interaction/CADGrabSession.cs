@@ -12,6 +12,9 @@ using UnityEngine;
 /// A session can hold several objects (a multi-selection) as one rigid group: each member
 /// keeps its own pose relative to the pointer, and the depth-assist shift computed at the
 /// held point (on the first member) is applied to every member.
+///
+/// A session can instead hold the whole model root (BeginModel): same math, applied through
+/// CADVisionManipulationService.SetModelWorldPose, held at the pressed point on the geometry.
 /// </summary>
 public sealed class CADGrabSession
 {
@@ -21,7 +24,8 @@ public sealed class CADGrabSession
 
     private sealed class Member
     {
-        public string Id;
+        public string Id;        // Null for the model root.
+        public bool IsModel;
         public Transform Transform;
         // Object pose relative to the pointer (the virtual pickup transform).
         public Vector3 HeldPositionOffset;    // In pointer space.
@@ -41,8 +45,17 @@ public sealed class CADGrabSession
     public Transform GrabbedTransform => members.Count > 0 ? members[0].Transform : null;
     public string GrabbedId => members.Count > 0 ? members[0].Id : null;
     public IEnumerable<string> GrabbedIds => members.Select(m => m.Id);
+    // Held CAD objects (empty for a model grab); two-pointer scaling scales exactly these.
+    public IEnumerable<CADObject> HeldObjects => members
+        .Where(m => !m.IsModel && m.Transform != null)
+        .Select(m => m.Transform.GetComponent<CADObject>())
+        .Where(o => o != null);
     public int Count => members.Count;
     public bool IsActive => members.Count > 0;
+    public bool IsModel => members.Count == 1 && members[0].IsModel;
+    // The held point in world space (follows the held object/model).
+    public Vector3 GrabPointWorld => IsActive ? members[0].Transform.TransformPoint(grabPointLocal) : default;
+    public string Description => standalone ? "<panel>" : IsModel ? "<model>" : GrabbedId;
 
     /// <summary>
     /// Starts holding the object. grabPointWorld overrides the held point (default: the
@@ -63,20 +76,9 @@ public sealed class CADGrabSession
         manipulationService = service;
         members.Clear();
 
-        // Only relative motion from here on, so nothing snaps.
-        Quaternion inversePointer = Quaternion.Inverse(pointer.rotation);
         foreach (CADObject cadObject in targets)
-        {
-            members.Add(new Member
-            {
-                Id = cadObject.id,
-                Transform = cadObject.transform,
-                HeldPositionOffset = inversePointer * (cadObject.transform.position - pointer.position),
-                HeldRotationOffset = inversePointer * cadObject.transform.rotation,
-            });
-        }
-        lastPointerPosition = pointer.position;
-        lastPointerRotation = pointer.rotation;
+            members.Add(new Member { Id = cadObject.id, Transform = cadObject.transform });
+        Rebase(pointer);
 
         CADObject target = targets[0];
         Transform targetTransform = target.transform;
@@ -101,21 +103,56 @@ public sealed class CADGrabSession
             $"{Vector3.Distance(pointer.position, grabPoint):F2} m";
     }
 
-    /// <summary>UI uses the identical pickup/reach math without entering the CAD ID registry.</summary>
+    /// <summary>
+    /// Starts holding the whole model root at grabPointWorld (the pressed hit point, or the
+    /// visible bounds center): the root's Transform is what moves, but the held point, not its
+    /// (possibly remote) CAD origin, anchors the pickup and the depth assist.
+    /// </summary>
+    public string BeginModel(CADVisionManipulationService service, Pose pointer, Vector3 grabPointWorld)
+    {
+        standalone = false;
+        manipulationService = service;
+        members.Clear();
+
+        Transform root = service.ModelRoot;
+        if (root == null)
+            return "no model root";
+
+        members.Add(new Member { IsModel = true, Transform = root });
+        Rebase(pointer);
+        grabPointLocal = root.InverseTransformPoint(grabPointWorld);
+        return $"holding model at {Vector3.Distance(pointer.position, grabPointWorld):F2} m";
+    }
+
+    /// <summary>UI shares CAD pickup/reach math without entering the CAD registry.</summary>
     public void BeginStandalone(Transform target, Pose pointer, Vector3 hitPoint)
     {
         End();
         if (target == null) return;
         standalone = true;
         manipulationService = null;
-        Quaternion inverse = Quaternion.Inverse(pointer.rotation);
-        members.Add(new Member
-        {
-            Transform = target,
-            HeldPositionOffset = inverse * (target.position - pointer.position),
-            HeldRotationOffset = inverse * target.rotation
-        });
+        members.Add(new Member { Transform = target });
+        Rebase(pointer);
         grabPointLocal = target.InverseTransformPoint(hitPoint);
+    }
+
+    /// <summary>
+    /// Re-captures every member's pose relative to the pointer without moving anything, e.g.
+    /// after something else (two-hand scaling) changed the held transforms, so the next Update
+    /// continues from the current pose instead of snapping back. The held point stays the same
+    /// point on the geometry.
+    /// </summary>
+    public void Rebase(Pose pointer)
+    {
+        Quaternion inversePointer = Quaternion.Inverse(pointer.rotation);
+        foreach (Member member in members)
+        {
+            if (member.Transform == null)
+                continue;
+            member.HeldPositionOffset = inversePointer * (member.Transform.position - pointer.position);
+            member.HeldRotationOffset = inversePointer * member.Transform.rotation;
+        }
+
         lastPointerPosition = pointer.position;
         lastPointerRotation = pointer.rotation;
     }
@@ -167,8 +204,12 @@ public sealed class CADGrabSession
         {
             Vector3 position = pointerPosition + pointerRotation * member.HeldPositionOffset;
             Quaternion rotation = pointerRotation * member.HeldRotationOffset;
-            if (standalone) member.Transform.SetPositionAndRotation(position, rotation);
-            else manipulationService.SetObjectWorldPose(member.Id, position, rotation);
+            if (standalone)
+                member.Transform.SetPositionAndRotation(position, rotation);
+            else if (member.IsModel)
+                manipulationService.SetModelWorldPose(position, rotation);
+            else
+                manipulationService.SetObjectWorldPose(member.Id, position, rotation);
         }
 
         lastPointerPosition = pointerPosition;
@@ -216,17 +257,22 @@ public sealed class CADGrabSession
     }
 
     // Every member must still exist, be visible and be selected; otherwise the grab ends.
+    // The model root must still be the service's root with model manipulation active.
     public bool IsStillGrabbable()
     {
         if (!IsActive) return false;
         foreach (Member member in members)
         {
-            if (member.Transform == null ||
-                !member.Transform.gameObject.activeInHierarchy ||
-                (!standalone && !manipulationService.IsSelected(member.Id)))
-            {
+            if (member.Transform == null || !member.Transform.gameObject.activeInHierarchy)
                 return false;
-            }
+
+            if (standalone) continue;
+
+            bool held = member.IsModel
+                ? manipulationService.IsModelManipulationActive && manipulationService.ModelRoot == member.Transform
+                : manipulationService.IsSelected(member.Id);
+            if (!held)
+                return false;
         }
 
         return true;

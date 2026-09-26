@@ -150,10 +150,14 @@ change; selection uses case-insensitive extensions and ignores `.meta` files.
 Enter Play Mode to load the pair automatically. No receiver upload or scene
 component setup is required. JSON must still follow the CAD metadata contract.
 
-Every player build validates the pair and bundles the raw files in StreamingAssets.
+The bundled design is optional: an absent or empty `Assets/CadFiles` folder allows
+Play Mode and player builds to start without a model. Load a design later through
+the local-load menu or a scene's configured receiver. An incomplete or ambiguous
+source pair still fails validation; remove both files to build without a design.
+When a pair is supplied, the player build validates and bundles it in StreamingAssets.
 The Quest reads these bundled files automatically at startup. Changing the files
 requires rebuilding/reinstalling the APK; this is not a live desktop-folder sync.
-Missing or duplicate files fail validation rather than selecting an arbitrary pair.
+Unavailable bundled files leave the runtime empty and available for later imports.
 
 ## Verification and remaining integration
 

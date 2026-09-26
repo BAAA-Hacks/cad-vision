@@ -22,6 +22,9 @@ using UnityEngine.UI;
 /// While the service's multi-select mode is active the same panel is re-laid-out as a
 /// selection menu (Done / Reset Selected / Isolate Selected / Show All / Clear Selection),
 /// anchored at the selected objects' combined visible bounds.
+///
+/// While whole-model manipulation mode is active it shows a minimal model menu (Done / Reset
+/// Model) at the model's visible bounds; it hides while the model is being moved or scaled.
 /// </summary>
 [DisallowMultipleComponent]
 [RequireComponent(typeof(CADVisionManipulationService))]
@@ -32,6 +35,7 @@ public class CADContextMenu : MonoBehaviour
         EnterAssembly, ExitAssembly, Isolate, ShowAll, DetachOrReattach, ResetObject, ResetAssembly,
         ResetModel, MultiSelect, Close,
         Done, ResetSelected, IsolateSelected, ClearSelection, EditSelection,
+        ManipulateModel, ModelDone,
     }
 
     [Header("Placement")]
@@ -63,21 +67,27 @@ public class CADContextMenu : MonoBehaviour
     {
         MenuAction.EnterAssembly, MenuAction.ExitAssembly, MenuAction.Isolate, MenuAction.ShowAll,
         MenuAction.DetachOrReattach, MenuAction.ResetObject, MenuAction.ResetAssembly,
-        MenuAction.ResetModel, MenuAction.MultiSelect, MenuAction.Close,
+        MenuAction.ResetModel, MenuAction.ManipulateModel, MenuAction.MultiSelect, MenuAction.Close,
     };
 
     // Selection menu (multi-select mode).
     private static readonly MenuAction[] MultiLayout =
     {
         MenuAction.Done, MenuAction.ResetSelected, MenuAction.IsolateSelected, MenuAction.ShowAll,
-        MenuAction.ClearSelection,
+        MenuAction.ManipulateModel, MenuAction.ClearSelection,
     };
 
     // Selection menu outside multi-select (clicked an object that is part of a multi-selection).
     private static readonly MenuAction[] GroupLayout =
     {
         MenuAction.EditSelection, MenuAction.ResetSelected, MenuAction.IsolateSelected,
-        MenuAction.ShowAll, MenuAction.ClearSelection, MenuAction.Close,
+        MenuAction.ShowAll, MenuAction.ManipulateModel, MenuAction.ClearSelection, MenuAction.Close,
+    };
+
+    // Model menu (whole-model manipulation mode).
+    private static readonly MenuAction[] ModelLayout =
+    {
+        MenuAction.ModelDone, MenuAction.ResetModel,
     };
 
     private static readonly Dictionary<MenuAction, string> Labels = new()
@@ -97,6 +107,8 @@ public class CADContextMenu : MonoBehaviour
         { MenuAction.IsolateSelected, "Isolate Selected" },
         { MenuAction.ClearSelection, "Clear Selection" },
         { MenuAction.EditSelection, "Edit Selection" },
+        { MenuAction.ManipulateModel, "Manipulate Model" },
+        { MenuAction.ModelDone, "Done" },
     };
 
     private CADVisionManipulationService manipulationService;
@@ -109,6 +121,7 @@ public class CADContextMenu : MonoBehaviour
     private Text titleText;
     private bool multiMode;          // Panel shows the multi-select (picking) menu.
     private bool groupMode;          // Panel shows the selection menu for an existing multi-selection.
+    private bool modelMode;          // Panel shows the model menu (whole-model manipulation).
     private string multiSignature;   // Selected IDs the selection menu was last placed for.
     private RayInteractable panelInteractable;
     private readonly Dictionary<MenuAction, Button> buttons = new();
@@ -155,8 +168,8 @@ public class CADContextMenu : MonoBehaviour
 
     private void Open(CADContextMenuRequest request)
     {
-        if (manipulationService.IsMultiSelectActive)
-            return; // The selection menu is shown instead.
+        if (manipulationService.IsMultiSelectActive || manipulationService.IsModelManipulationActive)
+            return; // The selection / model menu is shown instead.
 
         CADObject selected = manipulationService.GetSelectedObjects()
             .FirstOrDefault(o => o.id == request.TargetId);
@@ -173,6 +186,7 @@ public class CADContextMenu : MonoBehaviour
         // A newer request replaces the current menu.
         multiMode = false;
         groupMode = false;
+        modelMode = false;
         ApplyLayout(SingleLayout);
         targetId = request.TargetId;
         target = selected;
@@ -203,6 +217,7 @@ public class CADContextMenu : MonoBehaviour
         target = null;
         multiMode = false;
         groupMode = false;
+        modelMode = false;
         multiSignature = null;
     }
 
@@ -210,6 +225,7 @@ public class CADContextMenu : MonoBehaviour
     {
         multiMode = false;
         groupMode = true;
+        modelMode = false;
         targetId = request.TargetId;
         target = null;
         ApplyLayout(GroupLayout);
@@ -235,12 +251,30 @@ public class CADContextMenu : MonoBehaviour
 
     private bool IsMoving() =>
         (pointerInteraction != null && pointerInteraction.IsManipulating) ||
-        (gripFallback != null && gripFallback.IsGrabbing);
+        (gripFallback != null && (gripFallback.IsGrabbing || gripFallback.IsScalingModel));
+
+    private void OpenModel()
+    {
+        multiMode = false;
+        groupMode = false;
+        modelMode = true;
+        multiSignature = null;
+        targetId = null;
+        target = null;
+        ApplyLayout(ModelLayout);
+        titleText.text = "Manipulate Model";
+        PlaceModel();
+        RefreshButtons();
+        panelRoot.SetActive(true);
+        panelInteractable.enabled = true;
+        Debug.Log("[CADContextMenu] Opened model menu.");
+    }
 
     private void OpenMulti()
     {
         multiMode = true;
         groupMode = false;
+        modelMode = false;
         multiSignature = null;
         targetId = null;
         target = null;
@@ -269,6 +303,28 @@ public class CADContextMenu : MonoBehaviour
 
     private void LateUpdate()
     {
+        // Model mode drives the model menu for as long as it lasts, hidden while the model is
+        // moved or scaled (it reappears at the model's new position).
+        if (manipulationService.IsModelManipulationActive)
+        {
+            if (IsMoving())
+            {
+                if (IsOpen)
+                    Hide("model is being moved");
+            }
+            else if (!IsOpen || !modelMode)
+                OpenModel();
+            else
+                RefaceIfHeadMoved();
+            return;
+        }
+
+        if (IsOpen && modelMode)
+        {
+            Hide("model manipulation ended");
+            return;
+        }
+
         // Multi-select mode drives the picking menu: shown for as long as the mode lasts, except
         // while the group is being dragged (it reappears at the group's new position).
         if (manipulationService.IsMultiSelectActive)
@@ -394,6 +450,18 @@ public class CADContextMenu : MonoBehaviour
             PlaceAt(head.position + Vector3.ProjectOnPlane(head.forward, Vector3.up).normalized * 0.8f);
     }
 
+    // Model menu: the point of the model's visible bounds nearest the headset (never the
+    // root's CAD origin); in front of the headset if there is no geometry or it surrounds it.
+    private void PlaceModel()
+    {
+        Transform head = Head();
+        bool hasBounds = manipulationService.TryGetModelBounds(out Bounds bounds);
+        if (hasBounds && (head == null || !bounds.Contains(head.position)))
+            PlaceAt(head != null ? bounds.ClosestPoint(head.position) : bounds.center);
+        else if (head != null)
+            PlaceAt(head.position + Vector3.ProjectOnPlane(head.forward, Vector3.up).normalized * 0.8f);
+    }
+
     private void PlaceAt(Vector3 anchor)
     {
         Transform head = Head();
@@ -431,6 +499,14 @@ public class CADContextMenu : MonoBehaviour
 
     private void RefreshButtons()
     {
+        SetInteractable(MenuAction.ManipulateModel, manipulationService.ModelRoot != null);
+        if (modelMode)
+        {
+            SetInteractable(MenuAction.ModelDone, true);
+            SetInteractable(MenuAction.ResetModel, true);
+            return;
+        }
+
         if (multiMode || groupMode)
         {
             bool any = manipulationService.GetSelectedObjects().Any();
@@ -491,8 +567,9 @@ public class CADContextMenu : MonoBehaviour
 
         // Object menu: every action closes it (most change selection, scope or pose anyway).
         // Selection menu: stays open for Reset/Isolate/Show All; Done and Clear end the mode.
-        bool keepOpen = multiMode && (action == MenuAction.ResetSelected ||
-            action == MenuAction.IsolateSelected || action == MenuAction.ShowAll);
+        bool keepOpen = (multiMode && (action == MenuAction.ResetSelected ||
+            action == MenuAction.IsolateSelected || action == MenuAction.ShowAll)) ||
+            (modelMode && action == MenuAction.ResetModel);
         if (!keepOpen)
             Hide($"action {action}");
 
@@ -518,7 +595,13 @@ public class CADContextMenu : MonoBehaviour
             case MenuAction.IsolateSelected: manipulationService.IsolateSelected(); break;
             case MenuAction.ClearSelection: manipulationService.EndMultiSelect(clearSelection: true); break;
             case MenuAction.EditSelection: manipulationService.BeginMultiSelect(); break; // Picking menu opens next frame.
+            case MenuAction.ManipulateModel: manipulationService.BeginModelManipulation(); break; // Model menu opens next frame.
+            case MenuAction.ModelDone: manipulationService.EndModelManipulation(); break;
         }
+
+        // The model is back at its review pose: follow it.
+        if (keepOpen && modelMode && action == MenuAction.ResetModel)
+            PlaceModel();
     }
 
     // ---------------- Construction ----------------

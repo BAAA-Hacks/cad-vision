@@ -25,6 +25,39 @@ namespace Desktop.Configuration
 
         public static GeminiSettings Load(string directory)
         {
+            var values = ReadValues(directory);
+            string Get(string name, string fallback = "") => Environment.GetEnvironmentVariable(name)
+                ?? (values.TryGetValue(name, out string? value) ? value : fallback);
+            string key = Get("GEMINI_API_KEY").Trim();
+            if (key.Length == 0) key = Get("GOOGLE_API_KEY").Trim();
+            int Number(string name, int fallback)
+            {
+                if (!int.TryParse(Get(name, fallback.ToString()), out int result) || result <= 0)
+                    throw new ArgumentException(name + " must be a positive integer.");
+                return result;
+            }
+            string promptPath = Path.Combine(directory, "prompts", "system.md");
+            if (!File.Exists(promptPath)) throw new ArgumentException("Missing prompts/system.md in the CADEN configuration directory.");
+            return new GeminiSettings(key, Get("GEMINI_MODEL", "gemini-flash-latest").Trim(), File.ReadAllText(promptPath),
+                Number("GEMINI_TIMEOUT_SECONDS", 60), Number("GEMINI_MAX_OUTPUT_TOKENS", 4096),
+                Number("GEMINI_MAX_TOOL_ROUNDS", 12), Number("GEMINI_MAX_TOOL_CALLS", 48));
+        }
+
+        public static Core.Speech.ElevenLabsSettings? LoadSpeech(string directory)
+        {
+            var values = ReadValues(directory);
+            string Get(string name, string fallback = "") => Environment.GetEnvironmentVariable(name)
+                ?? (values.TryGetValue(name, out string? value) ? value : fallback);
+            if (!bool.TryParse(Get("ELEVENLABS_ENABLED", "false"), out bool enabled))
+                throw new ArgumentException("ELEVENLABS_ENABLED must be true or false.");
+            if (!enabled) return null;
+            if (!int.TryParse(Get("ELEVENLABS_TIMEOUT_SECONDS", "30"), out int timeout))
+                throw new ArgumentException("ELEVENLABS_TIMEOUT_SECONDS must be an integer.");
+            return new Core.Speech.ElevenLabsSettings(Get("ELEVENLABS_API_KEY"), Get("ELEVENLABS_VOICE_ID"), Get("ELEVENLABS_MODEL", "eleven_flash_v2_5"), timeout);
+        }
+
+        private static Dictionary<string, string> ReadValues(string directory)
+        {
             var values = new Dictionary<string, string>(StringComparer.Ordinal);
             string envPath = Path.Combine(directory, ".env");
             if (File.Exists(envPath))
@@ -55,21 +88,7 @@ namespace Desktop.Configuration
                     values[name] = value;
                 }
             }
-            string Get(string name, string fallback = "") => Environment.GetEnvironmentVariable(name)
-                ?? (values.TryGetValue(name, out string? value) ? value : fallback);
-            string key = Get("GEMINI_API_KEY").Trim();
-            if (key.Length == 0) key = Get("GOOGLE_API_KEY").Trim();
-            int Number(string name, int fallback)
-            {
-                if (!int.TryParse(Get(name, fallback.ToString()), out int result) || result <= 0)
-                    throw new ArgumentException(name + " must be a positive integer.");
-                return result;
-            }
-            string promptPath = Path.Combine(directory, "prompts", "system.md");
-            if (!File.Exists(promptPath)) throw new ArgumentException("Missing prompts/system.md in the CADEN configuration directory.");
-            return new GeminiSettings(key, Get("GEMINI_MODEL", "gemini-flash-latest").Trim(), File.ReadAllText(promptPath),
-                Number("GEMINI_TIMEOUT_SECONDS", 60), Number("GEMINI_MAX_OUTPUT_TOKENS", 4096),
-                Number("GEMINI_MAX_TOOL_ROUNDS", 12), Number("GEMINI_MAX_TOOL_CALLS", 48));
+            return values;
         }
     }
 }

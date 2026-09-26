@@ -7,6 +7,12 @@ public class CADVisionManipulationService : MonoBehaviour
     [Header("Model")]
     [SerializeField] private Transform modelRoot;
 
+    [Header("Whole-Model Scale")]
+    [Tooltip("Smallest model scale relative to the scale captured when the model was adopted.")]
+    [SerializeField, Min(0.001f)] private float minModelScaleRatio = 0.05f;
+    [Tooltip("Largest model scale relative to the scale captured when the model was adopted.")]
+    [SerializeField, Min(1f)] private float maxModelScaleRatio = 20f;
+
     [Header("Highlighting")]
     [SerializeField] private Color highlightColor = Color.yellow;
 
@@ -215,9 +221,10 @@ public class CADVisionManipulationService : MonoBehaviour
     public void ReplaceImportedModel(Transform root, IReadOnlyDictionary<string, GameObject> importedObjects)
     {
         // Selection, highlights and scope may reference the outgoing model; this also
-        // ends any active grab and multi-select.
+        // ends any active grab, multi-select and whole-model manipulation.
         ClearSelection();
         EndMultiSelect();
+        EndModelManipulation();
 
         foreach (string id in importedIds)
         {
@@ -402,6 +409,7 @@ public class CADVisionManipulationService : MonoBehaviour
         if (IsMultiSelectActive)
             return;
 
+        EndModelManipulation(); // One mode at a time; picking needs ordinary pointer routing.
         IsMultiSelectActive = true;
         Debug.Log($"Multi-select started ({selectedIds.Count} selected).");
     }
@@ -1077,5 +1085,99 @@ public class CADVisionManipulationService : MonoBehaviour
         modelRoot.localPosition = originalModelPosition;
         modelRoot.localRotation = originalModelRotation;
         modelRoot.localScale = originalModelScale;
+    }
+
+    // -------------------------
+    // Whole-Model Manipulation Mode
+    // -------------------------
+
+    // While active, pointer drags on any CAD geometry move the model root instead of objects.
+    // Selection, multi-selection, scope and detach state are left untouched.
+    public bool IsModelManipulationActive { get; private set; }
+
+    // Read-only for adapters' pivot math (hit point → root-local). Change it only through
+    // SetModelWorldPose / SetModelScaleAroundPoint / the other whole-model methods.
+    public Transform ModelRoot => modelRoot;
+
+    public bool BeginModelManipulation()
+    {
+        if (modelRoot == null)
+        {
+            Debug.LogWarning("Cannot manipulate the model: no model root.");
+            return false;
+        }
+
+        if (IsModelManipulationActive)
+            return true;
+
+        EndMultiSelect(); // Keeps the selection; ends picking.
+        IsModelManipulationActive = true;
+        Debug.Log($"Model manipulation started ({selectedIds.Count} selected).");
+        return true;
+    }
+
+    public void EndModelManipulation()
+    {
+        if (!IsModelManipulationActive)
+            return;
+
+        IsModelManipulationActive = false;
+        Debug.Log("Model manipulation ended.");
+    }
+
+    // World-space pose of the model root; every CAD object (detached ones included, which
+    // live under it) follows rigidly. No CAD child transform is changed.
+    public void SetModelWorldPose(Vector3 position, Quaternion rotation)
+    {
+        if (modelRoot != null)
+            modelRoot.SetPositionAndRotation(position, rotation);
+    }
+
+    // Current uniform scale relative to the scale captured when the model was adopted.
+    public float ModelScaleRatio =>
+        modelRoot == null || Mathf.Approximately(originalModelScale.x, 0f)
+            ? 1f
+            : modelRoot.localScale.x / originalModelScale.x;
+
+    /// <summary>
+    /// Uniformly scales the model root to scaleRatio × its adopted scale (clamped to the
+    /// configured min/max) while keeping pivotLocal (a root-local point, e.g. a hit point on
+    /// visible geometry) at pivotWorld, so a remote CAD origin never acts as the pivot.
+    /// Returns the ratio actually applied.
+    /// </summary>
+    public float SetModelScaleAroundPoint(float scaleRatio, Vector3 pivotLocal, Vector3 pivotWorld)
+    {
+        if (modelRoot == null || !float.IsFinite(scaleRatio) || scaleRatio <= 0f)
+            return ModelScaleRatio;
+
+        float ratio = Mathf.Clamp(scaleRatio, minModelScaleRatio, Mathf.Max(minModelScaleRatio, maxModelScaleRatio));
+        modelRoot.localScale = originalModelScale * ratio;
+        modelRoot.position += pivotWorld - modelRoot.TransformPoint(pivotLocal);
+        return ratio;
+    }
+
+    // World bounds of the model's visible geometry (enabled renderers, overlays excluded).
+    public bool TryGetModelBounds(out Bounds bounds)
+    {
+        bounds = default;
+        if (modelRoot == null)
+            return false;
+
+        bool hasBounds = false;
+        foreach (Renderer renderer in modelRoot.GetComponentsInChildren<Renderer>())
+        {
+            if (!renderer.enabled || renderer.TryGetComponent(out CADVisualOverlay _))
+                continue;
+
+            if (hasBounds)
+                bounds.Encapsulate(renderer.bounds);
+            else
+            {
+                bounds = renderer.bounds;
+                hasBounds = true;
+            }
+        }
+
+        return hasBounds;
     }
 }
