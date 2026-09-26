@@ -5,6 +5,9 @@ using Newtonsoft.Json.Linq;
 using Core.Tools.Query;
 using Core.Primitives.Operations.Project;
 
+if (args.Contains("--speech")) { await SpeechChecks.RunAsync(); return; }
+if (args.Contains("--streaming")) { await StreamingChecks.RunAsync(); return; }
+
 if (args.Length == 3 && args[0] == "--benchmark") { await PerformanceBenchmarks.Run(args[1], args[2]); return; }
 if (args.Contains("--assess-orchestration"))
 {
@@ -191,6 +194,8 @@ await ActiveScopeChecks.RunAsync();
 await ConnectionQueryChecks.RunAsync();
 await PrecomputeChecks.RunAsync();
 await TokenUsageChecks.RunAsync();
+await SpeechChecks.RunAsync();
+await StreamingChecks.RunAsync();
 await MechanicalQueryChecks.RunAsync();
 await Schema21Checks.RunAsync();
 await DiagnosticChecks.RunAsync();

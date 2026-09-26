@@ -13,7 +13,8 @@ namespace CADVision
     {
         public Transform ReviewOrigin;
         [Min(0.1f)] public float ReviewDistance = 1.2f;
-        public bool FitForReview = true;
+        [Tooltip("Optional presentation scaling. Leave disabled for physical size: 1 Unity unit = 1 metre.")]
+        public bool FitForReview = false;
         [Min(0.01f)] public float ReviewSize = 1f;
         public bool CreateSelectionColliders = true;
         public bool IsLoading { get; private set; }

@@ -1,0 +1,6 @@
+{
+  "name": "CADEN.Hosting",
+  "references": ["CADEN.Core"],
+  "autoReferenced": true,
+  "noEngineReferences": true
+}
