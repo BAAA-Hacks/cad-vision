@@ -44,6 +44,10 @@ public class CADXRDeselect : MonoBehaviour
 
     private void Update()
     {
+        // CADPointerInteraction handles empty clicks (and keeps selection on UI) when present.
+        if (CADPointerInteraction.Active)
+            return;
+
         if (!OVRInput.GetDown(OVRInput.Button.PrimaryIndexTrigger, controller))
             return;
 

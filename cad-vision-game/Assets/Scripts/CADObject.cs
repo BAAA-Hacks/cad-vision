@@ -8,6 +8,11 @@ public class CADObject : MonoBehaviour
     public Quaternion OriginalRotation { get; private set; }
     public Vector3 OriginalScale { get; private set; }
 
+    // Imported/scene Transform parent and sibling slot. Stays fixed while the object is
+    // temporarily detached, so reset/reattach can restore the original hierarchy.
+    public Transform OriginalParent { get; private set; }
+    public int OriginalSiblingIndex { get; private set; }
+
     private bool originalCaptured;
 
     void Awake()
@@ -17,9 +22,11 @@ public class CADObject : MonoBehaviour
             CaptureOriginalTransform();
     }
 
-    // Records the current local transform as the ResetTransform target.
+    // Records the current parent and local transform as the reset/reattach target.
     public void CaptureOriginalTransform()
     {
+        OriginalParent = transform.parent;
+        OriginalSiblingIndex = transform.GetSiblingIndex();
         OriginalPosition = transform.localPosition;
         OriginalRotation = transform.localRotation;
         OriginalScale = transform.localScale;

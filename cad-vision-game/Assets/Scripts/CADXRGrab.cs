@@ -2,6 +2,10 @@ using System.Linq;
 using UnityEngine;
 
 /// <summary>
+/// TEMP debug fallback: right-controller grip grabs the currently selected CAD object;
+/// releasing grip drops it. Normal use is trigger press-and-drag via CADPointerInteraction.
+/// Uses the same CADGrabSession math (rigid pickup, depth-only reach assist), driven by the
+/// right controller anchor. All pose changes go through the service.
 /// Right-controller grip grabs the currently selected CAD object; releasing grip drops it.
 /// Holding both controller grips scales around the selected object's visible center.
 /// Selection stays with the trigger/ray flow. All pose changes go through the service.
@@ -46,17 +50,10 @@ public class CADXRGrab : MonoBehaviour
     private bool scaleCancelledUntilRelease;
 
     private CADVisionManipulationService manipulationService;
+    private CADPointerInteraction pointerInteraction;
+    private readonly CADGrabSession session = new CADGrabSession();
 
-    private string grabbedId;
-    private Transform grabbedTransform;
-    private Vector3 lastControllerPosition;
-    private Quaternion lastControllerRotation;
-    // The point being held (selection hit point, or visual center fallback), in the grabbed
-    // object's local space. Reach assist measures to this, never to the Transform origin.
-    private Vector3 grabPointLocal;
-    // Object pose relative to the controller (the virtual pickup transform).
-    private Vector3 heldPositionOffset;    // In controller space.
-    private Quaternion heldRotationOffset; // In controller space.
+    public bool IsGrabbing => session.IsActive;
 
     // TEMP grab diagnostics: last logged grip state, so only transitions are logged.
     private bool loggedGripHeld;
@@ -66,6 +63,7 @@ public class CADXRGrab : MonoBehaviour
     private void Start()
     {
         manipulationService = GetComponent<CADVisionManipulationService>();
+        pointerInteraction = GetComponent<CADPointerInteraction>();
 
         if (controllerAnchor == null || leftControllerAnchor == null)
         {
@@ -94,58 +92,24 @@ public class CADXRGrab : MonoBehaviour
         if (controllerAnchor == null)
             return;
 
+        if (session.IsActive)
         if (UpdateTwoHandScale())
             return;
 
         if (grabbedId != null)
         {
-            if (!OVRInput.Get(OVRInput.Button.PrimaryHandTrigger, controller) ||
-                !IsStillGrabbable())
+            session.ReachDistance = reachDistance;
+            session.MaxExtraGain = maxExtraGain;
+            session.DecayRate = decayRate;
+
+            if (!OVRInput.Get(OVRInput.Button.PrimaryHandTrigger, controller))
             {
-                Release(OVRInput.Get(OVRInput.Button.PrimaryHandTrigger, controller)
-                    ? "object no longer selected or active"
-                    : "grip released");
+                Release("grip released");
                 return;
             }
 
-            Vector3 controllerPosition = controllerAnchor.position;
-            Quaternion controllerRotation = controllerAnchor.rotation;
-
-            // Depth assist: the rigid pickup already moves the object 1:1 with the controller
-            // (lateral, vertical and depth) and swings it at constant distance on rotation.
-            // Beyond reach, only the depth component of the controller's movement (along the
-            // controller → grab point axis) additionally lengthens or shortens the hold distance.
-            // Measured to the held point, not the Transform origin: imported CAD origins can be
-            // far from the visible geometry.
-            Vector3 grabPoint = grabbedTransform.TransformPoint(grabPointLocal);
-            // Controller space as of the pose the object was placed with (last frame), i.e. the
-            // grab point's rigid offset.
-            Vector3 grabOffset = Quaternion.Inverse(lastControllerRotation) *
-                (grabPoint - lastControllerPosition);
-            float holdDistance = grabOffset.magnitude;
-            float gain = TranslationGain(holdDistance);
-            if (gain > 1f && holdDistance > 0f)
-            {
-                Vector3 holdAxis = grabOffset / holdDistance; // Controller space.
-                Vector3 localDelta = Quaternion.Inverse(controllerRotation) *
-                    (controllerPosition - lastControllerPosition);
-                float depthDelta = Vector3.Dot(localDelta, holdAxis);
-
-                // Assist never pulls the grab point inside reach; within reach it is rigid 1:1.
-                float assistedDistance = Mathf.Max(
-                    reachDistance, holdDistance + (gain - 1f) * depthDelta);
-
-                // Translate the whole held pose along the axis; origin and geometry move together.
-                heldPositionOffset += holdAxis * (assistedDistance - holdDistance);
-            }
-
-            Vector3 targetPosition = controllerPosition + controllerRotation * heldPositionOffset;
-            Quaternion targetRotation = controllerRotation * heldRotationOffset;
-
-            manipulationService.SetObjectWorldPose(grabbedId, targetPosition, targetRotation);
-
-            lastControllerPosition = controllerPosition;
-            lastControllerRotation = controllerRotation;
+            if (!session.Update(new Pose(controllerAnchor.position, controllerAnchor.rotation)))
+                Release("object no longer selected or active");
         }
         else if (OVRInput.GetDown(OVRInput.Button.PrimaryHandTrigger, controller))
         {
@@ -224,6 +188,12 @@ public class CADXRGrab : MonoBehaviour
 
     private void TryGrab()
     {
+        if (pointerInteraction != null && pointerInteraction.IsManipulating)
+        {
+            Debug.Log("[CADXRGrab] Grab aborted: trigger-drag manipulation is active.");
+            return;
+        }
+
         CADObject selected = manipulationService.GetSelectedObjects().FirstOrDefault();
         if (selected == null)
         {
@@ -237,76 +207,20 @@ public class CADXRGrab : MonoBehaviour
             return;
         }
 
-        // Only relative motion from here on, so the object does not snap.
-        Transform target = selected.transform;
-        Quaternion inverseController = Quaternion.Inverse(controllerAnchor.rotation);
-        heldPositionOffset = inverseController * (target.position - controllerAnchor.position);
-        heldRotationOffset = inverseController * target.rotation;
-        lastControllerPosition = controllerAnchor.position;
-        lastControllerRotation = controllerAnchor.rotation;
-
-        // Hold the point the user picked; direct selections (CADEN, debug) have none.
-        bool fromHit = manipulationService.TryGetSelectionPoint(out Vector3 grabPoint);
-        if (!fromHit)
-            grabPoint = VisualCenter(selected);
-        grabPointLocal = target.InverseTransformPoint(grabPoint);
-
-        grabbedId = selected.id;
-        grabbedTransform = selected.transform;
-        Debug.Log($"[CADXRGrab] Grab started: '{grabbedId}' ({selected.name}); holding " +
-            $"{(fromHit ? "selection hit point" : "visual center")} at " +
-            $"{Vector3.Distance(controllerAnchor.position, grabPoint):F2} m.");
-    }
-
-    // World center of the object's active, enabled renderers; its origin if it has none.
-    private static Vector3 VisualCenter(CADObject cadObject)
-    {
-        bool hasBounds = false;
-        Bounds bounds = default;
-
-        foreach (Renderer renderer in cadObject.GetComponentsInChildren<Renderer>())
-        {
-            if (!renderer.enabled)
-                continue;
-
-            if (hasBounds)
-            {
-                bounds.Encapsulate(renderer.bounds);
-            }
-            else
-            {
-                bounds = renderer.bounds;
-                hasBounds = true;
-            }
-        }
-
-        return hasBounds ? bounds.center : cadObject.transform.position;
-    }
-
-    // Exactly 1 within reach; beyond it, a bounded exponential rise toward 1 + maxExtraGain.
-    // Recomputed every frame, so bringing the object back within reach restores exact 1:1.
-    private float TranslationGain(float distance)
-    {
-        if (distance <= reachDistance)
-            return 1f;
-
-        float excessDistance = distance - reachDistance;
-        return 1f + maxExtraGain * (1f - Mathf.Exp(-decayRate * excessDistance));
-    }
-
-    // Selecting something else (or hiding the object) mid-grab ends the grab.
-    private bool IsStillGrabbable()
-    {
-        return grabbedTransform != null &&
-            grabbedTransform.gameObject.activeInHierarchy &&
-            manipulationService.GetSelectedObjects().Any(o => o.id == grabbedId);
+        session.ReachDistance = reachDistance;
+        session.MaxExtraGain = maxExtraGain;
+        session.DecayRate = decayRate;
+        string info = session.Begin(manipulationService, selected,
+            new Pose(controllerAnchor.position, controllerAnchor.rotation));
+        Debug.Log($"[CADXRGrab] Grab started: '{selected.id}' ({selected.name}); {info}.");
     }
 
     private void Release(string reason)
     {
-        if (grabbedId != null)
-            Debug.Log($"[CADXRGrab] Grab ended: '{grabbedId}' ({reason}).");
+        if (session.IsActive)
+            Debug.Log($"[CADXRGrab] Grab ended: '{session.GrabbedId}' ({reason}).");
 
+        session.End();
         scaling = false;
         grabbedId = null;
         grabbedTransform = null;

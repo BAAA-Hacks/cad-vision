@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+.env
+.streamlit/secrets.toml
+.tools/
+**/bin/
+**/obj/
+!*.csproj
+data/metadata.json
+data/issues.caden.json*
+data/memory.caden.json*
