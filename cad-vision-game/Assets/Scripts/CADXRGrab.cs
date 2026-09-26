@@ -6,7 +6,7 @@ using UnityEngine;
 /// Selection stays with the trigger/ray flow. All pose changes go through the service.
 /// Behaves like a conventional VR pickup: the object keeps its grab-start position and
 /// rotation relative to the controller, so it moves and rotates rigidly with the hand.
-/// Beyond reachDistance, only controller movement toward/away from the object is amplified
+/// Beyond reachDistance, only controller movement toward/away from the held point is amplified
 /// (it lengthens or shortens the hold distance); lateral movement and rotation stay 1:1.
 /// </summary>
 [DisallowMultipleComponent]
@@ -19,7 +19,7 @@ public class CADXRGrab : MonoBehaviour
     [SerializeField] private OVRInput.Controller controller = OVRInput.Controller.RTouch;
 
     [Header("Translation Gain")]
-    [Tooltip("Controller-to-object distance (m) within which the pickup is exactly 1:1.")]
+    [Tooltip("Controller-to-grab-point distance (m) within which the pickup is exactly 1:1.")]
     [SerializeField, Min(0f)] private float reachDistance = 0.5f;
 
     [Tooltip("Gain approaches 1 + this value as the object moves far beyond reach.")]
@@ -33,6 +33,10 @@ public class CADXRGrab : MonoBehaviour
     private string grabbedId;
     private Transform grabbedTransform;
     private Vector3 lastControllerPosition;
+    private Quaternion lastControllerRotation;
+    // The point being held (selection hit point, or visual center fallback), in the grabbed
+    // object's local space. Reach assist measures to this, never to the Transform origin.
+    private Vector3 grabPointLocal;
     // Object pose relative to the controller (the virtual pickup transform).
     private Vector3 heldPositionOffset;    // In controller space.
     private Quaternion heldRotationOffset; // In controller space.
@@ -87,20 +91,29 @@ public class CADXRGrab : MonoBehaviour
             // Depth assist: the rigid pickup already moves the object 1:1 with the controller
             // (lateral, vertical and depth) and swings it at constant distance on rotation.
             // Beyond reach, only the depth component of the controller's movement (along the
-            // controller → object axis) additionally lengthens or shortens the hold distance.
-            float holdDistance = heldPositionOffset.magnitude;
+            // controller → grab point axis) additionally lengthens or shortens the hold distance.
+            // Measured to the held point, not the Transform origin: imported CAD origins can be
+            // far from the visible geometry.
+            Vector3 grabPoint = grabbedTransform.TransformPoint(grabPointLocal);
+            // Controller space as of the pose the object was placed with (last frame), i.e. the
+            // grab point's rigid offset.
+            Vector3 grabOffset = Quaternion.Inverse(lastControllerRotation) *
+                (grabPoint - lastControllerPosition);
+            float holdDistance = grabOffset.magnitude;
             float gain = TranslationGain(holdDistance);
-            if (gain > 1f)
+            if (gain > 1f && holdDistance > 0f)
             {
-                Vector3 holdAxis = heldPositionOffset / holdDistance; // Controller space.
+                Vector3 holdAxis = grabOffset / holdDistance; // Controller space.
                 Vector3 localDelta = Quaternion.Inverse(controllerRotation) *
                     (controllerPosition - lastControllerPosition);
                 float depthDelta = Vector3.Dot(localDelta, holdAxis);
 
-                // Assist never pulls the object inside reach; within reach it is rigid 1:1.
+                // Assist never pulls the grab point inside reach; within reach it is rigid 1:1.
                 float assistedDistance = Mathf.Max(
                     reachDistance, holdDistance + (gain - 1f) * depthDelta);
-                heldPositionOffset = holdAxis * assistedDistance;
+
+                // Translate the whole held pose along the axis; origin and geometry move together.
+                heldPositionOffset += holdAxis * (assistedDistance - holdDistance);
             }
 
             Vector3 targetPosition = controllerPosition + controllerRotation * heldPositionOffset;
@@ -109,6 +122,7 @@ public class CADXRGrab : MonoBehaviour
             manipulationService.SetObjectWorldPose(grabbedId, targetPosition, targetRotation);
 
             lastControllerPosition = controllerPosition;
+            lastControllerRotation = controllerRotation;
         }
         else if (OVRInput.GetDown(OVRInput.Button.PrimaryHandTrigger, controller))
         {
@@ -156,10 +170,44 @@ public class CADXRGrab : MonoBehaviour
         heldPositionOffset = inverseController * (target.position - controllerAnchor.position);
         heldRotationOffset = inverseController * target.rotation;
         lastControllerPosition = controllerAnchor.position;
+        lastControllerRotation = controllerAnchor.rotation;
+
+        // Hold the point the user picked; direct selections (CADEN, debug) have none.
+        bool fromHit = manipulationService.TryGetSelectionPoint(out Vector3 grabPoint);
+        if (!fromHit)
+            grabPoint = VisualCenter(selected);
+        grabPointLocal = target.InverseTransformPoint(grabPoint);
 
         grabbedId = selected.id;
         grabbedTransform = selected.transform;
-        Debug.Log($"[CADXRGrab] Grab started: '{grabbedId}' ({selected.name}).");
+        Debug.Log($"[CADXRGrab] Grab started: '{grabbedId}' ({selected.name}); holding " +
+            $"{(fromHit ? "selection hit point" : "visual center")} at " +
+            $"{Vector3.Distance(controllerAnchor.position, grabPoint):F2} m.");
+    }
+
+    // World center of the object's active, enabled renderers; its origin if it has none.
+    private static Vector3 VisualCenter(CADObject cadObject)
+    {
+        bool hasBounds = false;
+        Bounds bounds = default;
+
+        foreach (Renderer renderer in cadObject.GetComponentsInChildren<Renderer>())
+        {
+            if (!renderer.enabled)
+                continue;
+
+            if (hasBounds)
+            {
+                bounds.Encapsulate(renderer.bounds);
+            }
+            else
+            {
+                bounds = renderer.bounds;
+                hasBounds = true;
+            }
+        }
+
+        return hasBounds ? bounds.center : cadObject.transform.position;
     }
 
     // Exactly 1 within reach; beyond it, a bounded exponential rise toward 1 + maxExtraGain.

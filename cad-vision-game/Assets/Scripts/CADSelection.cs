@@ -25,7 +25,7 @@ public class CADSelection : MonoBehaviour
 
             if (cadObject != null)
             {
-                manipulationService.Select(cadObject.id);
+                manipulationService.SelectFromHit(cadObject.id, hit.point);
                 return;
             }
         }
