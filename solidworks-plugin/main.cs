@@ -36,6 +36,7 @@ namespace CADVision.SolidWorks
         public List<InterferenceRecord> interferences = null;
         public Dictionary<string, string> extractionStatus = new Dictionary<string, string>();
         public List<string> warnings = new List<string>();
+        public List<string> notices = new List<string>();
         public string mappingStatus = "not_correlated_to_glb";
         public string coordinateSystem = "SolidWorks root assembly; SI; inertia about center of mass aligned with root axes";
 
@@ -106,6 +107,9 @@ namespace CADVision.SolidWorks
         public double[] centerOfMass, transform;
         public Inertia inertia;
         public string definitionStatus = "unknown";
+        // Preserve the actual native enum alongside its normalized schema value.
+        public NativeStatus nativeConstrainedStatus;
+        public string fixedState = "unknown";
         public object remainingDOF = null;
         public ReferenceGeometry referenceGeometry;
         public List<DimensionRecord> dimensions;
@@ -130,6 +134,7 @@ namespace CADVision.SolidWorks
     public sealed class DimensionRecord
     {
         public string id, name, type, unit;
+        public int? nativeDisplayType, nativeParameterType;
         public double? value;
         public List<MateReference> references = new List<MateReference>();
     }
@@ -149,12 +154,22 @@ namespace CADVision.SolidWorks
         public string id, name, type, ownerId, status = "unknown", alignment;
         public int? nativeErrorCode;
         public bool? nativeWarning;
+        public NativeStatus nativeStatus;
+        public string satisfaction = "unknown";
+        public bool? lockRotation;
+        public string lockRotationStatus = "not_applicable";
         public List<string> componentIds = new List<string>();
         public List<MateReference> references = new List<MateReference>();
         public double[] axis;
         public MateLimits limits;
     }
     public sealed class MateReference { public string componentId, entityType = "unknown", entityId; }
+    public sealed class NativeStatus
+    {
+        public string source, name;
+        public int code;
+        public bool? isWarning;
+    }
     // PART 2: ID AND VALUE CONVERSION HELPERS
     // These functions can run without SolidWorks.
     public static class Identity
@@ -222,7 +237,7 @@ namespace CADVision.SolidWorks
             projectId = Identity.Make("PROJECT", Path.GetFullPath(path).ToUpperInvariant());
             var config = model.ConfigurationManager.ActiveConfiguration;
             var root = new CadObject { id = Identity.Make(isPart ? "PART" : "ASSY", projectId, config.Name), name = model.GetTitle(), type = isPart ? "part" : "assembly", sourceDocument = path,
-                configuration = config.Name, suppressed = false, occurrencePath = "", identityBasis = "project_path_and_configuration" };
+                configuration = config.Name, suppressed = false, fixedState = "not_applicable_root_document", occurrencePath = "", identityBasis = "project_path_and_configuration" };
             result = new Metadata { project = new Project { id = projectId, name = model.GetTitle(), rootObjectId = root.id } };
             result.objects.Add(root);
             ReadProperties(model, root);
@@ -283,7 +298,6 @@ namespace CADVision.SolidWorks
             Try(root.id, "mass properties", () => {
                 var bodies = Items(((PartDoc)model).GetBodies2((int)swBodyType_e.swSolidBody, false)).ToArray();
                 ReadMass(root, bodies);
-                if (root.mass != null) root.extractionStatus["massProperties"] = "complete";
             });
         }
 
@@ -304,10 +318,14 @@ namespace CADVision.SolidWorks
             if (occurrences.ContainsKey(path)) throw new InvalidDataException("Duplicate occurrence path: " + path);
             occurrences.Add(path, o); components.Add(Tuple.Create(component, o)); result.objects.Add(o); parent.childIds.Add(id);
             Try(id, "suppression", () => o.suppressed = component.IsSuppressed());
-            Try(id, "fixed state", () => o.@fixed = component.IsFixed());
+            Try(id, "fixed state", () => { o.@fixed = component.IsFixed(); o.fixedState = o.@fixed.Value ? "fixed" : "floating"; });
             Try(id, "transform", () => o.transform = component.Transform2 == null ? null : component.Transform2.ArrayData as double[]);
             if (o.suppressed != false) { result.warnings.Add(id + ": suppressed/unavailable occurrence; descendants and engineering properties not assessed."); return; }
-            Try(id, "definition status", () => o.definitionStatus = Identity.Definition(component.GetConstrainedStatus()));
+            Try(id, "definition status", () => {
+                int native = component.GetConstrainedStatus();
+                o.nativeConstrainedStatus = MetadataMath.ComponentStatus(native);
+                o.definitionStatus = Identity.Definition(native);
+            });
             if (doc != null)
             {
                 ReadProperties(doc, o);
@@ -326,19 +344,50 @@ namespace CADVision.SolidWorks
         // Request SI units, include hidden geometry, and validate before assigning results.
         private void ReadMass(CadObject o, object[] selected)
         {
+            o.extractionStatus["massProperties"] = "unavailable";
             if (selected.Length == 0) { result.warnings.Add(o.id + ": no solid bodies/resolved components for mass calculation; physical properties remain null."); return; }
-            var mass = model.Extension.CreateMassProperty2() as MassProperty2;
-            if (mass == null) throw new InvalidOperationException("SolidWorks returned no mass-property object.");
-            mass.UseSystemUnits = true;
-            mass.IncludeHiddenBodiesOrComponents = true;
-            mass.SelectedItems = selected;
-            if (!mass.Recalculate()) throw new InvalidOperationException("Mass-property calculation failed.");
-            var center = mass.CenterOfMass as double[];
-            var inertia = Identity.Tensor(mass.GetMomentOfInertia((int)swMassPropertyMoment_e.swMassPropertyMomentAboutCenterOfMass) as double[]);
-            double m = mass.Mass, v = mass.Volume;
-            if (center == null || center.Length != 3 || center.Any(x => !Finite(x)) || !Finite(m) || !Finite(v) || m < 0 || v <= 0)
-                throw new InvalidDataException("Invalid or unavailable physical properties.");
-            o.mass = m; o.volume = v; o.centerOfMass = center; o.inertia = inertia;
+            int where = (int)swMassPropertyMoment_e.swMassPropertyMomentAboutCenterOfMass;
+            string stage = "CreateMassProperty2";
+            Try(o.id, "IMassProperty2", () => {
+                try
+                {
+                    var mass = model.Extension.CreateMassProperty2() as MassProperty2;
+                    if (mass == null) throw new InvalidOperationException("No mass-property object returned.");
+                    stage = "UseSystemUnits"; mass.UseSystemUnits = true;
+                    stage = "IncludeHiddenBodiesOrComponents"; mass.IncludeHiddenBodiesOrComponents = true;
+                    stage = "SelectedItems"; mass.SelectedItems = selected;
+                    stage = "Recalculate";
+                    if (!mass.Recalculate()) throw new InvalidOperationException("Recalculate returned false.");
+                    MetadataMath.ReadPhysicalFields(o, () => mass.Mass, () => mass.Volume,
+                        () => mass.CenterOfMass as double[], () => mass.GetMomentOfInertia(where) as double[],
+                        (field, read) => Try(o.id, "IMassProperty2." + field, read));
+                }
+                catch (COMException e) { throw new InvalidOperationException(stage + " failed (0x" + e.ErrorCode.ToString("X8") + "): " + e.Message, e); }
+            });
+            o.extractionStatus["massPropertiesMethod"] = "IMassProperty2";
+            // The older supported API can recover part-body calculations when the newer
+            // COM object fails. Restrict fallback to standalone parts: AddBodies has
+            // different assembly semantics and must not select the whole assembly by mistake.
+            if (MetadataMath.PhysicalStatus(o) != "complete" && model.GetType() == (int)swDocumentTypes_e.swDocPART)
+            {
+                o.extractionStatus["massPropertiesMethod"] = "IMassProperty2_then_IMassProperty_fallback";
+                stage = "CreateMassProperty";
+                Try(o.id, "IMassProperty fallback", () => {
+                    try
+                    {
+                        var legacy = model.Extension.CreateMassProperty() as MassProperty;
+                        if (legacy == null) throw new InvalidOperationException("No legacy mass-property object returned.");
+                        stage = "UseSystemUnits"; legacy.UseSystemUnits = true;
+                        stage = "AddBodies";
+                        if (!legacy.AddBodies(selected)) throw new InvalidOperationException("AddBodies rejected the selected solid bodies.");
+                        MetadataMath.ReadPhysicalFields(o, () => legacy.Mass, () => legacy.Volume,
+                            () => legacy.CenterOfMass as double[], () => legacy.GetMomentOfInertia(where) as double[],
+                            (field, read) => Try(o.id, "IMassProperty." + field, read));
+                    }
+                    catch (COMException e) { throw new InvalidOperationException(stage + " failed (0x" + e.ErrorCode.ToString("X8") + "): " + e.Message, e); }
+                });
+            }
+            o.extractionStatus["massProperties"] = MetadataMath.PhysicalStatus(o);
             // Material density is read independently from the assigned material database.
             // Do not substitute mass/volume: native mass overrides could make it misleading.
         }
@@ -396,8 +445,21 @@ namespace CADVision.SolidWorks
                         bool warning;
                         record.nativeErrorCode = feature.GetErrorCode2(out warning);
                         record.nativeWarning = record.nativeErrorCode == 0 ? (bool?)null : warning;
+                        record.nativeStatus = new NativeStatus { source = "IFeature.GetErrorCode2", code = record.nativeErrorCode.Value,
+                            name = Enum.GetName(typeof(swFeatureError_e), record.nativeErrorCode.Value), isWarning = record.nativeWarning };
                         record.status = MetadataMath.MateStatus(feature.IsSuppressed(), record.nativeErrorCode.Value, warning);
+                        record.satisfaction = MetadataMath.MateSatisfaction(record.status == "suppressed", record.nativeErrorCode.Value, warning);
                         Try(record.id, "mate limits", () => record.limits = ReadLimits(feature, mate.Type));
+                        if (mate.Type == (int)swMateType_e.swMateCONCENTRIC)
+                        {
+                            record.lockRotationStatus = "unavailable";
+                            Try(record.id, "lock rotation", () => {
+                                var definition = feature.GetDefinition() as ConcentricMateFeatureData;
+                                if (definition == null) throw new InvalidDataException("Concentric mate definition unavailable.");
+                                record.lockRotation = definition.LockRotation;
+                                record.lockRotationStatus = "read_from_IConcentricMateFeatureData.LockRotation";
+                            });
+                        }
                         // Zero feature error is not evidence that the mate solver reports 'solved'.
                         for (int i = 0; i < mate.GetMateEntityCount(); i++)
                         {
@@ -490,6 +552,35 @@ namespace CADVision.SolidWorks
     // without a running SolidWorks instance. All numeric output stays in SI units.
     public static class MetadataMath
     {
+        public static NativeStatus ComponentStatus(int code)
+        {
+            return new NativeStatus { source = "IComponent2.GetConstrainedStatus", code = code,
+                name = Enum.GetName(typeof(swConstrainedStatus_e), code) };
+        }
+        public static string MateSatisfaction(bool suppressed, int error, bool warning)
+        {
+            if (suppressed) return "not_applicable";
+            if (warning && error != 0) return "unknown";
+            // Explicit native errors mean tangent not satisfied / mate cannot be solved.
+            // Zero error, redundancy, missing data, or fixed components do not prove satisfied.
+            return error == (int)swFeatureError_e.swFeatureErrorMateUnknownTangent || error == (int)swFeatureError_e.swFeatureErrorMateIlldefined
+                ? "not_satisfied" : "unknown";
+        }
+        // Read independently: a failure fetching inertia must not discard a valid volume.
+        // A second native API may fill missing fields without overwriting successful reads.
+        public static void ReadPhysicalFields(CadObject o, Func<double> mass, Func<double> volume,
+            Func<double[]> center, Func<double[]> inertia, Action<string, Action> attempt)
+        {
+            if (o.mass == null) attempt("Mass", () => { var n = mass(); if (!Finite(n) || n < 0) throw new InvalidDataException("Invalid mass."); o.mass = n; });
+            if (o.volume == null) attempt("Volume", () => { var n = volume(); if (!Finite(n) || n <= 0) throw new InvalidDataException("Invalid solid volume."); o.volume = n; });
+            if (o.centerOfMass == null) attempt("CenterOfMass", () => { var p = center(); if (p == null || p.Length != 3 || p.Any(n => !Finite(n))) throw new InvalidDataException("Invalid center of mass."); o.centerOfMass = p; });
+            if (o.inertia == null) attempt("GetMomentOfInertia", () => o.inertia = Identity.Tensor(inertia()));
+        }
+        public static string PhysicalStatus(CadObject o)
+        {
+            int available = (o.mass.HasValue ? 1 : 0) + (o.volume.HasValue ? 1 : 0) + (o.centerOfMass != null ? 1 : 0) + (o.inertia != null ? 1 : 0);
+            return available == 4 ? "complete" : available == 0 ? "unavailable" : "partial";
+        }
         public static bool Finite(double n) { return !Double.IsNaN(n) && !Double.IsInfinity(n); }
         public static double[] Unit(double[] v)
         {
@@ -585,18 +676,19 @@ namespace CADVision.SolidWorks
             // Restore the previous display preference even if a COM call fails.
             int setting = (int)swUserPreferenceToggle_e.swDisplayFeatureDimensions;
             bool previous = doc.GetUserPreferenceToggle(setting);
-            int warningCount = result.warnings.Count;
             try
             {
                 if (!previous && !doc.SetUserPreferenceToggle(setting, true)) throw new InvalidOperationException("Cannot enable dimension enumeration.");
+                if (sameConfig)
+                    foreach (var category in new[] { "referenceGeometry", "dimensions", "featureProperties" }) owner.extractionStatus[category] = "complete";
                 for (var feature = doc.FirstFeature() as Feature; feature != null; feature = feature.GetNextFeature() as Feature)
                     ReadFeatureTree(feature, doc, owner, component, sameConfig, features, dimensions);
-                if (sameConfig && result.warnings.Count == warningCount)
-                {
-                    owner.extractionStatus["referenceGeometry"] = "complete";
-                    owner.extractionStatus["dimensions"] = "complete";
-                    owner.extractionStatus["featureProperties"] = "complete";
-                }
+            }
+            catch
+            {
+                foreach (var category in new[] { "referenceGeometry", "dimensions", "featureProperties" })
+                    if (owner.extractionStatus[category] == "complete") owner.extractionStatus[category] = "partial";
+                throw;
             }
             finally
             {
@@ -616,6 +708,9 @@ namespace CADVision.SolidWorks
                 if (states == null || states.Length != 1) throw new InvalidDataException("Feature suppression unavailable.");
                 suppressed = Convert.ToBoolean(states.GetValue(0));
             });
+            if (suppressed == null)
+                foreach (var category in new[] { "referenceGeometry", "dimensions", "featureProperties" })
+                    if (owner.extractionStatus[category] == "complete") owner.extractionStatus[category] = "partial";
             if (suppressed == false)
             {
                 if (sameConfig)
@@ -640,10 +735,10 @@ namespace CADVision.SolidWorks
                         if (dim == null) continue;
                         var name = dim.FullName;
                         if (!dimensions.Add(name)) continue;
-                        var record = new DimensionRecord { id = SourceId(doc, dim, "DIM", owner.id, name), name = name, type = MetadataMath.DimensionType(display.Type2) };
+                        var record = new DimensionRecord { id = SourceId(doc, dim, "DIM", owner.id, name), name = name, nativeDisplayType = display.Type2, nativeParameterType = dim.GetType(), type = MetadataMath.DimensionType(display.Type2) };
                         owner.dimensions.Add(record);
                         // Angular radians and linear meters match project.units.
-                        if (record.type == "unknown") { owner.extractionStatus["dimensions"] = "partial"; result.warnings.Add(record.id + ": unsupported compound/scalar dimension; numeric value left null."); }
+                        if (record.type == "unknown") { owner.extractionStatus["dimensions"] = "partial"; result.warnings.Add(record.id + ": unsupported dimension " + name + " (display type " + record.nativeDisplayType + ", parameter type " + record.nativeParameterType + "); numeric value left null."); }
                         else
                         {
                             record.unit = record.type == "angle" ? "rad" : "m";
@@ -922,7 +1017,7 @@ namespace CADVision.SolidWorks
         {
             var id = SourcePersistent(doc, value, prefix, scope);
             if (id != null) return id;
-            result.warnings.Add(scope + ": source identity fallback used for " + fallback);
+            result.notices.Add(scope + ": source identity fallback used for " + fallback);
             return Identity.Make(prefix, projectId, scope, fallback);
         }
         private void Field(CadObject owner, string name, Action read)
@@ -957,6 +1052,7 @@ namespace CADVision.SolidWorks
                 metadata.Write(path);
                 Console.WriteLine("Wrote " + path + " (" + metadata.objects.Count + " objects, " + metadata.mates.Count + " mates)");
                 foreach (var warning in metadata.warnings) Console.Error.WriteLine("Warning: " + warning);
+                if (metadata.notices.Count > 0) Console.WriteLine("Info: " + metadata.notices.Count + " identity notices recorded in metadata.json; these do not mean values are missing.");
                 return 0;
             }
             catch (Exception e) { Console.Error.WriteLine(e.Message); return 1; }
