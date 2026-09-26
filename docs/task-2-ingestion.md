@@ -81,7 +81,90 @@ replacement clears the old registry, disables/destroys the old root, and dispose
 its glTFast resources. `Clear()` drops all active metadata and IDs. Concurrent
 imports are rejected; `Cancel()` stops the pending loader operation.
 
+## Network receiver and sender
+
+Attach `CadDesignReceiver` to the runtime host in the build scene. It starts on
+enable in Play Mode and listens on TCP port 8085. In the Editor, use **CAD Vision >
+Start receiver (Play Mode)**. `AllowLan=false` restricts it to loopback; the default
+allows the laptop to connect on the same local network. This MVP uses plain HTTP
+without authentication and is intended for a trusted development network.
+
+From the repository root:
+
+```powershell
+python tools/send_design.py --glb TestASM.glb --metadata TestASM_metadata_sample.json
+# Same command for a Quest on Wi-Fi:
+python tools/send_design.py --quest <quest-ip> --glb TestASM.glb --metadata TestASM_metadata_sample.json
+```
+
+Wire contract for the standalone shipper: `POST /design`, `Content-Type:
+application/zip`, and a positive `Content-Length`. The ZIP contains exactly
+`model.glb` and `metadata.json` at the root. No multipart, chunked encoding,
+`Expect: 100-continue`, additional files, or nested paths. Files are read into
+bounded memory; no archive paths are extracted to disk. Limits: 100 MiB GLB,
+8 MiB metadata, and 120 seconds for receipt plus import. Uploads are serialized;
+overlapping requests get HTTP 409. Incomplete uploads never reach the importer.
+
+HTTP 200 is returned only after the Unity model and CAD registry are published:
+
+```json
+{"success":true,"message":"Loaded 3 CAD objects.","objectCount":3,"revision":1}
+```
+
+Failures return a non-200 status and `success:false`; the sender exits nonzero.
+A timeout/disconnect can leave the sender without an acknowledgement. There is
+no automatic retry or idempotency key yet. A complete upload already importing
+may finish even if the sender disconnects; receiver shutdown/timeout cancels
+pending import through the loader's cancellation token.
+
+The Python sender is a test client, not the Task 1 standalone shipper executable.
+Its ZIP names and acknowledgement handling define the current integration contract.
+
+## Quest smoke build
+
+`CadReceiverSmokeBuild.Prepare()` creates `Assets/ReceiverSmoke/ReceiverSmoke.unity`
+and material assets derived from TestASM to retain its runtime shader variants.
+It preserves the existing workspace scene and does not modify the application's
+build-scene list. If the workspace scene is untitled, it saves it to a new
+`WorkspaceSnapshot.unity` file first.
+
+With Android active, `CadReceiverSmokeBuild.QueueBuild()` produces
+`.utmp/CADVisionReceiverTest.apk` using ARM64/IL2CPP and the separate application
+ID `com.cadvision.receivertest`. The test build uses Input System Package (New),
+since Unity rejects Both input handling on Android. Temporary product name,
+application ID, scripting backend, CPU architecture, and input-handling settings
+are restored after the build. Status is
+written to `.utmp/receiver-build-status.txt`.
+
+## Automatic startup loading
+
+Put exactly one `.glb` and its matching `.json` directly in `Assets/CadFiles`
+(the existing `Assets/cadFiles` spelling also works). Names can differ and may
+change; selection uses case-insensitive extensions and ignores `.meta` files.
+Enter Play Mode to load the pair automatically. No receiver upload or scene
+component setup is required. JSON must still follow the CAD metadata contract.
+
+Every player build validates the pair and bundles the raw files in StreamingAssets.
+The Quest reads these bundled files automatically at startup. Changing the files
+requires rebuilding/reinstalling the APK; this is not a live desktop-folder sync.
+Missing or duplicate files fail validation rather than selecting an arbitrary pair.
+
 ## Verification and remaining integration
+
+The receiver smoke camera now uses Input System `TrackedPoseDriver` bindings for
+`<XRHMD>/centerEyePosition`, `centerEyeRotation`, and `trackingState`. Imported CAD
+roots remain independent world objects, so the tracked viewer can move around
+them during the session. This does not persist room placement across restarts.
+The updated APK was installed and TestASM imported successfully; physical
+head-turn and walking verification is pending user confirmation.
+
+Android builds require the `GLTFAST_BUILTIN_RP` scripting define with the current
+Built-in rendering configuration. glTFast 6.20.0 detects the installed URP package
+and otherwise excludes its Built-in material generator from players (but not the
+Editor). The Quest diagnostic build confirmed this caused an
+`InvalidOperationException` during `GltfImport` construction. Keep the define
+while this project uses Built-in rendering alongside the installed URP package.
+Unexpected receiver exceptions are now logged on-device for diagnosis.
 
 Run `CadIngestionTests` in Unity Test Runner (Edit Mode). These cover malformed
 metadata, identity/hierarchy failures, metadata retention, malformed GLBs,
@@ -92,11 +175,19 @@ Verified in Unity 6000.6.0f1: all 17 Edit Mode tests passed, including two real
 FRED imports (261 mapped nodes each) and retaining the loaded model after a
 rejected package. This is not yet a Quest or Play Mode validation result.
 
+All seven `CadReceiverTests` passed in Edit Mode, including a real TestASM HTTP
+upload into the runtime, incomplete and oversized requests, concurrent-request
+rejection, and shutdown cancellation. Run these tests with Play Mode stopped.
+
 Still to implement/verify:
 
-- Quest HTTP receiver, transfer limits, atomic package completion, and shipper acknowledgement.
+- Quest 3S ARM64/IL2CPP receiver verified over Wi-Fi on 2026-09-26: TestASM
+  returned success with three mapped CAD objects, then replacement returned
+  revision 2 with three objects. No Unity error entries appeared for that app
+  process after both imports. The user confirmed the model is visible with
+  normal materials in the headset.
 - Final shipper mapping agreement and real SolidWorks metadata pair validation.
-- Play Mode/XR interaction integration, Quest/IL2CPP build, material shader inclusion,
+- Play Mode/XR interaction integration, broader material shader inclusion,
   physical scale/orientation check, and headset performance.
 - Progress reporting, optimized/precise colliders, and very large assembly handling.
 

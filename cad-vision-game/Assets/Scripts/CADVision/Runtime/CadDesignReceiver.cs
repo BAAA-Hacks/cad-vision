@@ -57,6 +57,7 @@ namespace CADVision
                 catch (Exception e)
                 {
                     if (this != null) LastStatus = e.Message;
+                    if (!(e is OperationCanceledException)) Debug.LogException(e);
                     result.TrySetException(e);
                 }
             }, null);

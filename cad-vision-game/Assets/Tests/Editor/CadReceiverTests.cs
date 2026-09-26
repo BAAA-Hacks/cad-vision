@@ -166,6 +166,11 @@ public class CadReceiverTests
             Assert.That(sending.Result, Does.Contain("\"objectCount\":3"));
             Assert.That(host.GetComponent<CADVisionRuntime>().GetAllObjects().Count, Is.EqualTo(3));
         }
-        finally { UnityEngine.Object.DestroyImmediate(host); }
+        finally
+        {
+            receiver.StopReceiver();
+            host.GetComponent<CADVisionRuntime>().Clear();
+            UnityEngine.Object.DestroyImmediate(host);
+        }
     }
 }

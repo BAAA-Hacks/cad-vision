@@ -110,6 +110,7 @@ namespace CADVision
                     {
                         int status = e is HttpFailure failure ? failure.Status :
                             e is InvalidDataException || e is JsonException || e is DecoderFallbackException ? 422 : 500;
+                        if (status == 500) UnityEngine.Debug.LogException(e);
                         var result = new CadReceiveResult { message = status == 500 ? "Design import failed; check the receiver log." : e.Message };
                         try { await WriteResponse(client.GetStream(), status, result).ConfigureAwait(false); }
                         catch (Exception sendError) when (sendError is IOException || sendError is SocketException || sendError is ObjectDisposedException || sendError is InvalidOperationException) { }

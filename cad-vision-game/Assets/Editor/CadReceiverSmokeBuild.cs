@@ -8,6 +8,8 @@ using UnityEditor.Build.Reporting;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using UnityEngine.InputSystem;
+using UnityEngine.InputSystem.XR;
 
 /// <summary>Reproducible, separate receiver test APK. Does not replace the application's build scenes.</summary>
 public static class CadReceiverSmokeBuild
@@ -43,6 +45,14 @@ public static class CadReceiverSmokeBuild
             SceneManager.MoveGameObjectToScene(camera, scene);
             camera.tag = "MainCamera";
             camera.transform.position = new Vector3(0, 1.5f, 0);
+            // Track the viewer, while imported models remain independent world objects.
+            var tracking = camera.AddComponent<TrackedPoseDriver>();
+            tracking.positionInput = new InputActionProperty(new InputAction("Head Position",
+                InputActionType.Value, "<XRHMD>/centerEyePosition", expectedControlType: "Vector3"));
+            tracking.rotationInput = new InputActionProperty(new InputAction("Head Rotation",
+                InputActionType.Value, "<XRHMD>/centerEyeRotation", expectedControlType: "Quaternion"));
+            tracking.trackingStateInput = new InputActionProperty(new InputAction("Head Tracking State",
+                InputActionType.Value, "<XRHMD>/trackingState", expectedControlType: "Integer"));
             camera.GetComponent<Camera>().backgroundColor = new Color(0.07f, 0.09f, 0.12f);
             camera.GetComponent<Camera>().clearFlags = CameraClearFlags.SolidColor;
             var light = new GameObject("Review Light", typeof(Light));
@@ -68,6 +78,7 @@ public static class CadReceiverSmokeBuild
                 if (existing != null) EditorUtility.CopySerialized(materials[i], existing);
                 else AssetDatabase.CreateAsset(new Material(materials[i]), path);
             }
+            sample.GetComponent<CADVisionRuntime>().Clear();
             UnityEngine.Object.DestroyImmediate(sample);
             sample = null;
             EditorSceneManager.SaveScene(scene, ScenePath);
@@ -77,7 +88,11 @@ public static class CadReceiverSmokeBuild
         catch (Exception e) { File.WriteAllText(Status, "Preparation failed: " + e); Debug.LogException(e); }
         finally
         {
-            if (sample != null) UnityEngine.Object.DestroyImmediate(sample);
+            if (sample != null)
+            {
+                sample.GetComponent<CADVisionRuntime>().Clear();
+                UnityEngine.Object.DestroyImmediate(sample);
+            }
             if (previous.IsValid() && previous.isLoaded) SceneManager.SetActiveScene(previous);
             if (scene.IsValid() && scene.isLoaded) EditorSceneManager.CloseScene(scene, true);
         }
@@ -99,12 +114,17 @@ public static class CadReceiverSmokeBuild
         string product = PlayerSettings.productName;
         var backend = PlayerSettings.GetScriptingBackend(target);
         var architectures = PlayerSettings.Android.targetArchitectures;
+        var settings = new SerializedObject(AssetDatabase.LoadAllAssetsAtPath("ProjectSettings/ProjectSettings.asset")[0]);
+        int inputHandling = settings.FindProperty("activeInputHandler").intValue;
         try
         {
             PlayerSettings.SetApplicationIdentifier(target, "com.cadvision.receivertest");
             PlayerSettings.productName = "CAD Vision Receiver Test";
             PlayerSettings.SetScriptingBackend(target, ScriptingImplementation.IL2CPP);
             PlayerSettings.Android.targetArchitectures = AndroidArchitecture.ARM64;
+            settings.Update();
+            settings.FindProperty("activeInputHandler").intValue = 1;
+            settings.ApplyModifiedPropertiesWithoutUndo();
             File.WriteAllText(Status, "Building Android ARM64 IL2CPP APK");
             var result = BuildPipeline.BuildPlayer(new BuildPlayerOptions
             {
@@ -122,6 +142,9 @@ public static class CadReceiverSmokeBuild
             PlayerSettings.productName = product;
             PlayerSettings.SetScriptingBackend(target, backend);
             PlayerSettings.Android.targetArchitectures = architectures;
+            settings.Update();
+            settings.FindProperty("activeInputHandler").intValue = inputHandling;
+            settings.ApplyModifiedPropertiesWithoutUndo();
         }
     }
 }
