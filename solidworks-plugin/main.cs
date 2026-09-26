@@ -1463,20 +1463,21 @@ namespace CADVision.SolidWorks
             var selection = (SelectionMgr)model.SelectionManager;
             // Preserve the user's selection while ensuring SaveAs exports the whole model.
             selection.SuspendSelectionList();
-            int errors = 0, warnings = 0;
             try
             {
                 model.ClearSelection2(true);
-                // Use the current extension API, not the obsolete SaveAs method.
-                // Translator availability through this API still requires a live test.
-                bool saved = model.Extension.SaveAs3(path, (int)swSaveAsVersion_e.swSaveAsCurrentVersion,
-                    (int)swSaveAsOptions_e.swSaveAsOptions_Silent, null, null, ref errors, ref warnings);
-                if (!saved || errors != 0)
-                    throw new IOException("SolidWorks GLB export via IModelDocExtension.SaveAs3 failed: errors=" + errors + " (" + (swFileSaveError_e)errors +
-                        "), warnings=" + warnings + ". Check whether Extended Reality (*.GLB) is listed in File > Save As. " +
-                        "If it is listed, this may be an API export limitation; this error does not prove the translator is missing.");
+                // Macro1.swp records ActiveDoc.SaveAs3(path, 0, 2), not
+                // ActiveDoc.Extension.SaveAs3. Keep the recorded Copy option;
+                // adding Silent here would change the operation we are testing.
+                // This older API returns an error code, not a success Boolean,
+                // and does not expose the separate warning output of the extension API.
+                int errors = model.SaveAs3(path, (int)swSaveAsVersion_e.swSaveAsCurrentVersion,
+                    (int)swSaveAsOptions_e.swSaveAsOptions_Copy);
+                if (errors != 0)
+                    throw new IOException("SolidWorks GLB export via recorded IModelDoc2.SaveAs3(path, 0, 2) failed: errors=" +
+                        errors + " (" + (swFileSaveError_e)errors + ").");
                 CheckContainer(path);
-                return warnings;
+                return 0; // No warning output is available from this API.
             }
             finally { selection.ResumeSelectionList2(false); }
         }
@@ -1562,6 +1563,7 @@ namespace CADVision.SolidWorks
                 // specifies meters; its actual geometry/axis mapping awaits pair validation.
                 metadata.extractionStatus["exportPair"] = existingGlb == null ? "same_document_configuration_root_update_stamp_checked" : "supplied_glb_plus_active_CAD_metadata_correspondence_unverified";
                 if (existingGlb != null) metadata.warnings.Add("Supplied GLB: matching CAD document, configuration, revision, scale and node mapping have not been verified. A matching filename is not proof of correspondence.");
+                if (existingGlb == null) metadata.notices.Add("Native GLB uses recorded IModelDoc2.SaveAs3 with Copy; this API does not expose a separate export warning code.");
                 if (warnings != 0) metadata.warnings.Add("Native GLB export warnings=" + warnings + " (" + (swFileSaveWarning_e)warnings + ").");
                 if (progress != null) progress("Preprocessing GLB hierarchy and transform mapping...");
                 GlbMapping.Apply(glbPath, metadata);
@@ -1806,8 +1808,9 @@ namespace CADVision.SolidWorks
                     Console.WriteLine("Diagnostic report: " + Path.GetFullPath(Path.Combine(folder, "native-export-diagnostic.txt")));
                     return passed ? 0 : 1;
                 }
-                progress("SolidWorks revision: " + app.RevisionNumber() + (command.Glb == null ? "; GLB API: IModelDocExtension.SaveAs3" : "; using supplied GLB: " + command.Glb));
+                progress("SolidWorks revision: " + app.RevisionNumber() + (command.Glb == null ? "; GLB API: recorded IModelDoc2.SaveAs3 (Copy)" : "; using supplied GLB: " + command.Glb));
                 Console.WriteLine("Keep the active SolidWorks model unchanged until export completes.");
+                if (command.Glb == null) Console.WriteLine("Native export follows the recorded macro; SolidWorks may show export options. No mouse or keyboard automation is used.");
                 var metadata = ExportPipeline.Export(app, folder,
                     new ExtractionOptions { RunInterferenceDetection = !command.SkipInterferences }, progress, command.Glb);
                 Console.WriteLine("Exported model.glb + metadata.json to " + Path.GetFullPath(folder));
