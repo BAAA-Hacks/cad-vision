@@ -1,0 +1,18 @@
+[
+  {
+    "id": "redstart-mating-stop",
+    "prompt": "is the redstart mountaing holes mated to the drone base, is it defined? and if so, what type of mate are they?",
+    "newSession": true,
+    "requiredTools": ["find_connections"],
+    "expectedToolSequence": ["find_connections"],
+    "allowedMutationTools": [],
+    "metadataFixture": "metadata (2).json",
+    "expectedBehavior": "For this export, answer after find_connections. redstart (1).step-1 has Coincident6 and Tangent2 to FRED_Prototype_1-1 through child occurrences and is under-defined. Identify the base conditionally, since the informal alias is not established. Specific mounting holes and solver validity are not established. The other redstart candidate has no matching exported mates; this does not prove disconnection. Do not invent remaining DOFs.",
+    "forbiddenBehavior": [
+      "Unqualified assertion that FRED_Prototype_1-1 is the user's drone base",
+      "Claiming identified mounting holes or full definition",
+      "Treating zero exported matches as proof of disconnection",
+      "Rediscovery or duplicate mate/property checks without an evidence gap"
+    ]
+  }
+]

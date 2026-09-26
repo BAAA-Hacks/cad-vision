@@ -61,6 +61,10 @@ public class CADXRSelection : MonoBehaviour
 
     private void HandlePointerEvent(PointerEvent evt)
     {
+        // CADPointerInteraction owns click/drag semantics when present; this is the legacy path.
+        if (CADPointerInteraction.Active)
+            return;
+
         if (evt.Type == PointerEventType.Select && isActiveAndEnabled &&
             cadObject != null && manipulationService != null)
         {

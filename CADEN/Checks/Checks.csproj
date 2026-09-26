@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Update="Fixtures/*.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="OrchestrationCases*.json" CopyToOutputDirectory="PreserveNewest" />
+    <ProjectReference Include="../Core/Core.csproj" />
+    <Compile Include="../Desktop/LocalConfiguration.cs" Link="LocalConfiguration.cs" />
+    <Compile Include="../Desktop/FileDiagnostics.cs" Link="FileDiagnostics.cs" />
+    <Compile Include="../Desktop/FileTokenUsage.cs" Link="FileTokenUsage.cs" />
+    <Compile Include="../Desktop/ProjectMemoryFile.cs" Link="ProjectMemoryFile.cs" />
+    <Compile Include="../Desktop/ProjectAssociationFile.cs" Link="ProjectAssociationFile.cs" />
+  </ItemGroup>
+</Project>

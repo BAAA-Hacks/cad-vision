@@ -13,7 +13,7 @@ PlayerSettings:
   useOnDemandResources: 0
   accelerometerFrequency: 60
   companyName: DefaultCompany
-  productName: cad-vision-game
+  productName: CAD Vision
   defaultCursor: {fileID: 0}
   cursorHotspot: {x: 0, y: 0}
   m_SplashScreenBackgroundColor: {r: 0.12156863, g: 0.12156863, b: 0.1254902, a: 1}
@@ -303,32 +303,44 @@ PlayerSettings:
   m_BuildTargetPlatformIcons:
   - m_BuildTarget: Android
     m_Icons:
-    - m_Textures: []
+    - m_Textures:
+      - {fileID: 2800000, guid: abba7bf88f9accc48b32a9e0e86a32c1, type: 3}
+      - {fileID: 2800000, guid: db7cee1441f1437e9f05d5f8eb4810ed, type: 3}
       m_Width: 432
       m_Height: 432
       m_Kind: 2
       m_SubKind: 
-    - m_Textures: []
+    - m_Textures:
+      - {fileID: 2800000, guid: abba7bf88f9accc48b32a9e0e86a32c1, type: 3}
+      - {fileID: 2800000, guid: db7cee1441f1437e9f05d5f8eb4810ed, type: 3}
       m_Width: 324
       m_Height: 324
       m_Kind: 2
       m_SubKind: 
-    - m_Textures: []
+    - m_Textures:
+      - {fileID: 2800000, guid: abba7bf88f9accc48b32a9e0e86a32c1, type: 3}
+      - {fileID: 2800000, guid: db7cee1441f1437e9f05d5f8eb4810ed, type: 3}
       m_Width: 216
       m_Height: 216
       m_Kind: 2
       m_SubKind: 
-    - m_Textures: []
+    - m_Textures:
+      - {fileID: 2800000, guid: abba7bf88f9accc48b32a9e0e86a32c1, type: 3}
+      - {fileID: 2800000, guid: db7cee1441f1437e9f05d5f8eb4810ed, type: 3}
       m_Width: 162
       m_Height: 162
       m_Kind: 2
       m_SubKind: 
-    - m_Textures: []
+    - m_Textures:
+      - {fileID: 2800000, guid: abba7bf88f9accc48b32a9e0e86a32c1, type: 3}
+      - {fileID: 2800000, guid: db7cee1441f1437e9f05d5f8eb4810ed, type: 3}
       m_Width: 108
       m_Height: 108
       m_Kind: 2
       m_SubKind: 
-    - m_Textures: []
+    - m_Textures:
+      - {fileID: 2800000, guid: abba7bf88f9accc48b32a9e0e86a32c1, type: 3}
+      - {fileID: 2800000, guid: db7cee1441f1437e9f05d5f8eb4810ed, type: 3}
       m_Width: 81
       m_Height: 81
       m_Kind: 2

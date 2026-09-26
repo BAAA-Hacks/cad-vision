@@ -108,7 +108,10 @@ InitTestScene*.unity*
 
 # Auto-generated cache in Assets folder
 /[Aa]ssets/[Ss]ceneDependencyCache*
-CLAUDE.md
+
+
+# VS Code
+.env
 
 # Runtime CAD pair (supplied locally per machine, not versioned)
 model.glb
@@ -118,3 +121,5 @@ metadata.json.meta
 # Everything in the CadFiles drop folder, any name
 /cad-vision-game/Assets/CadFiles/*
 !/cad-vision-game/Assets/CadFiles/.gitkeep
+CADEN/caden-project.json
+CLAUDE.md
