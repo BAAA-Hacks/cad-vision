@@ -43,8 +43,12 @@ namespace CADVision
             if (version == null || (version.Type != JTokenType.String && version.Type != JTokenType.Integer)
                 || (version.ToString() != "1" && version.ToString() != "1.0" && version.ToString() != "2.1"))
                 throw new InvalidDataException("Unsupported schemaVersion; expected 1, 1.0 or 2.1.");
+            var mappingStatus = document["mappingStatus"];
+            if (version.ToString() == "2.1" && mappingStatus != null &&
+                mappingStatus.Type != JTokenType.Null && mappingStatus.Type != JTokenType.String)
+                throw new InvalidDataException("mappingStatus must be a string.");
             bool uncorrelated = version.ToString() == "2.1" &&
-                (string)document["mappingStatus"] == "not_correlated_to_glb";
+                (string)mappingStatus == "not_correlated_to_glb";
             if (uncorrelated && document["glbMapping"] != null && document["glbMapping"].Type != JTokenType.Null)
                 throw new InvalidDataException("Uncorrelated metadata must not claim a GLB mapping.");
             HasVerifiedNodeMapping = !uncorrelated;
@@ -56,6 +60,7 @@ namespace CADVision
             objects = new Dictionary<string, JObject>(StringComparer.Ordinal);
             nodeIndices = new Dictionary<string, int>(StringComparer.Ordinal);
             parents = new Dictionary<string, string>(StringComparer.Ordinal);
+            var exportedNodes = ReadExporterMapping(version.ToString());
             var usedNodes = new HashSet<int>();
             foreach (var entry in entries)
             {
@@ -70,8 +75,15 @@ namespace CADVision
                 }
                 else
                 {
-                    if (node?.Type != JTokenType.Integer || !int.TryParse(node.ToString(), out int index) || index < 0)
-                        throw new InvalidDataException($"'{id}' requires a nonnegative glbNodeIndex.");
+                    int index;
+                    if (exportedNodes != null)
+                    {
+                        if (!exportedNodes.TryGetValue(id, out index))
+                            throw new InvalidDataException($"'{id}' is missing from glbMapping.objects.");
+                        if (node != null && ReadNodeIndex(node, id) != index)
+                            throw new InvalidDataException($"'{id}' has conflicting inline and exported node indices.");
+                    }
+                    else index = ReadNodeIndex(node, id);
                     if (!usedNodes.Add(index)) throw new InvalidDataException($"GLB node {index} is mapped more than once.");
                     nodeIndices.Add(id, index);
                 }
@@ -82,6 +94,10 @@ namespace CADVision
                 objects.Add(id, obj);
                 parents.Add(id, (string)parent);
             }
+            if (exportedNodes != null)
+                foreach (string id in exportedNodes.Keys)
+                    if (!objects.ContainsKey(id))
+                        throw new InvalidDataException($"GLB mapping references unknown CAD ID '{id}'.");
             if (!objects.ContainsKey(RootId)) throw new InvalidDataException("rootObjectId does not exist in objects.");
             if (parents[RootId] != null) throw new InvalidDataException("The root object must not have a parent.");
             foreach (string id in objects.Keys)
@@ -111,6 +127,44 @@ namespace CADVision
                 }
             }
             NodeIndices = new ReadOnlyDictionary<string, int>(nodeIndices);
+        }
+
+        // Normalize correspondence separately; never add fields to the source document.
+        private Dictionary<string, int> ReadExporterMapping(string version)
+        {
+            var mapping = document["glbMapping"];
+            if (version != "2.1" || mapping == null || mapping.Type == JTokenType.Null)
+                return null; // Preserve legacy inline-only documents.
+            if (document["mappingStatus"]?.Type != JTokenType.String ||
+                (string)document["mappingStatus"] != "assigned_by_exporter")
+                throw new InvalidDataException("Nested GLB mappings require mappingStatus assigned_by_exporter.");
+            if (!(mapping is JObject container) || !(container["objects"] is JArray rows))
+                throw new InvalidDataException("glbMapping must contain an objects array.");
+            var status = container["status"];
+            if (status != null && (status.Type != JTokenType.String || (string)status != "assigned_by_exporter"))
+                throw new InvalidDataException("glbMapping.status contradicts mappingStatus.");
+
+            var result = new Dictionary<string, int>(StringComparer.Ordinal);
+            var nodes = new HashSet<int>();
+            foreach (var entry in rows)
+            {
+                if (!(entry is JObject row)) throw new InvalidDataException("Every GLB mapping row must be an object.");
+                string id = RequiredString(row, "objectId");
+                if (result.ContainsKey(id)) throw new InvalidDataException($"Duplicate GLB mapping ID '{id}'.");
+                if (row["status"]?.Type != JTokenType.String || (string)row["status"] != "matched")
+                    throw new InvalidDataException($"GLB mapping for '{id}' must be matched.");
+                int index = ReadNodeIndex(row["glbNodeIndex"], id);
+                if (!nodes.Add(index)) throw new InvalidDataException($"GLB node {index} is mapped more than once.");
+                result.Add(id, index);
+            }
+            return result;
+        }
+
+        private static int ReadNodeIndex(JToken node, string id)
+        {
+            if (node?.Type != JTokenType.Integer || !int.TryParse(node.ToString(), out int index) || index < 0)
+                throw new InvalidDataException($"'{id}' requires a nonnegative Int32 glbNodeIndex.");
+            return index;
         }
 
         private static string RequiredString(JObject obj, string key)
