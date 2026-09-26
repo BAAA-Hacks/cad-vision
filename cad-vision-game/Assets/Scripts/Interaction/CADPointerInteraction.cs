@@ -13,6 +13,10 @@ using UnityEngine;
 ///
 /// Input comes from an ISDK RayInteractor's Select state, not from a specific button, so
 /// any interactor whose selector is a pinch works the same way.
+///
+/// While the service's whole-model manipulation mode is active, a drag on any CAD geometry
+/// holds the model root (at the pressed point) instead of an object; clicks leave selection
+/// alone.
 /// </summary>
 [DisallowMultipleComponent]
 [RequireComponent(typeof(CADVisionManipulationService))]
@@ -46,6 +50,7 @@ public class CADPointerInteraction : MonoBehaviour
     public event Action<CADContextMenuRequest> ContextMenuRequested;
 
     public bool IsManipulating => session.IsActive;
+    public bool IsManipulatingModel => session.IsModel;
     public CADPointerStateMachine.State State => machine.Current;
 
     private const float RaySearchInterval = 1f;
@@ -59,6 +64,7 @@ public class CADPointerInteraction : MonoBehaviour
     private bool wasSelecting;
     private bool pressedSelectedTarget; // The press started on an already-selected object.
     private string pressedResolvedId;   // The selectable object the press resolved to.
+    private bool modelScaledLastFrame;  // Two-hand model scaling ran last frame (rebase once more).
 
     private void Awake()
     {
@@ -99,10 +105,28 @@ public class CADPointerInteraction : MonoBehaviour
         else if (wasSelecting)
             Handle(machine.Up(Time.unscaledTime), null, pose);
 
-        if (session.IsActive && !session.Update(pose))
-            EndManipulation("object no longer selected or active");
+        UpdateSession(pose);
 
         wasSelecting = selecting;
+    }
+
+    private void UpdateSession(Pose pose)
+    {
+        // Two-hand scaling owns the model while it runs: follow its result instead of
+        // applying the held pose, and once more after it ends, so neither hand snaps it back.
+        bool modelScaling = gripFallback != null && gripFallback.IsScalingModel;
+        if (session.IsModel && (modelScaling || modelScaledLastFrame))
+            session.Rebase(pose);
+        else if (session.IsActive && !session.Update(pose))
+            EndManipulation("object no longer selected or active");
+        modelScaledLastFrame = modelScaling;
+    }
+
+    /// <summary>The held point of an active whole-model drag (two-hand scaling pivots on it).</summary>
+    public bool TryGetModelGrabPoint(out Vector3 point)
+    {
+        point = session.IsModel ? session.GrabPointWorld : default;
+        return session.IsModel;
     }
 
     private void Press(Pose pose)
@@ -123,6 +147,14 @@ public class CADPointerInteraction : MonoBehaviour
 
     private void Handle(CADPointerStateMachine.Intent intent, string reason = null, Pose pose = default)
     {
+        if (manipulationService.IsModelManipulationActive &&
+            (intent == CADPointerStateMachine.Intent.ClickCad || intent == CADPointerStateMachine.Intent.ClickEmpty))
+        {
+            // Model mode: only drags act; the selection and the model menu are kept.
+            Debug.Log($"[CADPointer] {intent} ignored during model manipulation.");
+            return;
+        }
+
         switch (intent)
         {
             case CADPointerStateMachine.Intent.ClickCad:
@@ -193,6 +225,12 @@ public class CADPointerInteraction : MonoBehaviour
             return;
         }
 
+        if (manipulationService.IsModelManipulationActive)
+        {
+            BeginModelDrag(pose);
+            return;
+        }
+
         // Grabbing the selection moves the selection: any selected object when several are
         // selected, and anything while picking (an unselected object is added first).
         bool picking = manipulationService.IsMultiSelectActive;
@@ -248,12 +286,31 @@ public class CADPointerInteraction : MonoBehaviour
         Debug.Log($"[CADPointer] Group drag started: {string.Join(", ", roots.Select(r => r.name))}; {info}.");
     }
 
+    // Holds the whole model root at the pressed point on the geometry (else the visible bounds
+    // center): the root moves and rotates rigidly; no CAD object is moved individually.
+    private void BeginModelDrag(Pose pose)
+    {
+        Transform root = manipulationService.ModelRoot;
+        if (root == null)
+        {
+            Debug.Log("[CADPointer] Model drag ignored: no model root.");
+            return;
+        }
+
+        Vector3 grabPoint = machine.PressHasHitPoint ? machine.PressHitPoint
+            : manipulationService.TryGetModelBounds(out Bounds bounds) ? bounds.center
+            : root.position;
+        string info = session.BeginModel(manipulationService, pose, grabPoint);
+        modelScaledLastFrame = false;
+        Debug.Log($"[CADPointer] Model drag started ({(machine.PressHasHitPoint ? "hit point" : "bounds center")}); {info}.");
+    }
+
     private void EndManipulation(string reason)
     {
         if (!session.IsActive)
             return;
 
-        Debug.Log($"[CADPointer] Drag ended: '{session.GrabbedId}' ({reason}).");
+        Debug.Log($"[CADPointer] Drag ended: '{session.Description}' ({reason}).");
         session.End();
     }
 

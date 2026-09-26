@@ -6,7 +6,9 @@ using UnityEngine;
 /// releasing grip drops it. Normal use is trigger press-and-drag via CADPointerInteraction.
 /// Uses the same CADGrabSession math (rigid pickup, depth-only reach assist), driven by the
 /// right controller anchor. All pose changes go through the service.
-/// Holding both controller grips scales around the selected object's visible center.
+/// Holding both controller grips scales around the selected object's visible center, or, in
+/// whole-model manipulation mode, scales the model root around the held/visible point (single
+/// grip does nothing in that mode: model manipulation wins).
 /// </summary>
 [DisallowMultipleComponent]
 [RequireComponent(typeof(CADVisionManipulationService))]
@@ -43,6 +45,11 @@ public class CADXRGrab : MonoBehaviour
     private Vector3 scalePivotWorld;
     private bool scaleCancelledUntilRelease;
 
+    // Whole-model two-hand scaling (model manipulation mode).
+    private bool modelScaling;
+    private Transform modelScaleRoot;
+    private float initialModelScaleRatio;
+
     private CADVisionManipulationService manipulationService;
     private CADPointerInteraction pointerInteraction;
     private readonly CADGrabSession session = new CADGrabSession();
@@ -50,6 +57,7 @@ public class CADXRGrab : MonoBehaviour
     private CADObject grabbedObject;
 
     public bool IsGrabbing => session.IsActive;
+    public bool IsScalingModel => modelScaling;
 
     // TEMP grab diagnostics: last logged grip state, so only transitions are logged.
     private bool loggedGripHeld;
@@ -78,7 +86,11 @@ public class CADXRGrab : MonoBehaviour
                 $"(controller mask {controller}).");
     }
 
-    private void OnDisable() => Release("component disabled");
+    private void OnDisable()
+    {
+        Release("component disabled");
+        EndModelScale("component disabled");
+    }
 
     // LateUpdate so the rig has applied this frame's controller pose.
     private void LateUpdate()
@@ -87,6 +99,15 @@ public class CADXRGrab : MonoBehaviour
 
         if (controllerAnchor == null)
             return;
+
+        // Model mode: the grips only scale the whole model; part grabs are released.
+        if (manipulationService.IsModelManipulationActive || modelScaling)
+        {
+            if (session.IsActive)
+                Release("model manipulation active");
+            UpdateModelTwoHandScale();
+            return;
+        }
 
         if (UpdateTwoHandScale())
             return;
@@ -157,11 +178,76 @@ public class CADXRGrab : MonoBehaviour
             scaling = true;
         }
 
-        float ratio = Mathf.Clamp(distance / initialHandDistance,
-            Mathf.Clamp(minimumScaleRatio, 0.01f, 1f), Mathf.Max(1f, maximumScaleRatio));
         manipulationService.SetObjectScaleAroundPoint(
-            grabbedObject.id, initialScale * ratio, scalePivotLocal, scalePivotWorld);
+            grabbedObject.id, initialScale * HandScaleRatio(distance), scalePivotLocal, scalePivotWorld);
         return true;
+    }
+
+    // Shared two-hand math: hand separation relative to the separation at scale start,
+    // clamped per gesture. Scaling only starts at minimumScaleSeparation, so the divisor is
+    // never near zero; the service clamps the absolute model scale as well.
+    private float HandScaleRatio(float distance) =>
+        Mathf.Clamp(distance / Mathf.Max(initialHandDistance, 0.01f),
+            Mathf.Clamp(minimumScaleRatio, 0.01f, 1f), Mathf.Max(1f, maximumScaleRatio));
+
+    // Both grips scale the model root uniformly around a fixed pivot on the visible model:
+    // the point held by an active one-hand model drag, else the visible bounds center (never
+    // the root's CAD origin). The pointer's model drag rebases while this runs, so moving
+    // between one and two hands never snaps.
+    private void UpdateModelTwoHandScale()
+    {
+        bool rightHeld = OVRInput.Get(OVRInput.Button.PrimaryHandTrigger, controller);
+        bool leftHeld = OVRInput.Get(OVRInput.Button.PrimaryHandTrigger, OVRInput.Controller.LTouch);
+        bool tracked = leftControllerAnchor != null &&
+            OVRInput.GetControllerPositionTracked(OVRInput.Controller.LTouch) &&
+            OVRInput.GetControllerPositionTracked(controller);
+        Transform root = manipulationService.ModelRoot;
+        bool canScale = rightHeld && leftHeld && tracked && root != null &&
+            manipulationService.IsModelManipulationActive;
+
+        if (modelScaling && (!canScale || root != modelScaleRoot))
+        {
+            EndModelScale(canScale ? "model replaced" : "grips released or model mode ended");
+            return;
+        }
+
+        if (!canScale)
+            return;
+
+        float distance = Vector3.Distance(leftControllerAnchor.position, controllerAnchor.position);
+        if (!modelScaling)
+        {
+            if (distance < Mathf.Max(0.01f, minimumScaleSeparation))
+                return;
+
+            bool fromGrab = pointerInteraction != null && pointerInteraction.TryGetModelGrabPoint(out scalePivotWorld);
+            if (!fromGrab)
+            {
+                scalePivotWorld = manipulationService.TryGetModelBounds(out Bounds bounds)
+                    ? bounds.center : root.position;
+            }
+
+            modelScaleRoot = root;
+            initialHandDistance = distance;
+            initialModelScaleRatio = manipulationService.ModelScaleRatio;
+            scalePivotLocal = root.InverseTransformPoint(scalePivotWorld);
+            modelScaling = true;
+            Debug.Log($"[CADXRGrab] Model scaling started around {(fromGrab ? "held point" : "visible center")} " +
+                $"(scale ×{initialModelScaleRatio:F2}).");
+        }
+
+        manipulationService.SetModelScaleAroundPoint(
+            initialModelScaleRatio * HandScaleRatio(distance), scalePivotLocal, scalePivotWorld);
+    }
+
+    private void EndModelScale(string reason)
+    {
+        if (!modelScaling)
+            return;
+
+        Debug.Log($"[CADXRGrab] Model scaling ended ({reason}; scale ×{manipulationService.ModelScaleRatio:F2}).");
+        modelScaling = false;
+        modelScaleRoot = null;
     }
 
     // The grip-held object still exists, is visible and is selected.
