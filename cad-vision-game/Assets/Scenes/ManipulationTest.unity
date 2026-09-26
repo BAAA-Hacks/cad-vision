@@ -4857,7 +4857,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: CADVision.Runtime::CADVision.CadModelLoader
   ReviewOrigin: {fileID: 216140254}
   ReviewDistance: 1.2
-  FitForReview: 1
+  FitForReview: 0
   ReviewSize: 1
   CreateSelectionColliders: 1
 --- !u!114 &737639394

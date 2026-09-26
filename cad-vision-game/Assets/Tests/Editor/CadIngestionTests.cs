@@ -11,6 +11,34 @@ using UnityEngine.TestTools;
 
 public class CadIngestionTests
 {
+    // GLB geometry is already in metres, regardless of metadata display units.
+    [TestCase(0.1f, false, 0.1f)] // 100 mm in MMGS
+    [TestCase(0.0254f, false, 0.0254f)] // 1 inch in IPS
+    [TestCase(2f, false, 2f)] // Large parts must not shrink either.
+    [TestCase(0.1f, true, 1f)] // Presentation fitting remains explicitly available.
+    public void PlacementPreservesPhysicalSizeUnlessReviewFitIsRequested(float metres, bool fit, float expected)
+    {
+        var host = new GameObject("ScaleTestLoader");
+        var root = new GameObject("ScaleTestModel");
+        try
+        {
+            var loader = host.AddComponent<CadModelLoader>();
+            Assert.That(loader.FitForReview, Is.False, "New loaders must default to physical scale.");
+            loader.FitForReview = fit;
+            var cube = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            cube.transform.SetParent(root.transform, false);
+            cube.transform.localScale = Vector3.one * metres;
+            typeof(CadModelLoader).GetMethod("Place", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+                .Invoke(loader, new object[] { root });
+            Assert.That(cube.GetComponent<Renderer>().bounds.size.x, Is.EqualTo(expected).Within(0.000001f));
+            Assert.That(root.transform.localScale.x, Is.EqualTo(fit ? 1f / metres : 1f).Within(0.000001f));
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(root);
+            UnityEngine.Object.DestroyImmediate(host);
+        }
+    }
     private static JObject Valid() => JObject.Parse(@"{
       'schemaVersion':'1.0', 'project':{'rootObjectId':'A'},
       'objects':[
