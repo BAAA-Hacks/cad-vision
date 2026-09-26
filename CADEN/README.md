@@ -76,6 +76,7 @@ The hidden system prompt defines CADEN's role and the same evidence rules.
 - **Core:** .NET Standard 2.1; chat history, Gemini REST client, settings, and IChatClient.
 - **Core/tools:** registry, JSON contract, and the four query handlers plus metadata parsing.
 - **Core/primitives:** internal data structures and operations, including the [mechanical multigraph](Core/primitives/README.md). It is not exposed to Gemini.
+- **Canonical loader foundation:** [ProjectSnapshot and scoped load diagnostics](Core/primitives/operations/project/README.md). Tested independently; the desktop/query path will migrate in the next milestone.
 - **Desktop:** .NET 10 Windows Forms; temporary chat UI and local configuration loader.
 - **Checks:** console-based offline checks and an optional live connectivity check.
 

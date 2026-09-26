@@ -129,6 +129,7 @@ finally
 
 await QueryChecks.RunAsync();
 MechanicalGraphChecks.Run();
+ProjectLoaderChecks.Run();
 
 sealed class FakeHandler : HttpMessageHandler
 {

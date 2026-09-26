@@ -59,7 +59,7 @@ The synthetic fixture flag makes all engineering properties missing, including i
 material.assigned=false placeholders. Structural labels/counts remain available but
 describe GLB occurrences and wrappers, not a verified physical BOM.
 
-Supported property formats are implemented in PropertyContract.cs and returned in
+Supported property formats are implemented in the shared primitive MetadataPropertyRules.cs (via the PropertyContract adapter) and returned in
 expectedFormat. Known fields: sourceDocument, configuration, partNumber, description,
 suppressed, fixed, material, mass, volume, centerOfMass, inertia, definitionStatus,
 remainingDOF, referenceGeometry, dimensions, customProperties. Unknown field requests

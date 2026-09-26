@@ -24,6 +24,9 @@ namespace Core.Primitives.Operations.MechanicalGraph
         private static GraphBuildResult Failure(string code, string path, string message) => new GraphBuildResult(GraphDataState.Invalid, null,
             new List<GraphDiagnostic> { new GraphDiagnostic(code, path, message) }, new List<GraphDiagnostic>());
 
+        // Reuse validation on the canonical loader's parsed document without reparsing JSON.
+        internal static GraphBuildResult BuildParsed(JObject document, GraphDataState state) => new Builder(document, state).Run();
+
         private sealed class Builder
         {
             private readonly JObject doc;
@@ -38,7 +41,7 @@ namespace Core.Primitives.Operations.MechanicalGraph
             private void Warn(string path, string message) => warnings.Add(new GraphDiagnostic("INVALID_PROPERTY", path, message));
             private static string? String(JToken? token) => token?.Type == JTokenType.String && !string.IsNullOrWhiteSpace((string?)token) ? (string?)token : null;
             private static bool Finite(JToken? token) => token != null && (token.Type == JTokenType.Integer || token.Type == JTokenType.Float)
-                && !double.IsNaN(token.Value<double>()) && !double.IsInfinity(token.Value<double>());
+                && !double.IsNaN((double)token) && !double.IsInfinity((double)token);
             private string? OptionalText(JToken? token, string path)
             {
                 if (token == null || token.Type == JTokenType.Null) return null;
@@ -62,14 +65,14 @@ namespace Core.Primitives.Operations.MechanicalGraph
                 string canonical = mass ? "kg" : "m^3";
                 if (fixture || token == null || token.Type == JTokenType.Null)
                     return new GraphQuantity(null, ValueState.Missing, canonical, fixture ? "Synthetic fixture engineering evidence is unavailable." : "Value not reported.");
-                if (!Finite(token) || token!.Value<double>() < 0)
+                if (!Finite(token) || (double)token! < 0)
                 { Warn(path, "Expected finite non-negative number."); return new GraphQuantity(null, ValueState.Invalid, canonical, "Malformed value."); }
                 var factors = mass ? new Dictionary<string, double> { ["kg"] = 1, ["g"] = 0.001, ["lb"] = 0.45359237 }
                     : new Dictionary<string, double> { ["m"] = 1, ["cm"] = 0.000001, ["mm"] = 0.000000001, ["in"] = 0.000016387064, ["ft"] = 0.028316846592 };
                 if (unit == null) return new GraphQuantity(null, ValueState.Missing, canonical, "Project unit missing; value cannot be aggregated.");
                 if (!factors.TryGetValue(unit, out double factor))
                 { Warn(path, "Unsupported project unit."); return new GraphQuantity(null, ValueState.Invalid, canonical, "Unsupported unit."); }
-                double value = token.Value<double>() * factor;
+                double value = (double)token! * factor;
                 if (double.IsInfinity(value)) return new GraphQuantity(null, ValueState.Invalid, canonical, "Unit conversion overflow.");
                 return new GraphQuantity(value, ValueState.Available, canonical);
             }
@@ -152,7 +155,7 @@ namespace Core.Primitives.Operations.MechanicalGraph
                         GraphVector3? axis = null;
                         if (m["axis"] != null && m["axis"]!.Type != JTokenType.Null)
                         {
-                            if (m["axis"] is JArray vector && vector.Count == 3 && vector.All(Finite) && vector.Any(v => v.Value<double>() != 0))
+                            if (m["axis"] is JArray vector && vector.Count == 3 && vector.All(Finite) && vector.Any(v => (double)v != 0))
                                 axis = new GraphVector3((double)vector[0], (double)vector[1], (double)vector[2], OptionalText(m["axisFrame"], path + "/axisFrame"), OptionalText(m["axisUnit"], path + "/axisUnit"));
                             else Warn(path + "/axis", "Expected three finite numbers forming a nonzero vector; axis unavailable.");
                         }
