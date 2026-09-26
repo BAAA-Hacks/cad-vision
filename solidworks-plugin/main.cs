@@ -1289,11 +1289,14 @@ namespace CADVision.SolidWorks
             try
             {
                 model.ClearSelection2(true);
-                bool saved = model.Extension.SaveAs(path, (int)swSaveAsVersion_e.swSaveAsCurrentVersion,
-                    (int)swSaveAsOptions_e.swSaveAsOptions_Silent, null, ref errors, ref warnings);
+                // Use the current extension API, not the obsolete SaveAs method.
+                // Translator availability through this API still requires a live test.
+                bool saved = model.Extension.SaveAs3(path, (int)swSaveAsVersion_e.swSaveAsCurrentVersion,
+                    (int)swSaveAsOptions_e.swSaveAsOptions_Silent, null, null, ref errors, ref warnings);
                 if (!saved || errors != 0)
-                    throw new IOException("SolidWorks GLB export failed: errors=" + errors + " (" + (swFileSaveError_e)errors +
-                        "), warnings=" + warnings + ". Verify Extended Reality (*.GLB) is available in SolidWorks Save As.");
+                    throw new IOException("SolidWorks GLB export via IModelDocExtension.SaveAs3 failed: errors=" + errors + " (" + (swFileSaveError_e)errors +
+                        "), warnings=" + warnings + ". Check whether Extended Reality (*.GLB) is listed in File > Save As. " +
+                        "If it is listed, this may be an API export limitation; this error does not prove the translator is missing.");
                 CheckContainer(path);
                 return warnings;
             }
@@ -1415,6 +1418,7 @@ namespace CADVision.SolidWorks
                 Action<string> progress = message => Console.WriteLine("[{0:F1}s] {1}", clock.Elapsed.TotalSeconds, message);
                 progress("Connecting to SolidWorks");
                 var app = (SldWorks)Marshal.GetActiveObject("SldWorks.Application");
+                progress("SolidWorks revision: " + app.RevisionNumber() + "; GLB API: IModelDocExtension.SaveAs3");
                 Console.WriteLine("Keep the active SolidWorks model unchanged until export completes.");
                 var metadata = ExportPipeline.Export(app, folder,
                     new ExtractionOptions { RunInterferenceDetection = !command.SkipInterferences }, progress);
