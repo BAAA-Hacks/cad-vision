@@ -2132,7 +2132,7 @@ namespace CADVision.SolidWorks
     }
     public static class CadFilesPublisher
     {
-        public const string Destination = @"C:\Users\aiden\OneDrive\Desktop\EXPORT\Assets\CadFiles";
+        public const string Destination = @"C:\Users\aiden\OneDrive\Desktop\CADVision\cad-vision\cad-vision-game\Assets\CadFiles";
         public static void Publish(string source)
         {
             source = Path.GetFullPath(source);
