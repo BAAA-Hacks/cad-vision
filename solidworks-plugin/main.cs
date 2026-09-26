@@ -200,6 +200,15 @@ namespace CADVision.SolidWorks
                 {
                     if (d.unit == "m") { d.value /= l; d.unit = u.length; }
                     else if (d.unit == "rad") { d.value /= a; d.unit = u.angle; }
+                    var tolerance = d.tolerance;
+                    if (tolerance != null && tolerance.unit == "m")
+                    {
+                        tolerance.lowerDeviation /= l; tolerance.upperDeviation /= l; tolerance.unit = u.length;
+                    }
+                    else if (tolerance != null && tolerance.unit == "rad")
+                    {
+                        tolerance.lowerDeviation /= a; tolerance.upperDeviation /= a; tolerance.unit = u.angle;
+                    }
                 }
             }
             foreach (var mate in data.mates)
@@ -212,7 +221,7 @@ namespace CADVision.SolidWorks
             if (data.interferences != null) foreach (var hit in data.interferences) hit.volume /= v;
             data.coordinateSystem = "SolidWorks root document axes; positions/transform translations in project.units.length; inertia about center of mass; directions and rotations dimensionless";
             data.extractionStatus["units"] = "converted_to_active_root_document_units";
-            data.schemaVersion = "2.0";
+            data.schemaVersion = "2.1";
         }
         private static double[] Scale(double[] values, double divisor) { return values == null ? null : values.Select(x => x/divisor).ToArray(); }
     }
@@ -224,7 +233,22 @@ namespace CADVision.SolidWorks
         public string id, name, type, unit;
         public int? nativeDisplayType, nativeParameterType;
         public double? value;
+        // Schema support only: not_read must never be interpreted as no tolerance.
+        public DimensionTolerance tolerance = new DimensionTolerance();
         public List<MateReference> references = new List<MateReference>();
+    }
+    public sealed class DimensionTolerance
+    {
+        // extractionStatus: not_read, complete, partial, unavailable, not_applicable.
+        // type: none, bilateral, symmetric, limit, fit, basic, other, unknown.
+        public string extractionStatus = "not_read", type = "unknown";
+        public int? nativeTypeCode;
+        public string nativeTypeName, source, unit;
+        // Signed offsets from nominal, never absolute minimum/maximum sizes.
+        // Null means unknown; zero is a known zero deviation.
+        public double? lowerDeviation, upperDeviation;
+        // Preserve a native fit designation such as H7 when numeric bounds are absent.
+        public string fitDesignation;
     }
     public sealed class MateLimits { public bool? enabled; public double? minimum, maximum; public string unit; }
     public sealed class InterferenceRecord
