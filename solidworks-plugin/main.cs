@@ -262,6 +262,7 @@ namespace CADVision.SolidWorks
         // Only read carries a finite numeric value; all other states carry null.
         // A failed bound must not erase a successfully read bound or tolerance type.
         public string lowerDeviationStatus = "not_read", upperDeviationStatus = "not_read";
+        public int? lowerNativeStatusCode, upperNativeStatusCode;
         // Preserve a native fit designation such as H7 when numeric bounds are absent.
         public string fitDesignation;
     }
@@ -743,6 +744,29 @@ namespace CADVision.SolidWorks
     // converts all dimensional values to the declared root document units.
     public static class MetadataMath
     {
+        public static string ToleranceType(int code)
+        {
+            switch (code)
+            {
+                case 0: return "none";
+                case 1: return "basic";
+                case 2: return "bilateral";
+                case 3: return "limit";
+                case 4: return "symmetric";
+                case 7: case 8: case 9: return "fit";
+                case 5: case 6: case 10: case 11: return "other";
+                default: return "unknown";
+            }
+        }
+        // Native warning 1 means this bound is not meaningful for the tolerance type.
+        // Never serialize the out-value returned alongside a non-success warning.
+        public static void SetToleranceBound(DimensionTolerance tolerance, bool lower, int status, double value)
+        {
+            string state = status == 1 ? "not_applicable" : status != 0 ? "unavailable" : !Finite(value) ? "invalid" : "read";
+            double? number = state == "read" ? (double?)value : null;
+            if (lower) { tolerance.lowerNativeStatusCode = status; tolerance.lowerDeviationStatus = state; tolerance.lowerDeviation = number; }
+            else { tolerance.upperNativeStatusCode = status; tolerance.upperDeviationStatus = state; tolerance.upperDeviation = number; }
+        }
         public static NativeStatus ComponentStatus(int code)
         {
             return new NativeStatus { source = "IComponent2.GetConstrainedStatus", code = code,
@@ -977,6 +1001,9 @@ namespace CADVision.SolidWorks
                         if (!dimensions.Add(name)) continue;
                         var record = new DimensionRecord { id = SourceId(doc, dim, "DIM", owner.id, name), name = name, nativeDisplayType = display.Type2, nativeParameterType = dim.GetType(), type = MetadataMath.DimensionType(display.Type2) };
                         owner.dimensions.Add(record);
+                        // Tolerance methods read the source document's active configuration.
+                        // Do not infer them from a different configuration or annotation text.
+                        ReadTolerance(dim, record, sameConfig);
                         // Angular radians and linear meters match project.units.
                         if (record.type == "unknown") { owner.extractionStatus["dimensions"] = "partial"; result.warnings.Add(record.id + ": unsupported dimension " + name + " (display type " + record.nativeDisplayType + ", parameter type " + record.nativeParameterType + "); numeric value left null."); }
                         else
@@ -1007,6 +1034,66 @@ namespace CADVision.SolidWorks
             }
             for (var child = feature.GetFirstSubFeature() as Feature; child != null; child = child.GetNextSubFeature() as Feature)
                 ReadFeatureTree(child, doc, owner, component, sameConfig, visited, dimensions, !dimensionsRead);
+        }
+
+        private void ReadTolerance(Dimension dimension, DimensionRecord record, bool sameConfiguration)
+        {
+            var t = record.tolerance;
+            t.source = "IDimension.Tolerance / IDimensionTolerance.Type / GetMinValue2 / GetMaxValue2";
+            t.extractionStatus = "unavailable";
+            t.lowerDeviationStatus = t.upperDeviationStatus = "unavailable";
+            if (!sameConfiguration)
+            {
+                result.warnings.Add(record.id + ": tolerance unavailable because the referenced configuration is not active.");
+                return;
+            }
+            global::SolidWorks.Interop.sldworks.DimensionTolerance native = null;
+            Try(record.id, "tolerance type", () => {
+                native = dimension.Tolerance;
+                if (native == null) throw new InvalidDataException("Native tolerance object unavailable.");
+                int code = native.Type;
+                t.nativeTypeCode = code;
+                t.nativeTypeName = Enum.GetName(typeof(swTolType_e), code);
+                t.type = MetadataMath.ToleranceType(code);
+            });
+            if (t.nativeTypeCode == null) return;
+            // Confirmed absence/basic dimension is not a failed numeric read.
+            if (t.type == "none" || t.type == "basic")
+            {
+                t.lowerDeviationStatus = t.upperDeviationStatus = "not_applicable";
+                t.extractionStatus = "complete";
+                return;
+            }
+            t.extractionStatus = "partial";
+            t.unit = MetadataMath.DimensionUnit(record.type);
+            if (t.type == "unknown" || t.unit == null)
+            {
+                result.warnings.Add(record.id + ": native tolerance type retained, but numeric tolerance interpretation is unsupported.");
+                return;
+            }
+            Try(record.id, "lower tolerance", () => {
+                double value; int status = native.GetMinValue2(out value);
+                MetadataMath.SetToleranceBound(t, true, status, value);
+            });
+            Try(record.id, "upper tolerance", () => {
+                double value; int status = native.GetMaxValue2(out value);
+                MetadataMath.SetToleranceBound(t, false, status, value);
+            });
+            bool fitRead = true;
+            if (t.type == "fit")
+            {
+                fitRead = false;
+                Try(record.id, "fit designation", () => {
+                    string hole = native.GetHoleFitValue(), shaft = native.GetShaftFitValue();
+                    t.fitDesignation = String.Join("/", new[] { hole, shaft }.Where(s => !String.IsNullOrWhiteSpace(s)));
+                    if (String.IsNullOrEmpty(t.fitDesignation)) t.fitDesignation = null;
+                    fitRead = t.fitDesignation != null;
+                });
+            }
+            bool lowerOk = t.lowerDeviationStatus == "read" || t.lowerDeviationStatus == "not_applicable";
+            bool upperOk = t.upperDeviationStatus == "read" || t.upperDeviationStatus == "not_applicable";
+            if (lowerOk && upperOk && fitRead) t.extractionStatus = "complete";
+            else result.warnings.Add(record.id + ": tolerance partially read; lower=" + t.lowerDeviationStatus + ", upper=" + t.upperDeviationStatus + ".");
         }
 
         private void ReadReference(Feature f, ModelDoc2 doc, CadObject o, Component2 component)
@@ -1464,6 +1551,19 @@ namespace CADVision.SolidWorks
                 Console.WriteLine(metadata.objects.Count + " objects; " + metadata.mates.Count + " mates; " + clock.Elapsed.TotalSeconds.ToString("F1") + " seconds.");
                 foreach (string warning in metadata.warnings) Console.Error.WriteLine("Warning: " + warning);
                 if (metadata.notices.Count > 0) Console.WriteLine("Info: " + metadata.notices.Count + " identity notices recorded in metadata.json.");
+                // Show present or unresolved tolerances; omit confirmed 'none' entries.
+                foreach (var obj in metadata.objects)
+                {
+                    if (obj.dimensions == null) continue;
+                    foreach (var dimension in obj.dimensions)
+                    {
+                        var t = dimension.tolerance;
+                        if (t == null || t.type == "none") continue;
+                        Console.WriteLine("Tolerance: {0} / {1}: {2}; lower={3} ({4}); upper={5} ({6}); unit={7}; extraction={8}",
+                            obj.name, dimension.name, t.type, t.lowerDeviation.HasValue ? t.lowerDeviation.Value.ToString("G17") : "null", t.lowerDeviationStatus,
+                            t.upperDeviation.HasValue ? t.upperDeviation.Value.ToString("G17") : "null", t.upperDeviationStatus, t.unit ?? "not_applicable", t.extractionStatus);
+                    }
+                }
                 if (command.Shipper != null)
                 {
                     progress("Starting CADEN Shipper with the completed pair");
