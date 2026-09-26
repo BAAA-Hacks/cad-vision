@@ -1222,7 +1222,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: d04aea9adeb7dc344b2124d687a2ce4f, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::CADRuntimeBridge
-  runtime: {fileID: 0}
+  runtime: {fileID: 737639394}
 --- !u!114 &191370963
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -4749,6 +4749,84 @@ Transform:
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 1315152574}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1 &737639391
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 737639395}
+  - component: {fileID: 737639394}
+  - component: {fileID: 737639393}
+  - component: {fileID: 737639392}
+  m_Layer: 0
+  m_Name: CADVisionRuntime
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &737639392
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 737639391}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: d2c669509261a6a4b95f35e109f57fef, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: CADVision.Runtime::CADVision.CadDesignReceiver
+  Port: 8085
+  ListenOnEnable: 1
+  AllowLan: 1
+--- !u!114 &737639393
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 737639391}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: b4a98afec6b3399488edc85499ad4160, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: CADVision.Runtime::CADVision.CadModelLoader
+  ReviewOrigin: {fileID: 216140254}
+  ReviewDistance: 1.2
+  FitForReview: 1
+  ReviewSize: 1
+  CreateSelectionColliders: 1
+--- !u!114 &737639394
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 737639391}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: a33d336d47d1faa4b853e8d9af8507b5, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: CADVision.Runtime::CADVision.CADVisionRuntime
+--- !u!4 &737639395
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 737639391}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &740944383
 GameObject:
@@ -11972,3 +12050,4 @@ SceneRoots:
   - {fileID: 191370955}
   - {fileID: 1102633027}
   - {fileID: 1262716028}
+  - {fileID: 737639395}
