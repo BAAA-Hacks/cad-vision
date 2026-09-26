@@ -215,8 +215,9 @@ public class CADVisionManipulationService : MonoBehaviour
     public void ReplaceImportedModel(Transform root, IReadOnlyDictionary<string, GameObject> importedObjects)
     {
         // Selection, highlights and scope may reference the outgoing model; this also
-        // ends any active grab.
+        // ends any active grab and multi-select.
         ClearSelection();
+        EndMultiSelect();
 
         foreach (string id in importedIds)
         {
@@ -376,6 +377,192 @@ public class CADVisionManipulationService : MonoBehaviour
                 yield return cadObject;
         }
     }
+
+    public bool IsSelected(string id) => id != null && selectedIds.Contains(id) && TryGetLiveObject(id, out _);
+
+    // Live selected IDs (a snapshot; the service's set is the only selection store).
+    public List<string> GetSelectedIds()
+    {
+        var ids = new List<string>();
+        foreach (CADObject cadObject in GetSelectedObjects())
+            ids.Add(cadObject.id);
+        return ids;
+    }
+
+    // -------------------------
+    // Multi-Selection
+    // -------------------------
+
+    // While active, pointer clicks toggle objects in/out of the selection instead of replacing
+    // it. The selection itself is the same selectedIds set used for single selection.
+    public bool IsMultiSelectActive { get; private set; }
+
+    public void BeginMultiSelect()
+    {
+        if (IsMultiSelectActive)
+            return;
+
+        IsMultiSelectActive = true;
+        Debug.Log($"Multi-select started ({selectedIds.Count} selected).");
+    }
+
+    // Leaves multi-select mode. The selection is kept (still outlined) unless clearSelection.
+    public void EndMultiSelect(bool clearSelection = false)
+    {
+        if (clearSelection)
+            ClearSelection();
+
+        if (!IsMultiSelectActive)
+            return;
+
+        IsMultiSelectActive = false;
+        Debug.Log($"Multi-select ended ({selectedIds.Count} selected).");
+    }
+
+    public bool AddToSelection(string id)
+    {
+        if (!TryGetObject(id, out _) || selectedIds.Contains(id))
+            return false;
+
+        selectedIds.Add(id);
+        Highlight(new[] { id });
+        Debug.Log($"Added to selection: {id} ({selectedIds.Count} selected)");
+        return true;
+    }
+
+    public bool RemoveFromSelection(string id)
+    {
+        if (id == null || !selectedIds.Remove(id))
+            return false;
+
+        if (highlightedIds.Remove(id) && TryGetLiveObject(id, out CADObject cadObject))
+            SetHighlight(cadObject, false);
+        if (selectionPointId == id)
+            selectionPointId = null;
+
+        Debug.Log($"Removed from selection: {id} ({selectedIds.Count} selected)");
+        return true;
+    }
+
+    public bool ToggleSelection(string id) =>
+        selectedIds.Contains(id) ? RemoveFromSelection(id) : AddToSelection(id);
+
+    /// <summary>
+    /// The object a raw collider hit selects, with the same rules as SelectFromHit (scope,
+    /// detached units) but without changing any state: a hit outside the current scope
+    /// resolves at the nearest enclosing level instead of moving the scope there.
+    /// </summary>
+    public string ResolveHitTarget(string hitId)
+    {
+        if (!TryGetLiveObject(hitId, out _) || hitId == CurrentScopeId)
+            return null;
+
+        string resolved = ResolveSelectable(hitId);
+        if (resolved != null)
+            return resolved;
+
+        string scope = CurrentScopeId;
+        while (scope != null && ResolveAtScope(hitId, scope) == null)
+            scope = GetParentId(scope);
+        return ResolveAtScope(hitId, scope);
+    }
+
+    // Multi-select click: adds or removes the hit's resolved object. Never changes scope.
+    public string ToggleFromHit(string hitId, Vector3? hitPoint = null)
+    {
+        string resolved = ResolveHitTarget(hitId);
+        if (resolved == null)
+            return null;
+
+        if (selectedIds.Contains(resolved))
+        {
+            RemoveFromSelection(resolved);
+        }
+        else if (AddToSelection(resolved) && hitPoint.HasValue &&
+                 TryGetLiveObject(resolved, out CADObject added))
+        {
+            selectionPointId = resolved;
+            selectionPointLocal = added.transform.InverseTransformPoint(hitPoint.Value);
+        }
+
+        return resolved;
+    }
+
+    /// <summary>
+    /// Selected objects that are not moved by another selected object: drops any selected
+    /// object whose current Transform ancestor is also selected (so a group transform is never
+    /// applied twice). Uses Transform ancestry, not the logical tree: a detached child of a
+    /// selected assembly no longer moves with it and stays a root.
+    /// </summary>
+    public List<string> GetSelectedTransformRoots()
+    {
+        List<CADObject> selected = new List<CADObject>(GetSelectedObjects());
+        var roots = new List<string>();
+        foreach (CADObject candidate in selected)
+        {
+            bool coveredByAnother = false;
+            foreach (CADObject other in selected)
+            {
+                if (other != candidate && candidate.transform.IsChildOf(other.transform))
+                {
+                    coveredByAnother = true;
+                    break;
+                }
+            }
+
+            if (!coveredByAnother)
+                roots.Add(candidate.id);
+        }
+
+        return roots;
+    }
+
+    /// <summary>
+    /// Selected objects with no selected logical (imported) CAD ancestor. Used for hierarchy
+    /// operations such as Reset Selected, where an assembly's reset already covers its subtree
+    /// (including detached descendants).
+    /// </summary>
+    public List<string> GetSelectedLogicalRoots()
+    {
+        var roots = new List<string>();
+        foreach (string id in GetSelectedIds())
+        {
+            bool coveredByAncestor = false;
+            for (string parent = GetParentId(id); parent != null; parent = GetParentId(parent))
+            {
+                if (selectedIds.Contains(parent))
+                {
+                    coveredByAncestor = true;
+                    break;
+                }
+            }
+
+            if (!coveredByAncestor)
+                roots.Add(id);
+        }
+
+        return roots;
+    }
+
+    // Each logical root once: assemblies with their whole subtree, leaves individually.
+    // Detached members are reattached by ResetAssembly/ResetObject.
+    public void ResetSelected()
+    {
+        List<string> roots = GetSelectedLogicalRoots();
+        foreach (string id in roots)
+        {
+            if (HasCadChildren(id))
+                ResetAssembly(id);
+            else
+                ResetObject(id);
+        }
+
+        Debug.Log($"Reset selected: {roots.Count} root(s).");
+    }
+
+    // Visibility only (IsolateMany): selected objects stay visible, as do the CAD ancestors
+    // needed to keep them active. Does not change scope or selection.
+    public void IsolateSelected() => IsolateMany(GetSelectedIds());
 
     // -------------------------
     // Highlighting
@@ -671,6 +858,7 @@ public class CADVisionManipulationService : MonoBehaviour
             return;
 
         CurrentScopeId = scopeId;
+        EndMultiSelect();
         Debug.Log($"Interaction scope: {scopeId ?? "<model>"}");
         ScopeChanged?.Invoke();
     }
@@ -705,6 +893,22 @@ public class CADVisionManipulationService : MonoBehaviour
     }
 
     // Restores original parent (if detached) and original local pose.
+    // Scale the selected hierarchy while preserving a chosen world-space pivot.
+    // This also compensates for CAD origins located far outside the visible geometry.
+    public void SetObjectScaleAroundPoint(string id, Vector3 localScale,
+        Vector3 pivotLocal, Vector3 pivotWorld)
+    {
+        if (!float.IsFinite(localScale.x) || !float.IsFinite(localScale.y) ||
+            !float.IsFinite(localScale.z) || localScale.x == 0f ||
+            localScale.y == 0f || localScale.z == 0f)
+            return;
+        if (!TryGetObject(id, out CADObject cadObject)) return;
+
+        Transform target = cadObject.transform;
+        target.localScale = localScale;
+        target.position += pivotWorld - target.TransformPoint(pivotLocal);
+    }
+
     public void ResetObject(string id)
     {
         if (TryGetObject(id, out CADObject cadObject))

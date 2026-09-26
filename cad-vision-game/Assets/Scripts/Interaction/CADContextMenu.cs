@@ -18,12 +18,21 @@ using UnityEngine.UI;
 /// works: controller trigger now, hand pinch later. It is built in code (no per-object setup)
 /// and is never a CAD object; CADPointerInteraction classifies it as UI, so clicking it never
 /// deselects.
+///
+/// While the service's multi-select mode is active the same panel is re-laid-out as a
+/// selection menu (Done / Reset Selected / Isolate Selected / Show All / Clear Selection),
+/// anchored at the selected objects' combined visible bounds.
 /// </summary>
 [DisallowMultipleComponent]
 [RequireComponent(typeof(CADVisionManipulationService))]
 public class CADContextMenu : MonoBehaviour
 {
-    private enum MenuAction { EnterAssembly, ExitAssembly, Isolate, ShowAll, DetachOrReattach, ResetObject, ResetAssembly, ResetModel, Close }
+    private enum MenuAction
+    {
+        EnterAssembly, ExitAssembly, Isolate, ShowAll, DetachOrReattach, ResetObject, ResetAssembly,
+        ResetModel, MultiSelect, Close,
+        Done, ResetSelected, IsolateSelected, ClearSelection, EditSelection,
+    }
 
     [Header("Placement")]
     [Tooltip("Pull toward the headset from the anchor so the panel isn't inside the geometry (m).")]
@@ -49,17 +58,45 @@ public class CADContextMenu : MonoBehaviour
     private const float ButtonSpacing = 8f;
     private const int FontSize = 20;
 
-    private static readonly (MenuAction action, string label)[] Layout =
+    // Object menu (one selected object).
+    private static readonly MenuAction[] SingleLayout =
     {
-        (MenuAction.EnterAssembly, "Enter Assembly"),
-        (MenuAction.ExitAssembly, "Exit Assembly"),
-        (MenuAction.Isolate, "Isolate"),
-        (MenuAction.ShowAll, "Show All"),
-        (MenuAction.DetachOrReattach, "Detach"),
-        (MenuAction.ResetObject, "Reset Object"),
-        (MenuAction.ResetAssembly, "Reset Assembly"),
-        (MenuAction.ResetModel, "Reset Model"),
-        (MenuAction.Close, "Close"),
+        MenuAction.EnterAssembly, MenuAction.ExitAssembly, MenuAction.Isolate, MenuAction.ShowAll,
+        MenuAction.DetachOrReattach, MenuAction.ResetObject, MenuAction.ResetAssembly,
+        MenuAction.ResetModel, MenuAction.MultiSelect, MenuAction.Close,
+    };
+
+    // Selection menu (multi-select mode).
+    private static readonly MenuAction[] MultiLayout =
+    {
+        MenuAction.Done, MenuAction.ResetSelected, MenuAction.IsolateSelected, MenuAction.ShowAll,
+        MenuAction.ClearSelection,
+    };
+
+    // Selection menu outside multi-select (clicked an object that is part of a multi-selection).
+    private static readonly MenuAction[] GroupLayout =
+    {
+        MenuAction.EditSelection, MenuAction.ResetSelected, MenuAction.IsolateSelected,
+        MenuAction.ShowAll, MenuAction.ClearSelection, MenuAction.Close,
+    };
+
+    private static readonly Dictionary<MenuAction, string> Labels = new()
+    {
+        { MenuAction.EnterAssembly, "Enter Assembly" },
+        { MenuAction.ExitAssembly, "Exit Assembly" },
+        { MenuAction.Isolate, "Isolate" },
+        { MenuAction.ShowAll, "Show All" },
+        { MenuAction.DetachOrReattach, "Detach" },
+        { MenuAction.ResetObject, "Reset Object" },
+        { MenuAction.ResetAssembly, "Reset Assembly" },
+        { MenuAction.ResetModel, "Reset Model" },
+        { MenuAction.MultiSelect, "Multi-Select" },
+        { MenuAction.Close, "Close" },
+        { MenuAction.Done, "Done" },
+        { MenuAction.ResetSelected, "Reset Selected" },
+        { MenuAction.IsolateSelected, "Isolate Selected" },
+        { MenuAction.ClearSelection, "Clear Selection" },
+        { MenuAction.EditSelection, "Edit Selection" },
     };
 
     private CADVisionManipulationService manipulationService;
@@ -67,7 +104,12 @@ public class CADContextMenu : MonoBehaviour
     private CADXRGrab gripFallback;
 
     private GameObject panelRoot;
+    private RectTransform canvasRect;
+    private BoxCollider surfaceBox;
     private Text titleText;
+    private bool multiMode;          // Panel shows the multi-select (picking) menu.
+    private bool groupMode;          // Panel shows the selection menu for an existing multi-selection.
+    private string multiSignature;   // Selected IDs the selection menu was last placed for.
     private RayInteractable panelInteractable;
     private readonly Dictionary<MenuAction, Button> buttons = new();
 
@@ -113,12 +155,25 @@ public class CADContextMenu : MonoBehaviour
 
     private void Open(CADContextMenuRequest request)
     {
+        if (manipulationService.IsMultiSelectActive)
+            return; // The selection menu is shown instead.
+
         CADObject selected = manipulationService.GetSelectedObjects()
             .FirstOrDefault(o => o.id == request.TargetId);
         if (selected == null)
             return;
 
+        // Clicked one object of a multi-selection: menu for the whole selection.
+        if (manipulationService.GetSelectedIds().Count > 1)
+        {
+            OpenGroup(request);
+            return;
+        }
+
         // A newer request replaces the current menu.
+        multiMode = false;
+        groupMode = false;
+        ApplyLayout(SingleLayout);
         targetId = request.TargetId;
         target = selected;
         titleText.text = selected.name;
@@ -146,12 +201,116 @@ public class CADContextMenu : MonoBehaviour
 
         targetId = null;
         target = null;
+        multiMode = false;
+        groupMode = false;
+        multiSignature = null;
+    }
+
+    private void OpenGroup(CADContextMenuRequest request)
+    {
+        multiMode = false;
+        groupMode = true;
+        targetId = request.TargetId;
+        target = null;
+        ApplyLayout(GroupLayout);
+        multiSignature = SelectionSignature(out int count);
+        titleText.text = $"{count} selected";
+        if (request.AnchorIsHitPoint)
+            PlaceAt(request.AnchorPoint);
+        else
+            PlaceMulti(true);
+        RefreshButtons();
+        panelRoot.SetActive(true);
+        panelInteractable.enabled = true;
+        Debug.Log($"[CADContextMenu] Opened selection menu ({count} selected).");
+    }
+
+    private string SelectionSignature(out int count)
+    {
+        List<string> ids = manipulationService.GetSelectedIds();
+        ids.Sort(StringComparer.Ordinal);
+        count = ids.Count;
+        return string.Join("|", ids);
+    }
+
+    private bool IsMoving() =>
+        (pointerInteraction != null && pointerInteraction.IsManipulating) ||
+        (gripFallback != null && gripFallback.IsGrabbing);
+
+    private void OpenMulti()
+    {
+        multiMode = true;
+        groupMode = false;
+        multiSignature = null;
+        targetId = null;
+        target = null;
+        ApplyLayout(MultiLayout);
+        UpdateMulti(forcePlace: true);
+        panelRoot.SetActive(true);
+        panelInteractable.enabled = true;
+        Debug.Log("[CADContextMenu] Opened selection menu (multi-select).");
+    }
+
+    // Keeps the selection menu's title/buttons current; re-places it when the set changes.
+    private void UpdateMulti(bool forcePlace = false)
+    {
+        List<string> ids = manipulationService.GetSelectedIds();
+        ids.Sort(StringComparer.Ordinal);
+        string signature = string.Join("|", ids);
+        titleText.text = $"Multi-Select: {ids.Count} selected";
+        if (forcePlace || signature != multiSignature)
+        {
+            PlaceMulti(!IsOpen || forcePlace);
+            multiSignature = signature;
+        }
+
+        RefreshButtons();
     }
 
     private void LateUpdate()
     {
+        // Multi-select mode drives the picking menu: shown for as long as the mode lasts, except
+        // while the group is being dragged (it reappears at the group's new position).
+        if (manipulationService.IsMultiSelectActive)
+        {
+            if (IsMoving())
+            {
+                if (IsOpen)
+                    Hide("group is being moved");
+            }
+            else if (!IsOpen || !multiMode)
+                OpenMulti();
+            else
+            {
+                UpdateMulti();
+                RefaceIfHeadMoved();
+            }
+            return;
+        }
+
+        if (IsOpen && multiMode)
+        {
+            Hide("multi-select ended");
+            return;
+        }
+
         if (!IsOpen)
             return;
+
+        if (groupMode)
+        {
+            // The selection menu describes one exact set; any change, or a drag, closes it.
+            if (SelectionSignature(out int count) != multiSignature || count < 2)
+                Hide("selection changed");
+            else if (IsMoving())
+                Hide("selection is being moved");
+            else
+            {
+                RefaceIfHeadMoved();
+                RefreshButtons();
+            }
+            return;
+        }
 
         // Lifecycle: close when the menu no longer describes the current selection.
         if (target == null)
@@ -175,12 +334,16 @@ public class CADContextMenu : MonoBehaviour
             return;
         }
 
-        // Minimal facing: only after the head has moved noticeably, never every frame.
+        RefaceIfHeadMoved();
+        RefreshButtons();
+    }
+
+    // Minimal facing: only after the head has moved noticeably, never every frame.
+    private void RefaceIfHeadMoved()
+    {
         Transform head = Head();
         if (head != null && Vector3.Distance(head.position, headPositionAtFacing) > refaceHeadMovement)
             Face(head);
-
-        RefreshButtons();
     }
 
     // ---------------- Placement ----------------
@@ -203,6 +366,36 @@ public class CADContextMenu : MonoBehaviour
             anchor = CADGrabSession.VisualCenter(target);
         }
 
+        PlaceAt(anchor);
+    }
+
+    // Selection menu: the point of the selected objects' combined visible bounds nearest the
+    // headset (never a CAD Transform origin). With nothing selected it stays where it is, or
+    // opens in front of the headset.
+    private void PlaceMulti(bool placeEvenIfEmpty)
+    {
+        bool hasBounds = false;
+        Bounds bounds = default;
+        foreach (CADObject selected in manipulationService.GetSelectedObjects())
+        {
+            foreach (Renderer renderer in selected.GetComponentsInChildren<Renderer>())
+            {
+                if (!renderer.enabled || renderer.TryGetComponent(out CADVisualOverlay _))
+                    continue;
+                if (hasBounds) bounds.Encapsulate(renderer.bounds);
+                else { bounds = renderer.bounds; hasBounds = true; }
+            }
+        }
+
+        Transform head = Head();
+        if (hasBounds)
+            PlaceAt(head != null ? bounds.ClosestPoint(head.position) : bounds.center);
+        else if (placeEvenIfEmpty && head != null)
+            PlaceAt(head.position + Vector3.ProjectOnPlane(head.forward, Vector3.up).normalized * 0.8f);
+    }
+
+    private void PlaceAt(Vector3 anchor)
+    {
         Transform head = Head();
         if (head == null)
         {
@@ -238,6 +431,19 @@ public class CADContextMenu : MonoBehaviour
 
     private void RefreshButtons()
     {
+        if (multiMode || groupMode)
+        {
+            bool any = manipulationService.GetSelectedObjects().Any();
+            SetInteractable(MenuAction.EditSelection, true);
+            SetInteractable(MenuAction.Close, true);
+            SetInteractable(MenuAction.Done, true);
+            SetInteractable(MenuAction.ResetSelected, any);
+            SetInteractable(MenuAction.IsolateSelected, any);
+            SetInteractable(MenuAction.ShowAll, true);
+            SetInteractable(MenuAction.ClearSelection, any);
+            return;
+        }
+
         bool hasChildren = manipulationService.HasCadChildren(targetId);
         SetInteractable(MenuAction.EnterAssembly, hasChildren);
         SetInteractable(MenuAction.ExitAssembly, manipulationService.CurrentScopeId != null);
@@ -251,6 +457,7 @@ public class CADContextMenu : MonoBehaviour
         SetInteractable(MenuAction.ResetObject, true);
         SetInteractable(MenuAction.ResetAssembly, ResetAssemblyTarget() != null);
         SetInteractable(MenuAction.ResetModel, true);
+        SetInteractable(MenuAction.MultiSelect, true);
         SetInteractable(MenuAction.Close, true);
     }
 
@@ -282,9 +489,12 @@ public class CADContextMenu : MonoBehaviour
         bool detached = manipulationService.IsDetached(id);
         Debug.Log($"[CADContextMenu] {action} on '{id}'.");
 
-        // Every action closes the menu: most change the selection, scope or the object's pose
-        // anyway, and a predictable "one action per menu" is easier with a ray.
-        Hide($"action {action}");
+        // Object menu: every action closes it (most change selection, scope or pose anyway).
+        // Selection menu: stays open for Reset/Isolate/Show All; Done and Clear end the mode.
+        bool keepOpen = multiMode && (action == MenuAction.ResetSelected ||
+            action == MenuAction.IsolateSelected || action == MenuAction.ShowAll);
+        if (!keepOpen)
+            Hide($"action {action}");
 
         switch (action)
         {
@@ -301,7 +511,13 @@ public class CADContextMenu : MonoBehaviour
                 if (assemblyId != null) manipulationService.ResetAssembly(assemblyId);
                 break;
             case MenuAction.ResetModel: manipulationService.ResetModel(); break;
+            case MenuAction.MultiSelect: manipulationService.BeginMultiSelect(); break; // Selection menu opens next frame.
             case MenuAction.Close: break;
+            case MenuAction.Done: manipulationService.EndMultiSelect(); break;
+            case MenuAction.ResetSelected: manipulationService.ResetSelected(); break;
+            case MenuAction.IsolateSelected: manipulationService.IsolateSelected(); break;
+            case MenuAction.ClearSelection: manipulationService.EndMultiSelect(clearSelection: true); break;
+            case MenuAction.EditSelection: manipulationService.BeginMultiSelect(); break; // Picking menu opens next frame.
         }
     }
 
@@ -326,8 +542,7 @@ public class CADContextMenu : MonoBehaviour
 
     private void BuildPanel()
     {
-        int count = Layout.Length;
-        float height = Padding * 2 + TitleHeight + count * ButtonHeight + (count - 1) * ButtonSpacing;
+        float height = PanelHeight(SingleLayout.Length);
 
         // Separate root (never under a CAD object or the model root). Marked as UI.
         panelRoot = new GameObject("CAD Context Menu");
@@ -338,7 +553,7 @@ public class CADContextMenu : MonoBehaviour
         var canvas = canvasObject.AddComponent<Canvas>();
         canvas.renderMode = RenderMode.WorldSpace;
         canvasObject.AddComponent<GraphicRaycaster>(); // Required by PointableCanvas.
-        var canvasRect = (RectTransform)canvasObject.transform;
+        canvasRect = (RectTransform)canvasObject.transform;
         canvasRect.sizeDelta = new Vector2(PanelWidth, height);
         canvasRect.localScale = Vector3.one * CanvasScale;
 
@@ -351,14 +566,8 @@ public class CADContextMenu : MonoBehaviour
         titleText = CreateText("Title", canvasRect, "", FontSize, FontStyle.Bold);
         PlaceTopDown((RectTransform)titleText.transform, Padding, TitleHeight, height);
 
-        float y = Padding + TitleHeight;
-        foreach ((MenuAction action, string label) in Layout)
-        {
-            Button button = CreateButton(action, label, canvasRect);
-            PlaceTopDown((RectTransform)button.transform, y, ButtonHeight, height);
-            buttons[action] = button;
-            y += ButtonHeight + ButtonSpacing;
-        }
+        foreach (KeyValuePair<MenuAction, string> entry in Labels)
+            buttons[entry.Key] = CreateButton(entry.Key, entry.Value, canvasRect);
 
         // Ray surface: a thin collider covering the panel, forwarding pointer events to the
         // canvas. Same SDK path as CAD parts, but not under a CADObject, so it counts as UI.
@@ -366,18 +575,39 @@ public class CADContextMenu : MonoBehaviour
         var surfaceObject = new GameObject("Ray Surface");
         surfaceObject.layer = 2; // Ignore Raycast
         surfaceObject.transform.SetParent(panelRoot.transform, false);
-        var box = surfaceObject.AddComponent<BoxCollider>();
-        box.size = new Vector3(PanelWidth * CanvasScale, height * CanvasScale, 0.004f);
+        surfaceBox = surfaceObject.AddComponent<BoxCollider>();
 
         var pointableCanvas = canvasObject.AddComponent<PointableCanvas>();
         pointableCanvas.InjectAllPointableCanvas(canvas);
 
         var surface = surfaceObject.AddComponent<ColliderSurface>();
-        surface.InjectAllColliderSurface(box);
+        surface.InjectAllColliderSurface(surfaceBox);
         panelInteractable = surfaceObject.AddComponent<RayInteractable>();
         panelInteractable.InjectAllRayInteractable(surface);
         panelInteractable.InjectOptionalSelectSurface(surface);
         panelInteractable.InjectOptionalPointableElement(pointableCanvas);
+    }
+
+    private static float PanelHeight(int buttonCount) =>
+        Padding * 2 + TitleHeight + buttonCount * ButtonHeight + Mathf.Max(0, buttonCount - 1) * ButtonSpacing;
+
+    // Shows exactly the layout's buttons, stacks them top-down and resizes panel + ray surface.
+    private void ApplyLayout(MenuAction[] layout)
+    {
+        float height = PanelHeight(layout.Length);
+        canvasRect.sizeDelta = new Vector2(PanelWidth, height);
+        surfaceBox.size = new Vector3(PanelWidth * CanvasScale, height * CanvasScale, 0.004f);
+        PlaceTopDown((RectTransform)titleText.transform, Padding, TitleHeight, height);
+
+        foreach (KeyValuePair<MenuAction, Button> entry in buttons)
+            entry.Value.gameObject.SetActive(Array.IndexOf(layout, entry.Key) >= 0);
+
+        float y = Padding + TitleHeight;
+        foreach (MenuAction action in layout)
+        {
+            PlaceTopDown((RectTransform)buttons[action].transform, y, ButtonHeight, height);
+            y += ButtonHeight + ButtonSpacing;
+        }
     }
 
     private Button CreateButton(MenuAction action, string label, RectTransform parent)

@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
 
@@ -7,6 +8,10 @@ using UnityEngine;
 /// the object keeps its grab-start position and rotation relative to the pointer, so it moves
 /// and rotates rigidly; beyond reachDistance only pointer movement toward/away from the held
 /// point is amplified. All poses go through CADVisionManipulationService.SetObjectWorldPose.
+///
+/// A session can hold several objects (a multi-selection) as one rigid group: each member
+/// keeps its own pose relative to the pointer, and the depth-assist shift computed at the
+/// held point (on the first member) is applied to every member.
 /// </summary>
 public sealed class CADGrabSession
 {
@@ -14,42 +19,82 @@ public sealed class CADGrabSession
     public float MaxExtraGain = 4f;
     public float DecayRate = 1.5f;
 
+    private sealed class Member
+    {
+        public string Id;
+        public Transform Transform;
+        // Object pose relative to the pointer (the virtual pickup transform).
+        public Vector3 HeldPositionOffset;    // In pointer space.
+        public Quaternion HeldRotationOffset; // In pointer space.
+    }
+
     private CADVisionManipulationService manipulationService;
-    private Transform grabbedTransform;
+    private readonly List<Member> members = new();
     private Vector3 lastPointerPosition;
     private Quaternion lastPointerRotation;
-    // The point being held (selection hit point, or visual center fallback), in the grabbed
-    // object's local space. Reach assist measures to this, never to the Transform origin.
+    // The point being held (selection hit point, or visual center fallback), in the first
+    // member's local space. Reach assist measures to this, never to the Transform origin.
     private Vector3 grabPointLocal;
-    // Object pose relative to the pointer (the virtual pickup transform).
-    private Vector3 heldPositionOffset;    // In pointer space.
-    private Quaternion heldRotationOffset; // In pointer space.
 
-    public string GrabbedId { get; private set; }
-    public bool IsActive => GrabbedId != null;
+    // First (anchor) member; all members for groups.
+    public string GrabbedId => members.Count > 0 ? members[0].Id : null;
+    public IEnumerable<string> GrabbedIds => members.Select(m => m.Id);
+    public int Count => members.Count;
+    public bool IsActive => members.Count > 0;
 
-    /// <summary>Starts holding the object. Returns a short description for logging.</summary>
-    public string Begin(CADVisionManipulationService service, CADObject target, Pose pointer)
+    /// <summary>
+    /// Starts holding the object. grabPointWorld overrides the held point (default: the
+    /// service's selection hit point, else the visual center). Returns a description for logs.
+    /// </summary>
+    public string Begin(CADVisionManipulationService service, CADObject target, Pose pointer,
+        Vector3? grabPointWorld = null) =>
+        Begin(service, new[] { target }, pointer, grabPointWorld);
+
+    /// <summary>
+    /// Starts holding a rigid group. targets[0] anchors the grab point; pass transform roots
+    /// (CADVisionManipulationService.GetSelectedTransformRoots) so nothing moves twice.
+    /// </summary>
+    public string Begin(CADVisionManipulationService service, IReadOnlyList<CADObject> targets, Pose pointer,
+        Vector3? grabPointWorld = null)
     {
         manipulationService = service;
+        members.Clear();
 
-        // Only relative motion from here on, so the object does not snap.
-        Transform targetTransform = target.transform;
+        // Only relative motion from here on, so nothing snaps.
         Quaternion inversePointer = Quaternion.Inverse(pointer.rotation);
-        heldPositionOffset = inversePointer * (targetTransform.position - pointer.position);
-        heldRotationOffset = inversePointer * targetTransform.rotation;
+        foreach (CADObject cadObject in targets)
+        {
+            members.Add(new Member
+            {
+                Id = cadObject.id,
+                Transform = cadObject.transform,
+                HeldPositionOffset = inversePointer * (cadObject.transform.position - pointer.position),
+                HeldRotationOffset = inversePointer * cadObject.transform.rotation,
+            });
+        }
         lastPointerPosition = pointer.position;
         lastPointerRotation = pointer.rotation;
 
+        CADObject target = targets[0];
+        Transform targetTransform = target.transform;
+
         // Hold the point the user picked; direct selections (CADEN, debug) have none.
-        bool fromHit = service.TryGetSelectionPoint(out Vector3 grabPoint);
-        if (!fromHit)
-            grabPoint = VisualCenter(target);
+        Vector3 grabPoint;
+        bool fromHit;
+        if (grabPointWorld.HasValue)
+        {
+            grabPoint = grabPointWorld.Value;
+            fromHit = true;
+        }
+        else
+        {
+            fromHit = service.TryGetSelectionPoint(out grabPoint);
+            if (!fromHit)
+                grabPoint = VisualCenter(target);
+        }
         grabPointLocal = targetTransform.InverseTransformPoint(grabPoint);
 
-        GrabbedId = target.id;
-        grabbedTransform = targetTransform;
-        return $"holding {(fromHit ? "selection hit point" : "visual center")} at " +
+        return $"{(members.Count > 1 ? $"group of {members.Count}; " : "")}holding {(fromHit ? "selection hit point" : "visual center")} at " +
             $"{Vector3.Distance(pointer.position, grabPoint):F2} m";
     }
 
@@ -71,7 +116,7 @@ public sealed class CADGrabSession
         // pointer → grab point axis) additionally lengthens or shortens the hold distance.
         // Measured to the held point, not the Transform origin: imported CAD origins can be
         // far from the visible geometry.
-        Vector3 grabPoint = grabbedTransform.TransformPoint(grabPointLocal);
+        Vector3 grabPoint = members[0].Transform.TransformPoint(grabPointLocal);
         // Pointer space as of the pose the object was placed with (last frame), i.e. the
         // grab point's rigid offset.
         Vector3 grabOffset = Quaternion.Inverse(lastPointerRotation) *
@@ -89,25 +134,26 @@ public sealed class CADGrabSession
             float assistedDistance = Mathf.Max(
                 ReachDistance, holdDistance + (gain - 1f) * depthDelta);
 
-            // Translate the whole held pose along the axis; origin and geometry move together.
-            heldPositionOffset += holdAxis * (assistedDistance - holdDistance);
+            // Translate every held pose along the axis; origins, geometry and the rest of the
+            // group move together.
+            Vector3 shift = holdAxis * (assistedDistance - holdDistance);
+            foreach (Member member in members)
+                member.HeldPositionOffset += shift;
         }
 
-        Vector3 targetPosition = pointerPosition + pointerRotation * heldPositionOffset;
-        Quaternion targetRotation = pointerRotation * heldRotationOffset;
-
-        manipulationService.SetObjectWorldPose(GrabbedId, targetPosition, targetRotation);
+        foreach (Member member in members)
+        {
+            manipulationService.SetObjectWorldPose(member.Id,
+                pointerPosition + pointerRotation * member.HeldPositionOffset,
+                pointerRotation * member.HeldRotationOffset);
+        }
 
         lastPointerPosition = pointerPosition;
         lastPointerRotation = pointerRotation;
         return true;
     }
 
-    public void End()
-    {
-        GrabbedId = null;
-        grabbedTransform = null;
-    }
+    public void End() => members.Clear();
 
     // World center of the object's active, enabled renderers; its origin if it has none.
     public static Vector3 VisualCenter(CADObject cadObject)
@@ -146,11 +192,19 @@ public sealed class CADGrabSession
         return 1f + MaxExtraGain * (1f - Mathf.Exp(-DecayRate * excessDistance));
     }
 
-    // Selecting something else (or hiding/destroying the object) mid-grab ends the grab.
+    // Every member must still exist, be visible and be selected; otherwise the grab ends.
     private bool IsStillGrabbable()
     {
-        return grabbedTransform != null &&
-            grabbedTransform.gameObject.activeInHierarchy &&
-            manipulationService.GetSelectedObjects().Any(o => o.id == GrabbedId);
+        foreach (Member member in members)
+        {
+            if (member.Transform == null ||
+                !member.Transform.gameObject.activeInHierarchy ||
+                !manipulationService.IsSelected(member.Id))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 }
