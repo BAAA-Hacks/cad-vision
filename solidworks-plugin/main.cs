@@ -1513,6 +1513,34 @@ namespace CADVision.SolidWorks
 
     public static class ExportPipeline
     {
+        // Default working workflow: read the active CAD document and publish JSON only.
+        public static Metadata ExportMetadataOnly(SldWorks app, string directory, ExtractionOptions options)
+        {
+            string destination = Path.GetFullPath(directory);
+            if (Directory.Exists(destination) || File.Exists(destination))
+                throw new IOException("Choose a new output directory; existing exports are never overwritten.");
+            var model = app.ActiveDoc as ModelDoc2;
+            if (model == null || String.IsNullOrEmpty(model.GetPathName()))
+                throw new InvalidOperationException("Open a saved part or assembly first.");
+            string source = model.GetPathName();
+            string configuration = model.ConfigurationManager.ActiveConfiguration.Name;
+            int stamp = model.GetUpdateStamp();
+            string stage = destination + ".partial-" + Guid.NewGuid().ToString("N");
+            Directory.CreateDirectory(stage);
+            try
+            {
+                var metadata = new Extractor().Extract(app, options);
+                EnsureSameModel(app, model, source, configuration, stamp);
+                metadata.extractionStatus["glb"] = "not_requested";
+                metadata.extractionStatus["exportPair"] = "metadata_only";
+                metadata.extractionStatus["glbMapping"] = "not_applicable";
+                metadata.Write(Path.Combine(stage, "metadata.json"));
+                Directory.Move(stage, destination);
+                return metadata;
+            }
+            catch (Exception ex) { throw new IOException("Metadata export failed. Diagnostic folder: " + stage + ". " + ex.Message, ex); }
+        }
+
         public static Metadata Export(SldWorks app, string directory, ExtractionOptions options, Action<string> progress, string existingGlb = null, string nativeGlbPath = null)
         {
             string destination = Path.GetFullPath(directory);
@@ -1802,7 +1830,7 @@ namespace CADVision.SolidWorks
                 Console.Error.WriteLine(ex.Message);
                 Console.Error.WriteLine("Usage: CADVision.Export.exe [new-output-directory] [--glb existing.glb] [--skip-interferences] [--shipper CadenShipper.exe]");
                 Console.Error.WriteLine("Offline: CADVision.Export.exe [new-output-directory] --map-pair existing-pair-directory");
-                Console.Error.WriteLine("Diagnostic: CADVision.Export.exe [new-output-directory] --probe-native-glb");
+                Console.Error.WriteLine("Default: metadata only. Automatic GLB export and native diagnostics are paused.");
                 return 2;
             }
             try
@@ -1815,24 +1843,20 @@ namespace CADVision.SolidWorks
                     Console.WriteLine("Preprocessed pair saved to " + Path.GetFullPath(folder));
                     return 0;
                 }
+                if (command.Shipper != null && command.Glb == null) throw new ArgumentException("Shipper requires a supplied GLB while automatic GLB export is paused.");
                 // Check requested handoff configuration before an expensive CAD export.
                 if (command.Shipper != null && !File.Exists(command.Shipper)) throw new FileNotFoundException("Requested shipper executable not found.", command.Shipper);
                 var clock = Stopwatch.StartNew();
                 Action<string> progress = message => Console.WriteLine("[{0:F1}s] {1}", clock.Elapsed.TotalSeconds, message);
                 progress("Connecting to SolidWorks");
                 var app = (SldWorks)Marshal.GetActiveObject("SldWorks.Application");
-                if (command.ProbeNativeGlb)
-                {
-                    bool passed = GlbExporter.Probe(app, folder, progress);
-                    Console.WriteLine("Diagnostic report: " + Path.GetFullPath(Path.Combine(folder, "native-export-diagnostic.txt")));
-                    return passed ? 0 : 1;
-                }
-                progress("SolidWorks revision: " + app.RevisionNumber() + (command.Glb == null ? "; GLB API: recorded IModelDoc2.SaveAs3 (Copy)" : "; using supplied GLB: " + command.Glb));
-                Console.WriteLine("Keep the active SolidWorks model unchanged until export completes.");
-                if (command.Glb == null) Console.WriteLine("Native export follows the recorded macro; SolidWorks may show export options. No mouse or keyboard automation is used.");
-                var metadata = ExportPipeline.Export(app, folder,
-                    new ExtractionOptions { RunInterferenceDetection = !command.SkipInterferences }, progress, command.Glb, command.NativeGlbPath);
-                Console.WriteLine("Exported model.glb + metadata.json to " + Path.GetFullPath(folder));
+                progress("SolidWorks revision: " + app.RevisionNumber() + (command.Glb == null ? "; metadata only (automatic GLB export paused)" : "; supplied GLB copied unchanged"));
+                Console.WriteLine("Keep the active SolidWorks model unchanged until extraction completes.");
+                var options = new ExtractionOptions { RunInterferenceDetection = !command.SkipInterferences, Progress = progress };
+                var metadata = command.Glb == null
+                    ? ExportPipeline.ExportMetadataOnly(app, folder, options)
+                    : ExportPipeline.Export(app, folder, new ExtractionOptions { RunInterferenceDetection = !command.SkipInterferences }, progress, command.Glb);
+                Console.WriteLine((command.Glb == null ? "Exported metadata.json to " : "Exported model.glb + metadata.json to ") + Path.GetFullPath(folder));
                 Console.WriteLine(metadata.objects.Count + " objects; " + metadata.mates.Count + " mates; " + clock.Elapsed.TotalSeconds.ToString("F1") + " seconds.");
                 PrintMapping(metadata);
                 foreach (string warning in metadata.warnings) Console.Error.WriteLine("Warning: " + warning);
@@ -1905,6 +1929,7 @@ namespace CADVision.SolidWorks
                 throw new ArgumentException("--probe-native-glb cannot be combined with other modes.");
             if (result.NativeGlbPath != null && (result.Glb != null || result.MapPair != null || result.ProbeNativeGlb))
                 throw new ArgumentException("--native-glb-path is only for native paired export.");
+            if (result.ProbeNativeGlb || result.NativeGlbPath != null) throw new ArgumentException("Automatic GLB export is paused. Omit native GLB flags to export metadata only.");
             return result;
         }
     }
