@@ -2150,8 +2150,7 @@ namespace CADVision.SolidWorks
             string assets = Path.GetDirectoryName(target);
             // Refuse links/junctions so cleanup cannot escape the named folder.
             for (var dir = new DirectoryInfo(target); dir != null; dir = dir.Parent)
-                if (dir.Exists && (dir.Attributes & FileAttributes.ReparsePoint) != 0)
-                    throw new IOException("Linked destination folders are not supported: " + dir.FullName);
+                if (dir.Exists) CheckLocation(dir.FullName);
             if (Directory.Exists(target)) CheckTree(target);
             Directory.CreateDirectory(assets);
             string stage = Path.Combine(assets, ".CadFiles-new-" + Guid.NewGuid().ToString("N"));
@@ -2170,15 +2169,64 @@ namespace CADVision.SolidWorks
                 // Exact sibling created above by moving only CadFiles; never clean Assets itself.
                 if (Path.GetDirectoryName(Path.GetFullPath(old)) != assets || !Path.GetFileName(old).StartsWith(".CadFiles-old-"))
                     throw new IOException("Unexpected cleanup path.");
-                CheckTree(old);
-                Directory.Delete(old, true);
+                try { RemoveBackup(old); }
+                catch (IOException ex) { Console.Error.WriteLine("Warning: New CadFiles pair is published, but old backup cleanup is pending: " + old + ". " + ex.Message); }
+                catch (UnauthorizedAccessException ex) { Console.Error.WriteLine("Warning: New CadFiles pair is published, but old backup cleanup is pending: " + old + ". " + ex.Message); }
             }
+        }
+        [StructLayout(LayoutKind.Sequential)]
+        private struct AttributeTag { public uint Attributes, Tag; }
+        [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+        private static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFile(string name, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
+        [DllImport("kernel32.dll", SetLastError=true)]
+        private static extern bool GetFileInformationByHandleEx(Microsoft.Win32.SafeHandles.SafeFileHandle handle, int kind, out AttributeTag info, uint size);
+        private static void CheckLocation(string path)
+        {
+            if ((File.GetAttributes(path) & FileAttributes.ReparsePoint)==0) return;
+            // OneDrive placeholders are reparse points, but not directory redirects.
+            // Inspect the tag without following it; allow only the Cloud tag family.
+            using(var handle=CreateFile(path,0,7,IntPtr.Zero,3,0x02200000,IntPtr.Zero)) {
+                AttributeTag info;
+                if(handle.IsInvalid || !GetFileInformationByHandleEx(handle,9,out info,8))
+                    throw new IOException("Cannot verify reparse point: "+path);
+                if ((info.Tag & 0xffff0fffU)!=0x9000001aU)
+                    throw new IOException("Refusing non-cloud linked/reparse entry: "+path);
+            }
+        }
+        public static void RemoveBackup(string path)
+        {
+            path=Path.GetFullPath(path);
+            string assets=Path.GetDirectoryName(Path.GetFullPath(Destination));
+            Guid id;
+            string name=Path.GetFileName(path);
+            if(!String.Equals(Path.GetDirectoryName(path),assets,StringComparison.OrdinalIgnoreCase) ||
+                !name.StartsWith(".CadFiles-old-",StringComparison.Ordinal) || !Guid.TryParseExact(name.Substring(14),"N",out id))
+                throw new IOException("Refusing cleanup outside an exporter backup.");
+            for(var dir=new DirectoryInfo(path);dir!=null;dir=dir.Parent) if(dir.Exists) CheckLocation(dir.FullName);
+            CheckTree(path);
+            for(int attempt=0;;attempt++) {
+                try { DeleteContents(path);return; }
+                catch(IOException) {if(attempt==2)throw;}
+                catch(UnauthorizedAccessException) {if(attempt==2)throw;}
+                System.Threading.Thread.Sleep(200);
+            }
+        }
+        private static void DeleteContents(string path)
+        {
+            CheckLocation(path);
+            foreach(string entry in Directory.GetFileSystemEntries(path)) {
+                CheckLocation(entry);
+                if((File.GetAttributes(entry)&FileAttributes.Directory)!=0) DeleteContents(entry);
+                else { File.SetAttributes(entry,File.GetAttributes(entry)&~FileAttributes.ReadOnly);File.Delete(entry); }
+            }
+            File.SetAttributes(path,File.GetAttributes(path)&~FileAttributes.ReadOnly);
+            Directory.Delete(path,false);
         }
         private static void CheckTree(string path)
         {
             foreach (string entry in Directory.GetFileSystemEntries(path)) {
                 var attr=File.GetAttributes(entry);
-                if ((attr & FileAttributes.ReparsePoint)!=0) throw new IOException("Refusing linked entry: "+entry);
+                CheckLocation(entry);
                 if ((attr & FileAttributes.Directory)!=0) CheckTree(entry);
             }
         }
