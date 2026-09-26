@@ -55,6 +55,7 @@ if (args.Contains("--live"))
     return;
 }
 
+Core.Diagnostics.DiagnosticLog.Configure(_ => { }, "offline check in-memory diagnostics");
 var handler = new FakeHandler();
 using var client = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
 var config = new GeminiSettings("private/key+value", "test-model", "Hidden CADEN instructions");
@@ -131,6 +132,7 @@ finally
 
 await QueryChecks.RunAsync();
 await SemanticQueryChecks.RunAsync();
+await DiagnosticChecks.RunAsync();
 MechanicalGraphChecks.Run();
 ProjectLoaderChecks.Run();
 await IssueStoreChecks.RunAsync();

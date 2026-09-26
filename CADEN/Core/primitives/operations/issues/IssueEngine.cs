@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Core.Primitives.DataStructures.Issues;
 using Core.Primitives.DataStructures.Project;
+using Core.Diagnostics;
 
 namespace Core.Primitives.Operations.Issues
 {
@@ -95,10 +96,14 @@ namespace Core.Primitives.Operations.Issues
                         try
                         {
                             result = await registration.Checker.EvaluateAsync(snapshot, target.Subject, cancellationToken).ConfigureAwait(false)
-                                ?? new SubjectCheckResult(SubjectEvaluationStatus.Failed, reason: "CHECKER_RETURNED_NULL");
+                                ?? throw new InvalidOperationException("Checker returned null instead of subject evaluation coverage.");
                         }
                         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-                        catch (Exception ex) { result = new SubjectCheckResult(SubjectEvaluationStatus.Failed, reason: "CHECKER_FAILED: " + ex.GetType().Name); }
+                        catch (Exception ex)
+                        {
+                            var diagnostic = DiagnosticLog.Report(ex, "checker." + target.Checker, snapshot.ProjectId, snapshot.SnapshotId, target.Subject.Id);
+                            result = new SubjectCheckResult(SubjectEvaluationStatus.Failed, reason: "CHECKER_FAILED: " + ex.GetType().Name + "; diagnosticId=" + diagnostic.Entry.CorrelationId);
+                        }
                     }
                 }
                 batch.Add(new EvaluatedSubject(new SubjectEvaluation(snapshot.ProjectId, snapshot.SnapshotId, target.Checker, version, target.Subject, result), result));

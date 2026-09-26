@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Core.Primitives.DataStructures.Project;
+using Core.Diagnostics;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
@@ -33,6 +34,8 @@ namespace Core.Tools
         private readonly Dictionary<string, ICadenTool> tools = new Dictionary<string, ICadenTool>(StringComparer.Ordinal);
         private readonly ProjectSnapshot? snapshot;
         private readonly bool semantic;
+        public string? ProjectId => snapshot?.ProjectId;
+        public string? SnapshotId => snapshot?.SnapshotId;
         public ToolRegistry(IEnumerable<ICadenTool> handlers, ProjectSnapshot? snapshot = null, bool semantic = false)
         {
             this.snapshot = snapshot; this.semantic = semantic;
@@ -75,9 +78,15 @@ namespace Core.Tools
                     return Envelope(Error("RESULT_TOO_LARGE", "Request fewer fields or a smaller page. Maximum tool response is 64,000 characters."));
                 return envelope;
             }
-            catch (OperationCanceledException) { throw; }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
             catch (ToolInputException ex) { return Envelope(Error(ex.Code, ex.Message)); }
-            catch (Exception) { return Envelope(Error("TOOL_EXECUTION_FAILED", "The query could not be completed. No result should be inferred; inspect the metadata contract or report the failure.")); }
+            catch (Exception ex)
+            {
+                var diagnostic = DiagnosticLog.Report(ex, "tool." + name, snapshot?.ProjectId, snapshot?.SnapshotId);
+                var error = Error("TOOL_EXECUTION_FAILED", "Unexpected " + diagnostic.Entry.ExceptionType + " in tool " + name + ". No result should be inferred. Diagnostic ID: " + diagnostic.Entry.CorrelationId);
+                error["error"]!["correlationId"] = diagnostic.Entry.CorrelationId;
+                return Envelope(error);
+            }
         }
         private static void Validate(JToken value, JObject schema, string path, int depth)
         {

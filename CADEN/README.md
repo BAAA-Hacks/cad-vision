@@ -96,6 +96,10 @@ a secure credential arrangement rather than an embedded developer key.
 
 ## Checks
 
+Unexpected failures now show a diagnostic ID and log location. Full redacted exception
+details are written to `%LOCALAPPDATA%\CADEN\logs\caden-YYYY-MM-DD.jsonl`.
+See [failure diagnostics](Core/Diagnostics/README.md) for coverage and host integration.
+
 From CADEN (substitute dotnet if using an installed SDK):
 
 ```powershell

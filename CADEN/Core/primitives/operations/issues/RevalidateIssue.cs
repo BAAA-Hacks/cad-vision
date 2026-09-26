@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Core.Primitives.DataStructures.Issues;
 using Core.Primitives.DataStructures.Project;
+using Core.Diagnostics;
 
 namespace Core.Primitives.Operations.Issues
 {
@@ -50,9 +51,17 @@ namespace Core.Primitives.Operations.Issues
             IssueCheckResult result;
             try { result = await checker.EvaluateAsync(captured.Finding, store.Snapshot, cancellationToken).ConfigureAwait(false); }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-            catch (Exception ex) { return Unable("CHECKER_FAILED: " + ex.GetType().Name); }
+            catch (Exception ex)
+            {
+                var diagnostic = DiagnosticLog.Report(ex, "checker." + key.CheckerId, store.Snapshot.ProjectId, store.Snapshot.SnapshotId, key.SubjectKey);
+                return Unable("CHECKER_FAILED: " + ex.GetType().Name + "; diagnosticId=" + diagnostic.Entry.CorrelationId);
+            }
             cancellationToken.ThrowIfCancellationRequested();
-            if (result == null) return Unable("CHECKER_RETURNED_NULL");
+            if (result == null)
+            {
+                var diagnostic = DiagnosticLog.Report(new InvalidOperationException("Checker returned null."), "checker." + key.CheckerId, store.Snapshot.ProjectId, store.Snapshot.SnapshotId, key.SubjectKey);
+                return Unable("CHECKER_RETURNED_NULL; diagnosticId=" + diagnostic.Entry.CorrelationId);
+            }
             return store.Apply(key, captured.Revision, result, version);
         }
     }

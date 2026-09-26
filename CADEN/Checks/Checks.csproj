@@ -8,5 +8,6 @@
   <ItemGroup>
     <ProjectReference Include="../Core/Core.csproj" />
     <Compile Include="../Desktop/LocalConfiguration.cs" Link="LocalConfiguration.cs" />
+    <Compile Include="../Desktop/FileDiagnostics.cs" Link="FileDiagnostics.cs" />
   </ItemGroup>
 </Project>

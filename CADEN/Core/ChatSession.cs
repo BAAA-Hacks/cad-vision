@@ -33,7 +33,8 @@ namespace Core
 
     public sealed class ChatException : Exception
     {
-        public ChatException(string message) : base(message) { }
+        public string? DiagnosticId { get; }
+        public ChatException(string message, Exception? innerException = null, string? diagnosticId = null) : base(message, innerException) { DiagnosticId = diagnosticId; }
     }
 
     // No UI, filesystem, environment, or Unity dependencies. Failed turns never enter history.

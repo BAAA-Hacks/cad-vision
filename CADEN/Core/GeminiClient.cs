@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Core.Tools;
+using Core.Diagnostics;
 
 namespace Core
 {
@@ -28,7 +29,7 @@ namespace Core
                 throw new ArgumentException("GEMINI_MODEL must be a model ID, such as gemini-flash-latest (without models/).");
             if (timeoutSeconds <= 0 || maxOutputTokens <= 0)
                 throw new ArgumentException("Timeout and output-token limits must be positive integers.");
-            ApiKey = apiKey.Trim(); Model = model; SystemPrompt = systemPrompt;
+            ApiKey = apiKey.Trim(); DiagnosticLog.RegisterSecret(ApiKey); Model = model; SystemPrompt = systemPrompt;
             TimeoutSeconds = timeoutSeconds; MaxOutputTokens = maxOutputTokens;
         }
     }
@@ -127,9 +128,14 @@ namespace Core
                 }
                 throw new ChatException("Query round limit reached.");
             }
-            catch (OperationCanceledException) when (!cancellation.IsCancellationRequested)
+            catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { throw; }
+            catch (Exception ex)
             {
-                throw new ChatException($"CADEN's turn timed out after {settings.TimeoutSeconds} seconds. Narrow the question or increase GEMINI_TIMEOUT_SECONDS.");
+                var diagnostic = DiagnosticLog.Report(ex, "gemini.reply", tools?.ProjectId, tools?.SnapshotId);
+                string message = ex is OperationCanceledException ? $"CADEN's turn timed out after {settings.TimeoutSeconds} seconds. Narrow the question or increase GEMINI_TIMEOUT_SECONDS."
+                    : ex is ChatException ? ex.Message : "Unexpected Gemini processing failure: " + ex.GetType().Name + ": " + Redact(ex.Message);
+                throw new ChatException(DiagnosticLog.Redact(message) + "\nDiagnostic ID: " + diagnostic.Entry.CorrelationId + "\nDiagnostics: " + diagnostic.Location
+                    + (diagnostic.LogWriteFailed ? "\nWARNING: Log write failed; details remain in memory/stderr." : ""), ex, diagnostic.Entry.CorrelationId);
             }
         }
 
@@ -146,8 +152,9 @@ namespace Core
                 using var response = await http.SendAsync(request, timeout.Token).ConfigureAwait(false);
                 string body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
                 JObject? json = null;
+                JsonException? parseFailure = null;
                 try { json = JObject.Parse(body); }
-                catch (JsonException) { /* Never display raw HTTP bodies or HTML. */ }
+                catch (JsonException ex) { parseFailure = ex; /* Retain parser stack without logging the response body. */ }
                 if (!response.IsSuccessStatusCode)
                 {
                     int code = (int)response.StatusCode;
@@ -168,16 +175,16 @@ namespace Core
                     throw new ChatException($"Gemini request failed — HTTP {code} / {status}\nModel: {settings.Model}\n\nGoogle explanation: {detail}\n\nNext step: {hint}" +
                         (retryAfter.Length > 0 ? "\nRetry-After: " + retryAfter : ""));
                 }
-                if (json == null) throw new ChatException("Gemini returned an unexpected non-JSON response. Check the connection or proxy and retry.");
+                if (json == null) throw new ChatException("Gemini returned an unexpected non-JSON response. Check the connection or proxy and retry.", parseFailure);
                 return json;
             }
-            catch (OperationCanceledException) when (!cancellation.IsCancellationRequested)
+            catch (OperationCanceledException ex) when (!cancellation.IsCancellationRequested)
             {
-                throw new ChatException($"Gemini timed out after {settings.TimeoutSeconds} seconds. Retry or increase GEMINI_TIMEOUT_SECONDS.");
+                throw new ChatException($"Gemini timed out after {settings.TimeoutSeconds} seconds. Retry or increase GEMINI_TIMEOUT_SECONDS.", ex);
             }
             catch (HttpRequestException ex)
             {
-                throw new ChatException("Could not connect to Gemini. Check your connection, proxy, firewall, and TLS certificates.\nDetails: " + Redact(ex.Message));
+                throw new ChatException("Could not connect to Gemini. Check your connection, proxy, firewall, and TLS certificates.\nDetails: " + Redact(ex.Message), ex);
             }
         }
     }

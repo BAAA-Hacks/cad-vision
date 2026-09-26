@@ -45,7 +45,9 @@ are read-only. Action idempotency/receipts will be implemented before any action
 
 Errors include UNKNOWN_TOOL, INVALID_ARGUMENTS, MODEL_NOT_LOADED, STALE_SNAPSHOT,
 OBJECT_NOT_FOUND, RESULT_TOO_LARGE and TOOL_EXECUTION_FAILED. Unexpected exceptions do
-not expose raw details. Unknown IDs in a requested batch reject the entire request.
+not expose raw details to Gemini. Unexpected failures include error.correlationId linked
+to the host's redacted stack-trace diagnostics and desktop error notification.
+Unknown IDs in a requested batch reject the entire request.
 
 ## Tools
 

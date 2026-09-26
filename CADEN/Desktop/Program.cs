@@ -4,6 +4,7 @@ using Core.Tools;
 using Core.Tools.Query;
 using Core.Primitives.DataStructures.Project;
 using Core.Primitives.Operations.Project;
+using Core.Diagnostics;
 
 namespace Desktop;
 
@@ -13,6 +14,10 @@ internal static class Program
     static void Main(string[] args)
     {
         ApplicationConfiguration.Initialize();
+        var diagnostics = new FileDiagnostics(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CADEN", "logs"));
+        DiagnosticLog.Configure(diagnostics.Write, diagnostics.DirectoryPath);
+        Application.ThreadException += (_, e) => MessageBox.Show(DiagnosticLog.Report(e.Exception, "desktop.ui").UserMessage, "CADEN error");
+        AppDomain.CurrentDomain.UnhandledException += (_, e) => DiagnosticLog.Report(e.ExceptionObject as Exception ?? new Exception("Unknown unhandled failure."), "desktop.unhandled");
         try
         {
             string? directory = args.Length == 2 && args[0] == "--config-dir" ? args[1] : null;
@@ -20,7 +25,7 @@ internal static class Program
         }
         catch (Exception ex)
         {
-            MessageBox.Show(ex is ArgumentException ? ex.Message : "CADEN could not start (" + ex.GetType().Name + "). Check the installation.", "CADEN");
+            MessageBox.Show(DiagnosticLog.Report(ex, "desktop.startup").UserMessage, "CADEN");
         }
     }
 }
@@ -32,6 +37,7 @@ internal sealed class ChatWindow : Form
     private ChatSession? session;
     private GeminiClient? gemini;
     private string? metadataPath;
+    private ProjectSnapshot? currentSnapshot;
     private CancellationTokenSource? request;
     private readonly RichTextBox transcript = new() { ReadOnly = true, Dock = DockStyle.Fill, BackColor = Color.White, BorderStyle = BorderStyle.None, DetectUrls = false };
     private readonly TextBox input = new() { Multiline = true, Dock = DockStyle.Fill, ScrollBars = ScrollBars.Vertical, PlaceholderText = "Message CADEN… (Ctrl+Enter to send)" };
@@ -82,14 +88,27 @@ internal sealed class ChatWindow : Form
             {
                 // Validate before replacing the active design or clearing its conversation.
                 try { Reload(picker.FileName); }
-                catch (Exception ex) { error.Text = ex is ToolInputException ? ex.Message : "Could not read metadata (" + ex.GetType().Name + ")."; }
+                catch (Exception ex) { error.Text = DiagnosticLog.Report(ex, "desktop.load_metadata").UserMessage; }
             }
         };
         cancel.Click += (_, _) => request?.Cancel();
         input.KeyDown += async (_, e) => { if (e.Control && e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; if (request == null) await SendAsync(input.Text); } };
         FormClosing += (_, _) => request?.Cancel();
-        FormClosed += (_, _) => http.Dispose();
+        DiagnosticLog.Reported += ShowDiagnostic;
+        FormClosed += (_, _) => { DiagnosticLog.Reported -= ShowDiagnostic; http.Dispose(); };
         Reload();
+    }
+
+    private void ShowDiagnostic(DiagnosticReceipt receipt)
+    {
+        if (IsDisposed || Disposing) return;
+        void Display()
+        {
+            if (IsDisposed || Disposing) return;
+            error.AppendText((error.TextLength == 0 ? "" : Environment.NewLine + Environment.NewLine) + receipt.UserMessage);
+        }
+        if (InvokeRequired) { if (IsHandleCreated) BeginInvoke((Action)Display); }
+        else Display();
     }
 
     private void Reload(string? replacementPath = null)
@@ -101,14 +120,16 @@ internal sealed class ChatWindow : Form
             var metadata = nextPath == null ? null : ReadMetadata(nextPath);
             var nextClient = new GeminiClient(http, settings, SemanticQueryTools.Create(metadata));
             transcript.Clear(); error.Clear(); input.Clear(); failedPrompt = null; retry.Enabled = false;
-            metadataPath = nextPath; gemini = nextClient;
+            metadataPath = nextPath; gemini = nextClient; currentSnapshot = metadata;
             session = new ChatSession(gemini);
             design.Text = metadata == null ? "No metadata loaded — use Load metadata." : metadata.Name + " · " + metadata.ComponentsById.Count + " objects" + (metadata.IsFixture ? " · synthetic fixture" : " · exported metadata") + " · hierarchy " + metadata.Capabilities.Hierarchy;
             model.Text = settings.Model; status.Text = "Ready"; send.Enabled = true;
+            if (metadata != null && metadata.LoadDiagnostics.Any(d => d.IsError))
+                DiagnosticLog.Report(new InvalidDataException(string.Join(Environment.NewLine, metadata.LoadDiagnostics.Where(d => d.IsError).Select(d => d.Code + " at " + d.Path + ": " + d.Message))), "metadata.degraded_load", metadata.ProjectId, metadata.SnapshotId);
         }
         catch (Exception ex)
         {
-            error.Text = ex is ArgumentException || ex is ToolInputException ? ex.Message : "Configuration could not be loaded (" + ex.GetType().Name + ").";
+            error.Text = DiagnosticLog.Report(ex, "desktop.reload").UserMessage;
             send.Enabled = session != null; status.Text = session == null ? "Configuration needed" : "Reload failed; previous chat retained";
         }
     }
@@ -154,7 +175,8 @@ internal sealed class ChatWindow : Form
             if (IsDisposed) return;
             failedPrompt = prompt; RenderHistory(); input.Text = prompt;
             error.Text = ex is OperationCanceledException ? "Request cancelled. This turn was not added to history."
-                : ex is ChatException ? ex.Message : "Unexpected local error (" + ex.GetType().Name + "). Raw details withheld to protect credentials.";
+                : ex is ChatException chatFailure && chatFailure.DiagnosticId != null ? chatFailure.Message
+                : DiagnosticLog.Report(ex, "desktop.send", currentSnapshot?.ProjectId, currentSnapshot?.SnapshotId).UserMessage;
             status.Text = ex is OperationCanceledException ? "Cancelled" : "Request failed";
         }
         finally
