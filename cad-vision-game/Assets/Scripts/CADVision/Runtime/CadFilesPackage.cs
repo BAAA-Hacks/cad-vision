@@ -6,6 +6,19 @@ namespace CADVision
 {
     public static class CadFilesPackage
     {
+        // An absent bundled design is valid. Supplied designs must still be complete and unambiguous.
+        public static bool TryFindPair(string folder, out (string glb, string json) pair)
+        {
+            pair = default;
+            if (!Directory.Exists(folder)) return false;
+            if (!Directory.GetFiles(folder).Any(p =>
+                string.Equals(Path.GetExtension(p), ".glb", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(Path.GetExtension(p), ".json", StringComparison.OrdinalIgnoreCase)))
+                return false;
+            pair = FindPair(folder);
+            return true;
+        }
+
         public static (string glb, string json) FindPair(string folder)
         {
             if (!Directory.Exists(folder)) throw new DirectoryNotFoundException("Create Assets/CadFiles and add one GLB and one metadata JSON.");

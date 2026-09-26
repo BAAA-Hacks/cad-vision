@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.IO;
 using System.Text;
 using UnityEngine;
 using UnityEngine.Networking;
@@ -27,11 +28,21 @@ namespace CADVision
             try
             {
 #if UNITY_EDITOR
-                var pair = CadFilesPackage.FindPair(CadFilesPackage.SourceFolder(Application.dataPath));
+                if (!CadFilesPackage.TryFindPair(CadFilesPackage.SourceFolder(Application.dataPath), out var pair))
+                {
+                    Debug.Log("CAD auto-load: no bundled design. Ready to load a design during this session.");
+                    yield break;
+                }
                 glbUrl = new Uri(pair.glb).AbsoluteUri;
                 jsonUrl = new Uri(pair.json).AbsoluteUri;
 #else
                 var basePath = Application.streamingAssetsPath + "/CadFiles/";
+                // Android StreamingAssets live inside the APK and must be read with UnityWebRequest.
+                if (!basePath.Contains("://") && !Directory.Exists(basePath))
+                {
+                    Debug.Log("CAD auto-load: no bundled design. Ready to load a design during this session.");
+                    yield break;
+                }
                 if (!basePath.Contains("://")) basePath = new Uri(basePath).AbsoluteUri;
                 glbUrl = basePath + "model.glb";
                 jsonUrl = basePath + "metadata.json";
@@ -42,11 +53,19 @@ namespace CADVision
             using var model = UnityWebRequest.Get(glbUrl);
             yield return model.SendWebRequest();
             if (model.result != UnityWebRequest.Result.Success)
-            { Debug.LogError("CAD auto-load GLB: " + model.error); yield break; }
+            {
+                Debug.LogWarning("CAD auto-load: optional bundled GLB unavailable (" + model.error +
+                    "). Ready to load a design during this session.");
+                yield break;
+            }
             using var metadata = UnityWebRequest.Get(jsonUrl);
             yield return metadata.SendWebRequest();
             if (metadata.result != UnityWebRequest.Result.Success)
-            { Debug.LogError("CAD auto-load JSON: " + metadata.error); yield break; }
+            {
+                Debug.LogWarning("CAD auto-load: optional bundled metadata unavailable (" + metadata.error +
+                    "). Ready to load a design during this session.");
+                yield break;
+            }
             var loader = GetComponent<CadModelLoader>();
             while (loader.IsLoading) yield return null;
             var load = loader.LoadPackageAsync(model.downloadHandler.data,
