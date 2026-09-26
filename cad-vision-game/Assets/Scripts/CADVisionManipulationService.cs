@@ -279,6 +279,14 @@ public class CADVisionManipulationService : MonoBehaviour
         }
     }
 
+    // World-space so input adapters need not know the CAD hierarchy.
+    // Children follow; ResetObject still restores the original local pose.
+    public void SetObjectWorldPose(string id, Vector3 position, Quaternion rotation)
+    {
+        if (TryGetObject(id, out CADObject cadObject))
+            cadObject.transform.SetPositionAndRotation(position, rotation);
+    }
+
     public void ResetObject(string id)
     {
         if (TryGetObject(id, out CADObject cadObject))

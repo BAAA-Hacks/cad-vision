@@ -1099,6 +1099,7 @@ GameObject:
   - component: {fileID: 191370956}
   - component: {fileID: 191370957}
   - component: {fileID: 191370958}
+  - component: {fileID: 191370959}
   m_Layer: 0
   m_Name: ManipulationManager
   m_TagString: Untagged
@@ -1158,8 +1159,22 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 68621793229e4d138ceccfae8f6545d4, type: 3}
-  m_Name:
+  m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::CADXRRaySetup
+--- !u!114 &191370959
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 191370954}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: e258212a01ec19445a7c5df91c074e9a, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::CADXRGrab
+  controllerAnchor: {fileID: 1746405929}
+  controller: 2
 --- !u!1 &212617061
 GameObject:
   m_ObjectHideFlags: 0
@@ -11223,7 +11238,7 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 82448f3ed82da59428e59a8af5c530ef, type: 3}
-  m_Name:
+  m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::CADXRSelection
 --- !u!114 &1980384282
 MonoBehaviour:
@@ -11235,7 +11250,7 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: a2140d2b457bea84881488302059889b, type: 3}
-  m_Name:
+  m_Name: 
   m_EditorClassIdentifier: Oculus.Interaction::Oculus.Interaction.Surfaces.ColliderSurface
   _collider: {fileID: 1980384276}
 --- !u!114 &1980384283
@@ -11248,7 +11263,7 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: bb86ba9d4c5126e48bfef9b0c9550e9d, type: 3}
-  m_Name:
+  m_Name: 
   m_EditorClassIdentifier: Oculus.Interaction::Oculus.Interaction.RayInteractable
   _interactorFilters: []
   _maxInteractors: -1
