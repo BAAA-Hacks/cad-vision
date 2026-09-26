@@ -13,6 +13,9 @@ public class CADVisionManipulationService : MonoBehaviour
     private readonly HashSet<string> selectedIds = new();
     private readonly HashSet<string> highlightedIds = new();
 
+    // Runtime adapters use the same accepted objects as desktop manipulation.
+    internal IReadOnlyCollection<CADObject> RegisteredObjects => objects.Values;
+
     private Vector3 originalModelPosition;
     private Quaternion originalModelRotation;
     private Vector3 originalModelScale;
