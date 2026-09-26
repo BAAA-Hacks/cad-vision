@@ -1,11 +1,11 @@
-// CADVision SolidWorks GLB + metadata exporter â€” single-file edition.
+// CADVision SolidWorks GLB + metadata exporter — single-file edition.
 // Target: Windows x64, .NET Framework 4.8, SolidWorks 2020+.
 // References: System.Core, System.Web.Extensions, System.Xml, System.Xml.Linq,
 // SolidWorks.Interop.sldworks.dll, SolidWorks.Interop.swconst.dll.
 // Compile as a console application. Do not include the separate source files too.
-// Usage: CADVision.Export.exe [new-output-directory] [--skip-interferences] [--shipper CadenShipper.exe]
+// Usage: CADVision.Export.exe [new-output-directory] [--custom-glb | --glb existing.glb] [--skip-interferences]
 // Requires a running SolidWorks instance and a saved active part or assembly.
-// Data flow: attach -> native GLB -> current metadata -> publish pair -> optional shipper.
+// Default: metadata only. --custom-glb: metadata -> native tessellation -> custom GLB -> pair.
 // Console runner; add-in button/registration and Quest networking are not implemented here.
 // Read IMPLEMENTATION_STATUS.md for capabilities, limitations, and test evidence.
 // Repeated namespace and partial-class blocks are valid together in one .cs file.
@@ -1378,6 +1378,171 @@ namespace CADVision.SolidWorks
 
 
 
+namespace CADVision.SolidWorks
+{
+    // Visualization only: positions and normals come from SolidWorks display tessellation.
+    // Engineering values remain exclusively in the existing native metadata extractor.
+    public static class CustomGlbExporter
+    {
+        public sealed class MeshNode
+        {
+            public string Id, Name, Exclusion;
+            public int Parent = -1;
+            public double[] World = GlbMapping.IdentityMatrix();
+            public List<float> Positions = new List<float>(), Normals = new List<float>();
+        }
+        private static IEnumerable<object> Items(object value) { return value is Array ? ((Array)value).Cast<object>() : Enumerable.Empty<object>(); }
+        private static float[] Floats(object value) { return value is Array ? ((Array)value).Cast<object>().Select(Convert.ToSingle).ToArray() : null; }
+        private static bool Finite(double v) { return !Double.IsNaN(v) && !Double.IsInfinity(v); }
+
+        // Convert root-space occurrence transforms to glTF parent-local matrices.
+        public static double[] Inverse(double[] matrix)
+        {
+            if (matrix == null || matrix.Length != 16 || matrix.Any(v => !Finite(v))) throw new InvalidDataException("Invalid transform.");
+            var a = new double[4,8];
+            for(int r=0;r<4;r++) for(int c=0;c<4;c++) { a[r,c]=matrix[c*4+r]; a[r,c+4]=r==c?1:0; }
+            for(int c=0;c<4;c++) {
+                int pivot=c; for(int r=c+1;r<4;r++) if(Math.Abs(a[r,c])>Math.Abs(a[pivot,c])) pivot=r;
+                if(Math.Abs(a[pivot,c])<1e-14) throw new InvalidDataException("Singular transform.");
+                for(int k=0;k<8;k++) { double t=a[c,k];a[c,k]=a[pivot,k];a[pivot,k]=t; }
+                double d=a[c,c];for(int k=0;k<8;k++) a[c,k]/=d;
+                for(int r=0;r<4;r++) if(r!=c) { double f=a[r,c];for(int k=0;k<8;k++) a[r,k]-=f*a[c,k]; }
+            }
+            var result=new double[16];for(int r=0;r<4;r++) for(int c=0;c<4;c++) result[c*4+r]=a[r,c+4];return result;
+        }
+        private static double[] World(CadObject o, double meters)
+        {
+            if(o.parentId==null) return GlbMapping.IdentityMatrix();
+            var t=o.transform;
+            if(t==null || t.Length<13 || t.Take(13).Any(v=>!Finite(v))) throw new InvalidDataException("Missing transform: "+o.name);
+            var m=GlbMapping.IdentityMatrix();
+            for(int c=0;c<3;c++) for(int r=0;r<3;r++) m[c*4+r]=t[c*3+r]*t[12];
+            for(int r=0;r<3;r++) m[12+r]=t[9+r]*meters;
+            Inverse(m);return m;
+        }
+        public static void Export(ModelDoc2 model, Metadata metadata, string path, Action<string> progress)
+        {
+            var components=new Dictionary<string,Component2>(StringComparer.Ordinal);
+            if(model.GetType()==(int)swDocumentTypes_e.swDocASSEMBLY) {
+                Action<Component2> visit=null;
+                visit=c=> { components.Add(c.Name2,c); if(!c.IsSuppressed()) foreach(Component2 child in Items(c.GetChildren())) visit(child); };
+                var root=model.ConfigurationManager.ActiveConfiguration.GetRootComponent3(false);
+                if(root==null) throw new InvalidDataException("Assembly root unavailable.");
+                foreach(Component2 c in Items(root.GetChildren())) visit(c);
+            }
+            var nodes=new List<MeshNode>();var indices=new Dictionary<string,int>();
+            double meters=metadata.project.documentUnits.lengthToMeters;
+            foreach(var o in metadata.objects) {
+                int parent=o.parentId==null?-1:indices[o.parentId];
+                var n=new MeshNode {Id=o.id,Name=o.name,Parent=parent};
+                Component2 component=null;
+                if(parent>=0 && !components.TryGetValue(o.occurrencePath,out component)) throw new InvalidDataException("Missing occurrence: "+o.occurrencePath);
+                if(parent>=0 && nodes[parent].Exclusion!=null) n.Exclusion="excluded_parent";
+                else if(component!=null && component.IsSuppressed()) n.Exclusion="suppressed";
+                else if(component!=null && component.IsHidden(false)) n.Exclusion="hidden";
+                // Excluded occurrences retain identity nodes but have no rendered geometry.
+                if(n.Exclusion==null) n.World=World(o,meters);
+                else n.World=parent<0?GlbMapping.IdentityMatrix():nodes[parent].World;
+                if(o.type=="part" && n.Exclusion==null) {
+                    if(progress!=null) progress("Custom GLB mesh: "+o.name);
+                    int bodyCount=0;
+                    foreach(int kind in new[]{(int)swBodyType_e.swSolidBody,(int)swBodyType_e.swSheetBody}) {
+                        object info;
+                        object bodies=component==null?((PartDoc)model).GetBodies2(kind,true):component.GetBodies3(kind,out info);
+                        foreach(Body2 body in Items(bodies)) {
+                            if(!body.Visible) continue;
+                            bodyCount++;
+                            var faces=Items(body.GetFaces()).Cast<Face2>().ToArray();
+                            if(faces.Length==0) throw new InvalidDataException("No faces in visible body: "+o.name);
+                            foreach(var face in faces) {
+                                var positions=Floats(face.GetTessTriangles(true));
+                                var normals=Floats(face.GetTessNorms());
+                                // Do not guess a mesh or switch configuration if native tessellation is absent.
+                                AppendFace(n,positions,normals);
+                            }
+                        }
+                    }
+                    if(bodyCount==0 || n.Positions.Count==0) throw new InvalidDataException("No visible tessellated bodies for "+o.name+". Resolve/load the component and retry.");
+                }
+                indices.Add(o.id,nodes.Count);nodes.Add(n);
+            }
+            Write(path,nodes);
+            var report=new MappingReport { method="cad_ids_assigned_during_custom_glb_generation",status="assigned_by_exporter",
+                verificationScope="CAD IDs assigned directly; live geometry placement and Unity runtime require validation" };
+            for(int i=0;i<nodes.Count;i++) report.objects.Add(new NodeMapping {objectId=nodes[i].Id,glbNodeIndex=i,glbNodeName=nodes[i].Name,
+                status="matched",reason=nodes[i].Exclusion==null?"CAD ID embedded in node extras":"Identity-only node: "+nodes[i].Exclusion});
+            metadata.glbMapping=report;metadata.mappingStatus=report.status;
+            metadata.warnings.RemoveAll(w=>w.StartsWith("GLB mapping is pending:"));
+            metadata.warnings.Add("Custom GLB: native display tessellation in meters; neutral appearance. Textures, decals, appearance overrides, animations, cameras and lights are not exported. Hidden/suppressed occurrences have identity-only nodes. Live geometry/Unity validation is pending.");
+        }
+        // Native normals determine winding. This avoids depending on undocumented face winding.
+        public static void AppendFace(MeshNode node, float[] p, float[] n)
+        {
+            if(p==null || p.Length==0 || p.Length%9!=0 || n==null || n.Length!=p.Length || p.Concat(n).Any(v=>!Finite(v)))
+                throw new InvalidDataException("Missing or invalid native face tessellation/normals.");
+            for(int i=0;i<p.Length;i+=9) {
+                double ax=p[i+3]-p[i],ay=p[i+4]-p[i+1],az=p[i+5]-p[i+2];
+                double bx=p[i+6]-p[i],by=p[i+7]-p[i+1],bz=p[i+8]-p[i+2];
+                double x=ay*bz-az*by,y=az*bx-ax*bz,z=ax*by-ay*bx;
+                if(x*x+y*y+z*z==0) continue;
+                double dot=x*(n[i]+n[i+3]+n[i+6])+y*(n[i+1]+n[i+4]+n[i+7])+z*(n[i+2]+n[i+5]+n[i+8]);
+                if(dot==0) throw new InvalidDataException("Native normals cannot establish triangle winding.");
+                int[] order=dot<0?new[]{0,6,3}:new[]{0,3,6};
+                foreach(int v in order) {
+                    double length=Math.Sqrt(n[i+v]*n[i+v]+n[i+v+1]*n[i+v+1]+n[i+v+2]*n[i+v+2]);
+                    if(length<1e-12) throw new InvalidDataException("Zero native normal.");
+                    for(int k=0;k<3;k++) {node.Positions.Add(p[i+v+k]);node.Normals.Add((float)(n[i+v+k]/length));}
+                }
+            }
+        }
+        // Dependency-free GLB 2.0 writer. Non-indexed triangles, float32 attributes,
+        // aligned embedded buffer; no temporary mesh formats or external assets.
+        public static void Write(string path, List<MeshNode> input)
+        {
+            if(input.Count==0 || input[0].Parent!=-1 || input.Select(n=>n.Id).Distinct().Count()!=input.Count) throw new InvalidDataException("Invalid mesh hierarchy/IDs.");
+            var nodes=new List<Dictionary<string,object>>();var meshes=new List<object>();var views=new List<object>();var accessors=new List<object>();
+            using(var data=new MemoryStream()) using(var bin=new BinaryWriter(data)) {
+                for(int i=0;i<input.Count;i++) {
+                    var n=input[i];if(i>0 && (n.Parent<0 || n.Parent>=i)) throw new InvalidDataException("Parent must precede child.");
+                    Inverse(n.World);
+                    var local=n.Parent<0?n.World:GlbMapping.Multiply(Inverse(input[n.Parent].World),n.World);
+                    var node=new Dictionary<string,object>{{"name",n.Name},{"matrix",local},{"extras",new {cadObjectId=n.Id,geometryStatus=n.Exclusion??"included"}}};
+                    int[] children=Enumerable.Range(0,input.Count).Where(j=>input[j].Parent==i).ToArray();if(children.Length>0)node["children"]=children;
+                    if(n.Positions.Count>0) {
+                        if(n.Positions.Count%9!=0 || n.Normals.Count!=n.Positions.Count || n.Positions.Concat(n.Normals).Any(v=>!Finite(v))) throw new InvalidDataException("Invalid mesh attributes.");
+                        var attrs=new Dictionary<string,int>();
+                        foreach(string attr in new[]{"POSITION","NORMAL"}) {
+                            var values=attr=="POSITION"?n.Positions:n.Normals;long offset=data.Position;
+                            foreach(float v in values)bin.Write(v);
+                            views.Add(new {buffer=0,byteOffset=offset,byteLength=data.Position-offset,target=34962});
+                            var accessor=new Dictionary<string,object>{{"bufferView",views.Count-1},{"componentType",5126},{"count",values.Count/3},{"type","VEC3"}};
+                            if(attr=="POSITION") {
+                                accessor["min"]=Enumerable.Range(0,3).Select(k=>Enumerable.Range(0,values.Count/3).Min(j=>(double)values[3*j+k])).ToArray();
+                                accessor["max"]=Enumerable.Range(0,3).Select(k=>Enumerable.Range(0,values.Count/3).Max(j=>(double)values[3*j+k])).ToArray();
+                            }
+                            attrs[attr]=accessors.Count;accessors.Add(accessor);
+                        }
+                        node["mesh"]=meshes.Count;meshes.Add(new {name=n.Name,primitives=new[]{new {attributes=attrs,mode=4,material=0}}});
+                    }
+                    nodes.Add(node);
+                }
+                if(meshes.Count==0) throw new InvalidDataException("No visible geometry to export.");
+                var gltf=new {asset=new {version="2.0",generator="CADVision custom SolidWorks tessellation exporter v1"},scene=0,
+                    scenes=new[]{new {nodes=new[]{0}}},nodes=nodes,meshes=meshes,
+                    materials=new[]{new {name="Neutral visualization",pbrMetallicRoughness=new {baseColorFactor=new[]{0.65,0.65,0.68,1.0},metallicFactor=0.0,roughnessFactor=0.7}}},
+                    buffers=new[]{new {byteLength=data.Length}},bufferViews=views,accessors=accessors};
+                byte[] json=Encoding.UTF8.GetBytes(new JavaScriptSerializer {MaxJsonLength=Int32.MaxValue,RecursionLimit=256}.Serialize(gltf));
+                int padded=checked((json.Length+3)/4*4);long size=28L+padded+data.Length;if(size>UInt32.MaxValue)throw new InvalidDataException("GLB exceeds 4GB.");
+                using(var file=new BinaryWriter(new FileStream(path,FileMode.CreateNew))) {
+                    file.Write(0x46546C67u);file.Write(2u);file.Write((uint)size);file.Write((uint)padded);file.Write(0x4E4F534Au);file.Write(json);
+                    for(int j=json.Length;j<padded;j++)file.Write((byte)32);
+                    file.Write((uint)data.Length);file.Write(0x004E4942u);file.Write(data.ToArray());
+                }
+            }
+            GlbExporter.CheckContainer(path);
+        }
+    }
+}
 
 namespace CADVision.SolidWorks
 {
@@ -1541,7 +1706,7 @@ namespace CADVision.SolidWorks
             catch (Exception ex) { throw new IOException("Metadata export failed. Diagnostic folder: " + stage + ". " + ex.Message, ex); }
         }
 
-        public static Metadata Export(SldWorks app, string directory, ExtractionOptions options, Action<string> progress, string existingGlb = null, string nativeGlbPath = null)
+        public static Metadata Export(SldWorks app, string directory, ExtractionOptions options, Action<string> progress, string existingGlb = null, string nativeGlbPath = null, bool customGlb = false)
         {
             string destination = Path.GetFullPath(directory);
             if (Directory.Exists(destination) || File.Exists(destination))
@@ -1589,7 +1754,12 @@ namespace CADVision.SolidWorks
                 EnsureSameModel(app, model, source, configuration, updateStamp);
                 int warnings = 0;
                 string glbPath = Path.Combine(stage, "model.glb");
-                if (existingGlb == null)
+                if (customGlb)
+                {
+                    if (progress != null) progress("Metadata ready. Generating custom model.glb from native tessellation...");
+                    CustomGlbExporter.Export(model, metadata, glbPath, progress);
+                }
+                else if (existingGlb == null)
                 {
                     if (progress != null) progress("Metadata ready. Exporting native model.glb...");
                     // Test the exact short path, without the staging-directory suffix.
@@ -1610,13 +1780,21 @@ namespace CADVision.SolidWorks
                 // specifies meters; its actual geometry/axis mapping awaits pair validation.
                 metadata.extractionStatus["exportPair"] = existingGlb == null ? "same_document_configuration_root_update_stamp_checked" : "supplied_glb_plus_active_CAD_metadata_correspondence_unverified";
                 if (existingGlb != null) metadata.warnings.Add("Supplied GLB: matching CAD document, configuration, revision, scale and node mapping have not been verified. A matching filename is not proof of correspondence.");
-                if (existingGlb == null) metadata.notices.Add("Native GLB uses recorded IModelDoc2.SaveAs3 with Copy; this API does not expose a separate export warning code.");
+                if (existingGlb == null && !customGlb) metadata.notices.Add("Native GLB uses recorded IModelDoc2.SaveAs3 with Copy; this API does not expose a separate export warning code.");
                 if (warnings != 0) metadata.warnings.Add("Native GLB export warnings=" + warnings + " (" + (swFileSaveWarning_e)warnings + ").");
                 // Deliver the native/copied GLB unchanged. Optional node mapping remains
                 // available separately through --map-pair; it is not part of this export.
-                metadata.extractionStatus["glbMapping"] = "not_read";
+                metadata.extractionStatus["glbMapping"] = customGlb ? "assigned_by_exporter" : "not_read";
+                if (customGlb) {
+                    metadata.glbAsset.sourceMode = "custom_solidworks_tessellation";
+                    metadata.glbAsset.correspondenceStatus = "cad_ids_assigned_by_exporter";
+                    metadata.glbMapping.glbSha256 = metadata.glbAsset.sha256;
+                    metadata.extractionStatus["glb"] = "custom_tessellation_container_checked_live_validation_pending";
+                }
                 if (progress != null) progress("Finalizing pair information in metadata.json (schema " + metadata.schemaVersion + ")...");
-                metadata.Write(Path.Combine(stage, "metadata.json"));
+                string finalized = Path.Combine(stage, "metadata.final.json");
+                metadata.Write(finalized);
+                File.Replace(finalized, Path.Combine(stage, "metadata.json"), null);
                 // Publish both files together, only after both exporters have succeeded.
                 Directory.Move(stage, destination);
                 if (progress != null) progress("Published model.glb + metadata.json.");
@@ -1828,7 +2006,7 @@ namespace CADVision.SolidWorks
             catch (ArgumentException ex)
             {
                 Console.Error.WriteLine(ex.Message);
-                Console.Error.WriteLine("Usage: CADVision.Export.exe [new-output-directory] [--glb existing.glb] [--skip-interferences] [--shipper CadenShipper.exe]");
+                Console.Error.WriteLine("Usage: CADVision.Export.exe [new-output-directory] [--custom-glb | --glb existing.glb] [--skip-interferences] [--shipper CadenShipper.exe]");
                 Console.Error.WriteLine("Offline: CADVision.Export.exe [new-output-directory] --map-pair existing-pair-directory");
                 Console.Error.WriteLine("Default: metadata only. Automatic GLB export and native diagnostics are paused.");
                 return 2;
@@ -1843,20 +2021,20 @@ namespace CADVision.SolidWorks
                     Console.WriteLine("Preprocessed pair saved to " + Path.GetFullPath(folder));
                     return 0;
                 }
-                if (command.Shipper != null && command.Glb == null) throw new ArgumentException("Shipper requires a supplied GLB while automatic GLB export is paused.");
+                if (command.Shipper != null && command.Glb == null && !command.CustomGlb) throw new ArgumentException("Shipper requires a supplied GLB while automatic GLB export is paused.");
                 // Check requested handoff configuration before an expensive CAD export.
                 if (command.Shipper != null && !File.Exists(command.Shipper)) throw new FileNotFoundException("Requested shipper executable not found.", command.Shipper);
                 var clock = Stopwatch.StartNew();
                 Action<string> progress = message => Console.WriteLine("[{0:F1}s] {1}", clock.Elapsed.TotalSeconds, message);
                 progress("Connecting to SolidWorks");
                 var app = (SldWorks)Marshal.GetActiveObject("SldWorks.Application");
-                progress("SolidWorks revision: " + app.RevisionNumber() + (command.Glb == null ? "; metadata only (automatic GLB export paused)" : "; supplied GLB copied unchanged"));
+                progress("SolidWorks revision: " + app.RevisionNumber() + (command.CustomGlb ? "; custom GLB from SolidWorks tessellation" : command.Glb == null ? "; metadata only (automatic GLB export paused)" : "; supplied GLB copied unchanged"));
                 Console.WriteLine("Keep the active SolidWorks model unchanged until extraction completes.");
                 var options = new ExtractionOptions { RunInterferenceDetection = !command.SkipInterferences, Progress = progress };
-                var metadata = command.Glb == null
+                var metadata = command.Glb == null && !command.CustomGlb
                     ? ExportPipeline.ExportMetadataOnly(app, folder, options)
-                    : ExportPipeline.Export(app, folder, new ExtractionOptions { RunInterferenceDetection = !command.SkipInterferences }, progress, command.Glb);
-                Console.WriteLine((command.Glb == null ? "Exported metadata.json to " : "Exported model.glb + metadata.json to ") + Path.GetFullPath(folder));
+                    : ExportPipeline.Export(app, folder, new ExtractionOptions { RunInterferenceDetection = !command.SkipInterferences }, progress, command.Glb, null, command.CustomGlb);
+                Console.WriteLine((command.Glb == null && !command.CustomGlb ? "Exported metadata.json to " : "Exported model.glb + metadata.json to ") + Path.GetFullPath(folder));
                 Console.WriteLine(metadata.objects.Count + " objects; " + metadata.mates.Count + " mates; " + clock.Elapsed.TotalSeconds.ToString("F1") + " seconds.");
                 PrintMapping(metadata);
                 foreach (string warning in metadata.warnings) Console.Error.WriteLine("Warning: " + warning);
@@ -1905,13 +2083,14 @@ namespace CADVision.SolidWorks
     public sealed class ExportCommand
     {
         public string Directory, Shipper, Glb, MapPair, NativeGlbPath;
-        public bool SkipInterferences, ProbeNativeGlb;
+        public bool SkipInterferences, ProbeNativeGlb, CustomGlb;
         public static ExportCommand Parse(string[] args)
         {
             var result = new ExportCommand();
             for (int i = 0; i < args.Length; i++)
             {
                 if (args[i] == "--skip-interferences" && !result.SkipInterferences) result.SkipInterferences = true;
+                else if (args[i] == "--custom-glb" && !result.CustomGlb) result.CustomGlb = true;
                 else if (args[i] == "--probe-native-glb" && !result.ProbeNativeGlb) result.ProbeNativeGlb = true;
                 else if (args[i] == "--map-pair" && result.MapPair == null && i+1 < args.Length && !args[i+1].StartsWith("--"))
                     result.MapPair = Path.GetFullPath(args[++i]);
@@ -1930,6 +2109,7 @@ namespace CADVision.SolidWorks
             if (result.NativeGlbPath != null && (result.Glb != null || result.MapPair != null || result.ProbeNativeGlb))
                 throw new ArgumentException("--native-glb-path is only for native paired export.");
             if (result.ProbeNativeGlb || result.NativeGlbPath != null) throw new ArgumentException("Automatic GLB export is paused. Omit native GLB flags to export metadata only.");
+            if (result.CustomGlb && (result.Glb != null || result.MapPair != null)) throw new ArgumentException("--custom-glb cannot be combined with supplied GLB or offline mapping.");
             return result;
         }
     }
