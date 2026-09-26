@@ -117,3 +117,4 @@ metadata.json.meta
 # Everything in the CadFiles drop folder, any name
 /cad-vision-game/Assets/CadFiles/*
 !/cad-vision-game/Assets/CadFiles/.gitkeep
+CADEN/caden-project.json
