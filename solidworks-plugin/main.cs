@@ -427,13 +427,14 @@ namespace CADVision.SolidWorks
         private ExtractionOptions options;
         private MathUtility nativeMath;
         private readonly PropertyReadCache propertyReads = new PropertyReadCache();
+        private readonly ExportReadMemo sourceReads = new ExportReadMemo();
         private readonly Dictionary<Component2, Component2[]> childReads = new Dictionary<Component2, Component2[]>();
         private Component2[] Children(Component2 component)
         {
             Component2[] children;
-            if (!childReads.TryGetValue(component, out children)) {
+            if (!options.UseMemoization || !childReads.TryGetValue(component, out children)) {
                 children = Items(component.GetChildren()).Cast<Component2>().ToArray();
-                childReads.Add(component, children);
+                if(options.UseMemoization) childReads.Add(component, children);
             }
             return children;
         }
@@ -461,6 +462,7 @@ namespace CADVision.SolidWorks
             options = extractionOptions ?? new ExtractionOptions();
             completedOccurrences = totalOccurrences = 0;
             propertyReads.Clear(); childReads.Clear();
+            sourceReads.Clear(); sourceReads.Enabled = options.UseMemoization;
             Completion(0, "Preparing metadata");
             materialDatabases.Clear(); nativeMath = null;
             if (System.Threading.Thread.CurrentThread.GetApartmentState() != System.Threading.ApartmentState.STA)
@@ -523,6 +525,7 @@ namespace CADVision.SolidWorks
             MechanicalScopeRules.Populate(result, establishedMechanicalScopes);
             DocumentUnitConversion.Apply(result, outputUnits);
             result.Validate();
+            Report("Within-export memoization: " + (options.UseMemoization ? "enabled" : "disabled") + "; " + sourceReads.Hits + " source-read hits; " + sourceReads.Reads + " source reads; " + propertyReads.Hits + " property snapshot hits.");
             Completion(1, "Metadata ready");
             return result;
         }
@@ -700,8 +703,14 @@ namespace CADVision.SolidWorks
         // convenience fields, while every discovered property remains in the dictionaries.
         private void ReadProperties(ModelDoc2 doc, CadObject o)
         {
-            Try(o.id, "document properties", () => propertyReads.Read(doc, "", o.documentProperties, target => ReadPropertyManager(doc.Extension.CustomPropertyManager[""], target)));
-            Try(o.id, "configuration properties", () => propertyReads.Read(doc, o.configuration, o.configurationProperties, target => ReadPropertyManager(doc.Extension.CustomPropertyManager[o.configuration], target)));
+            Try(o.id, "document properties", () => {
+                if(options.UseMemoization) propertyReads.Read(doc, "", o.documentProperties, target => ReadPropertyManager(doc.Extension.CustomPropertyManager[""], target));
+                else ReadPropertyManager(doc.Extension.CustomPropertyManager[""],o.documentProperties);
+            });
+            Try(o.id, "configuration properties", () => {
+                if(options.UseMemoization) propertyReads.Read(doc, o.configuration, o.configurationProperties, target => ReadPropertyManager(doc.Extension.CustomPropertyManager[o.configuration], target));
+                else ReadPropertyManager(doc.Extension.CustomPropertyManager[o.configuration],o.configurationProperties);
+            });
             foreach (var p in o.documentProperties) o.customProperties[p.Key] = p.Value;
             foreach (var p in o.configurationProperties) o.customProperties[p.Key] = p.Value;
             string value;
@@ -865,19 +874,38 @@ namespace CADVision.SolidWorks
         // Fraction completed within extraction, kept separate from diagnostic text.
         public Action<double, string> Completion;
         public bool ForceFreshProcessing;
+        public bool UseMemoization = true;
+    }
+    // Export-local raw source reads only. Occurrence-specific results are never
+    // stored here; failed or unavailable reads are retried.
+    public sealed class ExportReadMemo
+    {
+        private readonly Dictionary<Tuple<object,object,string>,object> values = new Dictionary<Tuple<object,object,string>,object>();
+        public int Hits, Reads;
+        public bool Enabled = true;
+        public void Clear() { values.Clear(); Hits=Reads=0; }
+        public T Read<T>(object document, object item, string field, Func<T> read, Func<T,bool> valid)
+        {
+            var key=Tuple.Create(document,item,field);object found;
+            if(Enabled && values.TryGetValue(key,out found)) {Hits++;return (T)found;}
+            Reads++;T value=read();
+            if(Enabled && valid(value))values[key]=value;
+            return value;
+        }
     }
 
     // Per-export snapshots only. Cache successful reads, copy values into each
     // occurrence, and retain partial results if a native read throws.
     public sealed class PropertyReadCache
     {
+        public int Hits;
         private readonly Dictionary<Tuple<object,string>, Dictionary<string,string>> values = new Dictionary<Tuple<object,string>, Dictionary<string,string>>();
-        public void Clear() { values.Clear(); }
+        public void Clear() { values.Clear(); Hits=0; }
         public void Read(object document, string configuration, Dictionary<string,string> target, Action<Dictionary<string,string>> read)
         {
             var key=Tuple.Create(document,configuration);
             Dictionary<string,string> snapshot;
-            if(values.TryGetValue(key,out snapshot)) { foreach(var p in snapshot) target[p.Key]=p.Value; return; }
+            if(values.TryGetValue(key,out snapshot)) { Hits++;foreach(var p in snapshot) target[p.Key]=p.Value; return; }
             read(target);
             values.Add(key,new Dictionary<string,string>(target,target.Comparer));
         }
@@ -1127,7 +1155,9 @@ namespace CADVision.SolidWorks
             // Do not include dimensions belonging to suppressed features in this configuration.
             bool? suppressed = null;
             Try(owner.id, "feature suppression", () => {
-                var states = feature.IsSuppressed2((int)swInConfigurationOpts_e.swSpecifyConfiguration, new[] { owner.configuration }) as Array;
+                    var states = sourceReads.Read(doc, feature, "suppression:" + owner.configuration,
+                        () => feature.IsSuppressed2((int)swInConfigurationOpts_e.swSpecifyConfiguration, new[] { owner.configuration }) as Array,
+                        value => value != null && value.Length == 1);
                 if (states == null || states.Length != 1) throw new InvalidDataException("Feature suppression unavailable.");
                 suppressed = Convert.ToBoolean(states.GetValue(0));
             });
@@ -1144,7 +1174,8 @@ namespace CADVision.SolidWorks
                         var manager = feature.CustomPropertyManager;
                         if (manager == null) return;
                         var properties = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                        ReadPropertyManager(manager, properties);
+                        if (options.UseMemoization) propertyReads.Read(Tuple.Create(doc,feature), owner.configuration, properties, target => ReadPropertyManager(manager,target));
+                        else ReadPropertyManager(manager, properties);
                         if (properties.Count == 0) return;
                         owner.featureProperties[key] = properties;
                         // Scoped keys keep identical cut-list property names from overwriting
@@ -1378,8 +1409,11 @@ namespace CADVision.SolidWorks
 
         private void ReadMaterials(ModelDoc2 doc, CadObject o)
         {
-            string database;
-            string name = ((PartDoc)doc).GetMaterialPropertyName2(o.configuration, out database);
+            var assignmentName=sourceReads.Read(doc,doc,"material:"+o.configuration,()=> {
+                string db;string assigned=((PartDoc)doc).GetMaterialPropertyName2(o.configuration,out db);
+                return Tuple.Create(assigned,db);
+            }, value=>value!=null);
+            string database=assignmentName.Item2, name=assignmentName.Item1;
             o.documentMaterial = MaterialAssignment(name, database, o.id);
             o.material = MetadataMath.SummarizeMaterials(o.documentMaterial, null, false);
             o.extractionStatus["bodyMaterials"] = "unavailable_configuration_not_active";
@@ -1500,7 +1534,7 @@ namespace CADVision.SolidWorks
         }
         private string SourcePersistent(ModelDoc2 doc, object value, string prefix, string scope)
         {
-            try { var data = doc.Extension.GetPersistReference3(value) as byte[]; return data == null || data.Length == 0 ? null : Identity.Make(prefix, projectId, scope, Convert.ToBase64String(data)); }
+            try { var data = sourceReads.Read(doc,value,"persistent-reference",()=>doc.Extension.GetPersistReference3(value) as byte[], bytes=>bytes!=null && bytes.Length>0); return data == null || data.Length == 0 ? null : Identity.Make(prefix, projectId, scope, Convert.ToBase64String(data)); }
             catch (System.Runtime.InteropServices.COMException) { return null; }
         }
         private string SourceId(ModelDoc2 doc, object value, string prefix, string scope, string fallback)
@@ -1978,6 +2012,7 @@ namespace CADVision.SolidWorks
             try
             {
                 var extraction = new ExtractionOptions {
+                    UseMemoization = options == null || options.UseMemoization,
                     RunInterferenceDetection = options == null || options.RunInterferenceDetection,
                     Progress = options == null ? null : options.Progress,
                     Completion = options == null || options.Completion == null ? (Action<double, string>)null : (value, message) => options.Completion(value * 0.98, message)
@@ -2023,6 +2058,7 @@ namespace CADVision.SolidWorks
                 // Pass detailed metadata progress through the combined runner without
                 // mutating the caller's options or dropping its existing callback.
                 var metadataOptions = new ExtractionOptions {
+                    UseMemoization = options == null || options.UseMemoization,
                     Completion = options == null || options.Completion == null ? (Action<double, string>)null : (value, message) => options.Completion(value * 0.80, message),
                     RunInterferenceDetection = options == null || options.RunInterferenceDetection,
                     Progress = message => {
@@ -2337,7 +2373,7 @@ namespace CADVision.SolidWorks
                 var app = (SldWorks)Marshal.GetActiveObject("SldWorks.Application");
                 progress("SolidWorks revision: " + app.RevisionNumber() + (command.CustomGlb ? "; custom GLB from SolidWorks tessellation" : command.Glb == null ? "; metadata only (automatic GLB export paused)" : "; supplied GLB copied unchanged"));
                 Console.WriteLine("Keep the active SolidWorks model unchanged until extraction completes.");
-                var options = new ExtractionOptions { RunInterferenceDetection = !command.SkipInterferences, Progress = progress, ForceFreshProcessing = command.ForceFreshProcessing };
+                var options = new ExtractionOptions { RunInterferenceDetection = !command.SkipInterferences, Progress = progress, ForceFreshProcessing = command.ForceFreshProcessing, UseMemoization = !command.NoMemoization };
                 var estimate = new ExportProgressEstimate();
                 int lastPercent = -1;
                 options.Completion = (fraction, stage) => {
@@ -2415,13 +2451,14 @@ namespace CADVision.SolidWorks
             finally { if (!previous) setState(previous); }
         }
         public string Directory, Shipper, Glb, MapPair, NativeGlbPath, PublishPair, Quest, SendPair;
-        public bool SkipInterferences, ProbeNativeGlb, CustomGlb, PublishCadFiles, ForceFreshProcessing;
+        public bool SkipInterferences, ProbeNativeGlb, CustomGlb, PublishCadFiles, ForceFreshProcessing, NoMemoization;
         public static ExportCommand Parse(string[] args)
         {
             var result = new ExportCommand();
             for (int i = 0; i < args.Length; i++)
             {
                 if(args[i]=="--fresh" && !result.ForceFreshProcessing) {result.ForceFreshProcessing=true;continue;}
+                if(args[i]=="--no-memoization" && !result.NoMemoization) {result.NoMemoization=true;continue;}
                 if (args[i] == "--quest" && result.Quest == null && i+1 < args.Length && !args[i+1].StartsWith("--")) result.Quest = QuestTransfer.Endpoint(args[++i]).AbsoluteUri;
                 else if (args[i] == "--send-pair" && result.SendPair == null && i+1 < args.Length && !args[i+1].StartsWith("--")) result.SendPair = Path.GetFullPath(args[++i]);
                 else if (args[i] == "--skip-interferences" && !result.SkipInterferences) result.SkipInterferences = true;
