@@ -40,6 +40,7 @@ namespace CADVision.SolidWorks
         public List<string> warnings = new List<string>();
         public List<string> notices = new List<string>();
         public string mappingStatus = "not_correlated_to_glb";
+        public GlbAsset glbAsset;
         public string coordinateSystem = "SolidWorks root assembly; SI; inertia about center of mass aligned with root axes";
         public string valuePolicy = "Prefer authoritative SolidWorks API values; only normalize representation or derive unavailable fields with explicit provenance.";
 
@@ -133,6 +134,14 @@ namespace CADVision.SolidWorks
         public List<AxisRecord> axes = new List<AxisRecord>();
         public List<PlaneRecord> planes = new List<PlaneRecord>();
         public List<PointRecord> points = new List<PointRecord>();
+    }
+    // Identifies the exact visualization file in this pair, not a node-to-CAD mapping.
+    public sealed class GlbAsset
+    {
+        public string file = "model.glb", sha256, sourceMode, originalFileName;
+        public long byteLength;
+        public string correspondenceStatus = "unverified";
+        public string lengthUnitConvention = "m", scaleVerification = "not_verified";
     }
     // Version 2 uses the active root document's units for every numeric field.
     // ToSI factors are for metadata only, not an instruction to scale a GLB mesh.
@@ -1334,11 +1343,12 @@ namespace CADVision.SolidWorks
 
     public static class ExportPipeline
     {
-        public static Metadata Export(SldWorks app, string directory, ExtractionOptions options, Action<string> progress)
+        public static Metadata Export(SldWorks app, string directory, ExtractionOptions options, Action<string> progress, string existingGlb = null)
         {
             string destination = Path.GetFullPath(directory);
             if (Directory.Exists(destination) || File.Exists(destination))
                 throw new IOException("Choose a new export directory; existing exports are never overwritten.");
+            if (existingGlb != null) GlbExporter.CheckContainer(existingGlb);
             var model = app.ActiveDoc as ModelDoc2;
             if (model == null) throw new InvalidOperationException("Open a saved part or assembly in SolidWorks.");
             string source = model.GetPathName();
@@ -1349,8 +1359,18 @@ namespace CADVision.SolidWorks
             Directory.CreateDirectory(stage);
             try
             {
-                if (progress != null) progress("Exporting native model.glb...");
-                int warnings = GlbExporter.Export(app, model, Path.Combine(stage, "model.glb"));
+                int warnings = 0;
+                string glbPath = Path.Combine(stage, "model.glb");
+                if (existingGlb == null)
+                {
+                    if (progress != null) progress("Exporting native model.glb...");
+                    warnings = GlbExporter.Export(app, model, glbPath);
+                }
+                else
+                {
+                    if (progress != null) progress("Copying supplied GLB unchanged; CAD correspondence remains unverified...");
+                    CopySuppliedGlb(existingGlb, glbPath);
+                }
                 EnsureSameModel(app, model, source, configuration, updateStamp);
                 if (progress != null) progress("Extracting metadata from the same model/configuration...");
                 // Pass detailed metadata progress through the combined runner without
@@ -1366,11 +1386,13 @@ namespace CADVision.SolidWorks
                 EnsureSameModel(app, model, source, configuration, updateStamp);
                 var root = metadata.objects.Find(o => o.id == metadata.project.rootObjectId);
                 if (root == null || !String.Equals(root.sourceDocument, source, StringComparison.OrdinalIgnoreCase) || root.configuration != configuration)
-                    throw new InvalidOperationException("Metadata and GLB source identity differ; export was not published.");
-                metadata.extractionStatus["glb"] = "native_export_container_checked_mapping_unverified";
+                    throw new InvalidOperationException("Metadata source differs from the captured active CAD document; export was not published.");
+                metadata.glbAsset = DescribeGlb(glbPath, existingGlb);
+                metadata.extractionStatus["glb"] = existingGlb == null ? "native_export_container_checked_mapping_unverified" : "supplied_glb_container_checked_correspondence_unverified";
                 // The native GLB is never rescaled to the JSON display units. GLB
                 // specifies meters; its actual geometry/axis mapping awaits pair validation.
-                metadata.extractionStatus["exportPair"] = "same_document_configuration_root_update_stamp_checked";
+                metadata.extractionStatus["exportPair"] = existingGlb == null ? "same_document_configuration_root_update_stamp_checked" : "supplied_glb_plus_active_CAD_metadata_correspondence_unverified";
+                if (existingGlb != null) metadata.warnings.Add("Supplied GLB: matching CAD document, configuration, revision, scale and node mapping have not been verified. A matching filename is not proof of correspondence.");
                 if (warnings != 0) metadata.warnings.Add("Native GLB export warnings=" + warnings + " (" + (swFileSaveWarning_e)warnings + ").");
                 if (progress != null) progress("Writing metadata.json (schema " + metadata.schemaVersion + ")...");
                 metadata.Write(Path.Combine(stage, "metadata.json"));
@@ -1384,6 +1406,22 @@ namespace CADVision.SolidWorks
                 // Preserve partial output for diagnosis; never label it a completed export.
                 throw new IOException("Export failed. Unpublished diagnostic files: " + stage + ". " + ex.Message, ex);
             }
+        }
+
+        public static void CopySuppliedGlb(string source, string destination)
+        {
+            if (!String.Equals(Path.GetExtension(source), ".glb", StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Supplied visualization must be a .glb file.");
+            // Copy with the source locked against writes; never modify or rescale it.
+            using (var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read))
+            using (var output = new FileStream(destination, FileMode.CreateNew, FileAccess.Write, FileShare.None)) input.CopyTo(output);
+            GlbExporter.CheckContainer(destination);
+        }
+        public static GlbAsset DescribeGlb(string path, string suppliedPath)
+        {
+            using (var stream = File.OpenRead(path))
+            using (var hash = SHA256.Create())
+                return new GlbAsset { byteLength = stream.Length, sha256 = BitConverter.ToString(hash.ComputeHash(stream)).Replace("-", "").ToLowerInvariant(),
+                    sourceMode = suppliedPath == null ? "native_solidworks_export" : "supplied_glb", originalFileName = suppliedPath == null ? null : Path.GetFileName(suppliedPath) };
         }
 
         private static void EnsureSameModel(SldWorks app, ModelDoc2 model, string source, string configuration, int updateStamp)
@@ -1406,7 +1444,7 @@ namespace CADVision.SolidWorks
             catch (ArgumentException ex)
             {
                 Console.Error.WriteLine(ex.Message);
-                Console.Error.WriteLine("Usage: CADVision.Export.exe [new-output-directory] [--skip-interferences] [--shipper CadenShipper.exe]");
+                Console.Error.WriteLine("Usage: CADVision.Export.exe [new-output-directory] [--glb existing.glb] [--skip-interferences] [--shipper CadenShipper.exe]");
                 return 2;
             }
             try
@@ -1418,10 +1456,10 @@ namespace CADVision.SolidWorks
                 Action<string> progress = message => Console.WriteLine("[{0:F1}s] {1}", clock.Elapsed.TotalSeconds, message);
                 progress("Connecting to SolidWorks");
                 var app = (SldWorks)Marshal.GetActiveObject("SldWorks.Application");
-                progress("SolidWorks revision: " + app.RevisionNumber() + "; GLB API: IModelDocExtension.SaveAs3");
+                progress("SolidWorks revision: " + app.RevisionNumber() + (command.Glb == null ? "; GLB API: IModelDocExtension.SaveAs3" : "; using supplied GLB: " + command.Glb));
                 Console.WriteLine("Keep the active SolidWorks model unchanged until export completes.");
                 var metadata = ExportPipeline.Export(app, folder,
-                    new ExtractionOptions { RunInterferenceDetection = !command.SkipInterferences }, progress);
+                    new ExtractionOptions { RunInterferenceDetection = !command.SkipInterferences }, progress, command.Glb);
                 Console.WriteLine("Exported model.glb + metadata.json to " + Path.GetFullPath(folder));
                 Console.WriteLine(metadata.objects.Count + " objects; " + metadata.mates.Count + " mates; " + clock.Elapsed.TotalSeconds.ToString("F1") + " seconds.");
                 foreach (string warning in metadata.warnings) Console.Error.WriteLine("Warning: " + warning);
@@ -1449,7 +1487,7 @@ namespace CADVision.SolidWorks
     // CLI parsing has no SolidWorks dependency. No model/source-file path is required.
     public sealed class ExportCommand
     {
-        public string Directory, Shipper;
+        public string Directory, Shipper, Glb;
         public bool SkipInterferences;
         public static ExportCommand Parse(string[] args)
         {
@@ -1457,6 +1495,8 @@ namespace CADVision.SolidWorks
             for (int i = 0; i < args.Length; i++)
             {
                 if (args[i] == "--skip-interferences" && !result.SkipInterferences) result.SkipInterferences = true;
+                else if (args[i] == "--glb" && result.Glb == null && i+1 < args.Length && !args[i+1].StartsWith("--"))
+                    result.Glb = Path.GetFullPath(args[++i]);
                 else if (args[i] == "--shipper" && result.Shipper == null && i+1 < args.Length && !args[i+1].StartsWith("--"))
                     result.Shipper = Path.GetFullPath(args[++i]);
                 else if (!args[i].StartsWith("--") && result.Directory == null) result.Directory = Path.GetFullPath(args[i]);
