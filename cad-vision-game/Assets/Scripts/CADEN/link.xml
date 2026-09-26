@@ -1,0 +1,5 @@
+<linker>
+  <!-- Newtonsoft serializes these contracts by reflection in IL2CPP players. -->
+  <assembly fullname="CADEN.Core" preserve="all" />
+  <assembly fullname="CADEN.Hosting" preserve="all" />
+</linker>

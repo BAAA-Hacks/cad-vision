@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using UnityEngine;
 
-public class CADVisionManipulationService : MonoBehaviour
+public partial class CADVisionManipulationService : MonoBehaviour
 {
     [Header("Model")]
     [SerializeField] private Transform modelRoot;
