@@ -85,10 +85,11 @@ namespace CADVision.SolidWorks
             using (var writer = new StreamWriter(stream, new UTF8Encoding(false))) writer.Write(serializer.Serialize(this));
         }
     }
-    // Assembly identity and declared SI units, independent of SolidWorks display units.
+    // SI during extraction; declared document units replace these defaults before export.
     public sealed class Project
     {
         public string id, name, rootObjectId;
+        public DocumentUnits documentUnits;
         public Dictionary<string, string> units = new Dictionary<string, string> {
             {"length", "m"}, {"mass", "kg"}, {"angle", "rad"}, {"volume", "m^3"}, {"density", "kg/m^3"}, {"inertia", "kg*m^2"}
         };
@@ -130,6 +131,90 @@ namespace CADVision.SolidWorks
         public List<AxisRecord> axes = new List<AxisRecord>();
         public List<PlaneRecord> planes = new List<PlaneRecord>();
         public List<PointRecord> points = new List<PointRecord>();
+    }
+    // Version 2 uses the active root document's units for every numeric field.
+    // ToSI factors are for metadata only, not an instruction to scale a GLB mesh.
+    public sealed class DocumentUnits
+    {
+        public string system, length, mass, angle;
+        public int nativeSystemCode;
+        public double lengthToMeters, massToKilograms, angleToRadians;
+        public string scope = "active_root_document_for_entire_export";
+        public string source = "SolidWorks document preferences and IUserUnit; exact mass unit definitions";
+        public string glbScaleStatus = "unverified_GLTF_specifies_meters_do_not_apply_metadata_scale_to_mesh";
+        public Dictionary<string, double> toSI;
+    }
+    public static class DocumentUnitConversion
+    {
+        public static DocumentUnits Create(int system, bool radians)
+        {
+            var u = new DocumentUnits { nativeSystemCode = system, angle = radians ? "rad" : "deg", angleToRadians = radians ? 1 : Math.PI / 180 };
+            switch ((swUnitSystem_e)system)
+            {
+                case swUnitSystem_e.swUnitSystem_IPS: u.system = "IPS"; u.length = "in"; u.mass = "lb"; u.lengthToMeters = .0254; u.massToKilograms = .45359237; break;
+                case swUnitSystem_e.swUnitSystem_MMGS: u.system = "MMGS"; u.length = "mm"; u.mass = "g"; u.lengthToMeters = .001; u.massToKilograms = .001; break;
+                case swUnitSystem_e.swUnitSystem_MKS: u.system = "MKS"; u.length = "m"; u.mass = "kg"; u.lengthToMeters = 1; u.massToKilograms = 1; break;
+                case swUnitSystem_e.swUnitSystem_CGS: u.system = "CGS"; u.length = "cm"; u.mass = "g"; u.lengthToMeters = .01; u.massToKilograms = .001; break;
+                default: throw new InvalidDataException("Custom/unknown document unit system is not supported yet; refusing to label values with guessed units.");
+            }
+            return u;
+        }
+        // This changes representation only: engineering values were read from native APIs.
+        // All transforms/reference positions are converted after native coordinate operations.
+        public static void Apply(Metadata data, DocumentUnits u)
+        {
+            if (data.schemaVersion != "1.0") throw new InvalidDataException("Unit conversion may run only once on SI metadata.");
+            var factors = new[] { u.lengthToMeters, u.massToKilograms, u.angleToRadians };
+            if (factors.Any(x => Double.IsNaN(x) || Double.IsInfinity(x) || x <= 0)) throw new InvalidDataException("Invalid document unit factors.");
+            double l = u.lengthToMeters, m = u.massToKilograms, a = u.angleToRadians, v = l*l*l, inertia = m*l*l;
+            u.toSI = new Dictionary<string, double> { {"length",l}, {"mass",m}, {"angle",a}, {"volume",v}, {"density",m/v}, {"inertia",inertia} };
+            data.project.documentUnits = u;
+            data.project.units = new Dictionary<string, string> { {"length",u.length}, {"mass",u.mass}, {"angle",u.angle}, {"volume",u.length+"^3"}, {"density",u.mass+"/"+u.length+"^3"}, {"inertia",u.mass+"*"+u.length+"^2"} };
+            var materials = new HashSet<Material>();
+            Action<Material> convertMaterial = material => {
+                if (material != null && materials.Add(material)) material.density /= m/v;
+            };
+            foreach (var o in data.objects)
+            {
+                o.mass /= m; o.volume /= v; o.effectiveDensity /= m/v;
+                o.centerOfMass = Scale(o.centerOfMass, l);
+                if (o.transform != null)
+                {
+                    o.transform = (double[])o.transform.Clone();
+                    for (int i = 9; i < 12; i++) o.transform[i] /= l;
+                }
+                if (o.inertia != null)
+                {
+                    o.inertia.ixx /= inertia; o.inertia.iyy /= inertia; o.inertia.izz /= inertia;
+                    o.inertia.ixy /= inertia; o.inertia.ixz /= inertia; o.inertia.iyz /= inertia;
+                }
+                convertMaterial(o.material); convertMaterial(o.documentMaterial);
+                if (o.bodyMaterials != null) foreach (var body in o.bodyMaterials) convertMaterial(body.material);
+                if (o.referenceGeometry != null)
+                {
+                    foreach (var axis in o.referenceGeometry.axes) axis.origin = Scale(axis.origin,l);
+                    foreach (var plane in o.referenceGeometry.planes) plane.origin = Scale(plane.origin,l);
+                    foreach (var point in o.referenceGeometry.points) point.position = Scale(point.position,l);
+                }
+                if (o.dimensions != null) foreach (var d in o.dimensions)
+                {
+                    if (d.unit == "m") { d.value /= l; d.unit = u.length; }
+                    else if (d.unit == "rad") { d.value /= a; d.unit = u.angle; }
+                }
+            }
+            foreach (var mate in data.mates)
+            {
+                var limits = mate.limits;
+                if (limits == null) continue;
+                if (limits.unit == "m") { limits.minimum /= l; limits.maximum /= l; limits.unit = u.length; }
+                else if (limits.unit == "rad") { limits.minimum /= a; limits.maximum /= a; limits.unit = u.angle; }
+            }
+            if (data.interferences != null) foreach (var hit in data.interferences) hit.volume /= v;
+            data.coordinateSystem = "SolidWorks root document axes; positions/transform translations in project.units.length; inertia about center of mass; directions and rotations dimensionless";
+            data.extractionStatus["units"] = "converted_to_active_root_document_units";
+            data.schemaVersion = "2.0";
+        }
+        private static double[] Scale(double[] values, double divisor) { return values == null ? null : values.Select(x => x/divisor).ToArray(); }
     }
     public sealed class AxisRecord { public string id, name; public double[] origin, direction; }
     public sealed class PlaneRecord { public string id, name; public double[] origin, normal; }
@@ -236,6 +321,10 @@ namespace CADVision.SolidWorks
             if (model == null || (model.GetType() != (int)swDocumentTypes_e.swDocASSEMBLY && model.GetType() != (int)swDocumentTypes_e.swDocPART))
                 throw new InvalidOperationException("Open and activate a SolidWorks part or assembly first. Drawings are not supported.");
             bool isPart = model.GetType() == (int)swDocumentTypes_e.swDocPART;
+            // Read document preferences, never application-wide defaults. Fail early
+            // when units cannot be established, rather than exporting mislabeled numbers.
+            var outputUnits = ReadDocumentUnits(model);
+            Report("Output units: " + outputUnits.system + " (" + outputUnits.length + ", " + outputUnits.mass + ", " + outputUnits.angle + ")");
             var path = model.GetPathName();
             if (String.IsNullOrWhiteSpace(path)) throw new InvalidOperationException("Save the part or assembly first to establish its project identity.");
             projectId = Identity.Make("PROJECT", Path.GetFullPath(path).ToUpperInvariant());
@@ -279,8 +368,29 @@ namespace CADVision.SolidWorks
             result.warnings.Add("Exact remaining DOF vectors are not implemented. Mate solved/conflicting classifications remain unknown unless supported by explicit native evidence; no solver state is guessed.");
             }
             result.warnings.Add("Custom properties use cached values or raw expressions. Rebuild/configuration changes are not forced. See extractionStatus and warnings for incomplete reads.");
+            DocumentUnitConversion.Apply(result, outputUnits);
             result.Validate();
             return result;
+        }
+
+        private static DocumentUnits ReadDocumentUnits(ModelDoc2 doc)
+        {
+            int system = doc.Extension.GetUserPreferenceInteger((int)swUserPreferenceIntegerValue_e.swUnitSystem,
+                (int)swUserPreferenceOption_e.swDetailingNoOptionSpecified);
+            var length = doc.GetUserUnit((int)swUserUnitsType_e.swLengthUnit) as UserUnit;
+            var angle = doc.GetUserUnit((int)swUserUnitsType_e.swAngleUnit) as UserUnit;
+            if (length == null || angle == null) throw new InvalidDataException("Native document units unavailable.");
+            bool radians = angle.SpecificUnitType == (int)swAngleUnit_e.swRADIANS;
+            var units = DocumentUnitConversion.Create(system, radians);
+            double nativeLength = length.ConvertDoubleToSystemValue(1.0);
+            // Composite angle formatting is represented as decimal degrees in JSON.
+            double nativeAngle = angle.ConvertDoubleToSystemValue(1.0);
+            if (!Finite(nativeLength) || Math.Abs(nativeLength - units.lengthToMeters) > units.lengthToMeters * 1e-8 ||
+                !Finite(nativeAngle) || Math.Abs(nativeAngle - units.angleToRadians) > units.angleToRadians * 1e-8)
+                throw new InvalidDataException("Document unit settings do not match the native unit preset.");
+            units.lengthToMeters = nativeLength;
+            units.angleToRadians = nativeAngle;
+            return units;
         }
 
         // A standalone part is one root object, even when it has many bodies.
@@ -590,7 +700,8 @@ namespace CADVision.SolidWorks
     }
 
     // Pure conversions are kept separate so unit/coordinate mistakes can be tested
-    // without a running SolidWorks instance. All numeric output stays in SI units.
+    // without a running SolidWorks instance. Internal reads use SI; the final export
+    // converts all dimensional values to the declared root document units.
     public static class MetadataMath
     {
         public static NativeStatus ComponentStatus(int code)
