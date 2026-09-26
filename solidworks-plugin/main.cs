@@ -1,12 +1,12 @@
-// CADVision SolidWorks GLB + metadata exporter — single-file edition.
+// CADVision SolidWorks GLB + metadata exporter â€” single-file edition.
 // Target: Windows x64, .NET Framework 4.8, SolidWorks 2020+.
-// References: System.Core, System.Web.Extensions, System.Xml, System.Xml.Linq,
+// References: System.Core, System.Web.Extensions, System.Xml, System.Xml.Linq, System.IO.Compression,
 // SolidWorks.Interop.sldworks.dll, SolidWorks.Interop.swconst.dll.
 // Compile as a console application. Do not include the separate source files too.
 // Usage: CADVision.Export.exe [new-output-directory] [--custom-glb | --glb existing.glb] [--skip-interferences]
 // Requires a running SolidWorks instance and a saved active part or assembly.
 // Default: metadata only. --custom-glb: metadata -> native tessellation -> custom GLB -> pair.
-// Console runner; add-in button/registration and Quest networking are not implemented here.
+// Console runner; --custom-glb --quest http://HEADSET-IP:8085/design sends directly to the Unity receiver.
 // Read IMPLEMENTATION_STATUS.md for capabilities, limitations, and test evidence.
 // Repeated namespace and partial-class blocks are valid together in one .cs file.
 using System;
@@ -426,6 +426,28 @@ namespace CADVision.SolidWorks
         private SldWorks application;
         private ExtractionOptions options;
         private MathUtility nativeMath;
+        private readonly PropertyReadCache propertyReads = new PropertyReadCache();
+        private readonly Dictionary<Component2, Component2[]> childReads = new Dictionary<Component2, Component2[]>();
+        private Component2[] Children(Component2 component)
+        {
+            Component2[] children;
+            if (!childReads.TryGetValue(component, out children)) {
+                children = Items(component.GetChildren()).Cast<Component2>().ToArray();
+                childReads.Add(component, children);
+            }
+            return children;
+        }
+        private int completedOccurrences, totalOccurrences;
+        private void Completion(double fraction, string stage) { if (options.Completion != null) options.Completion(fraction, stage); }
+        private int CountOccurrences(Component2 component)
+        {
+            return 1 + (component.IsSuppressed() ? 0 : Children(component).Sum(c => CountOccurrences(c)));
+        }
+        private void OccurrenceCompleted()
+        {
+            completedOccurrences++;
+            Completion(0.05 + 0.70 * completedOccurrences / Math.Max(1, totalOccurrences), "Reading component metadata");
+        }
         private readonly Dictionary<string, CadObject> occurrences = new Dictionary<string, CadObject>(StringComparer.Ordinal);
         private readonly List<Tuple<Component2, CadObject>> components = new List<Tuple<Component2, CadObject>>();
 
@@ -437,6 +459,9 @@ namespace CADVision.SolidWorks
         {
             application = app;
             options = extractionOptions ?? new ExtractionOptions();
+            completedOccurrences = totalOccurrences = 0;
+            propertyReads.Clear(); childReads.Clear();
+            Completion(0, "Preparing metadata");
             materialDatabases.Clear(); nativeMath = null;
             if (System.Threading.Thread.CurrentThread.GetApartmentState() != System.Threading.ApartmentState.STA)
                 throw new InvalidOperationException("SolidWorks API calls require an STA thread.");
@@ -468,10 +493,13 @@ namespace CADVision.SolidWorks
             {
             var rootComponent = config.GetRootComponent3(false);
             if (rootComponent == null) throw new InvalidOperationException("Assembly tree unavailable. Open the assembly in resolved mode.");
-            var children = Items(rootComponent.GetChildren()).Cast<Component2>().ToArray();
+            var children = Children(rootComponent);
+            if (options.Completion != null) totalOccurrences = children.Sum(c => CountOccurrences(c));
+            Completion(0.05, "Reading component metadata");
             foreach (var child in children) Visit(child, root);
             Try(root.id, "mass properties", () => ReadMass(root, children.Where(c => !c.IsSuppressed()).Cast<object>().ToArray()));
             Report("Assembly mates");
+            Completion(0.80, "Reading assembly mates");
             ReadMateFeatures(model.FirstFeature() as Feature, root, null);
             foreach (var pair in components.Where(p => p.Item2.type == "assembly" && p.Item2.suppressed == false))
                 Try(pair.Item2.id, "subassembly mates", () => {
@@ -487,7 +515,7 @@ namespace CADVision.SolidWorks
             result.extractionStatus["mates"] = "attempted_requires_live_verification";
             result.extractionStatus["remainingDOF"] = "not_implemented_stretch";
             result.extractionStatus["interferences"] = options.RunInterferenceDetection ? "pending" : "disabled";
-            if (options.RunInterferenceDetection) { Report("Native interference detection"); Try(root.id, "interference detection", ReadInterferences); }
+            if (options.RunInterferenceDetection) { Completion(0.90, "Checking interferences"); Report("Native interference detection"); Try(root.id, "interference detection", ReadInterferences); }
             if (result.extractionStatus["interferences"] == "pending") result.extractionStatus["interferences"] = "unavailable";
             result.warnings.Add("Exact remaining DOF vectors are not implemented. Mate solved/conflicting classifications remain unknown unless supported by explicit native evidence; no solver state is guessed.");
             }
@@ -495,6 +523,7 @@ namespace CADVision.SolidWorks
             MechanicalScopeRules.Populate(result, establishedMechanicalScopes);
             DocumentUnitConversion.Apply(result, outputUnits);
             result.Validate();
+            Completion(1, "Metadata ready");
             return result;
         }
 
@@ -561,8 +590,8 @@ namespace CADVision.SolidWorks
             occurrences.Add(path, o); components.Add(Tuple.Create(component, o)); result.objects.Add(o); parent.childIds.Add(id);
             Try(id, "suppression", () => o.suppressed = component.IsSuppressed());
             Try(id, "fixed state", () => { o.@fixed = component.IsFixed(); o.fixedState = o.@fixed.Value ? "fixed" : "floating"; });
-            Try(id, "transform", () => o.transform = component.Transform2 == null ? null : component.Transform2.ArrayData as double[]);
-            if (o.suppressed != false) { result.warnings.Add(id + ": suppressed/unavailable occurrence; descendants and engineering properties not assessed."); return; }
+            Try(id, "transform", () => { var transform = component.Transform2; o.transform = transform == null ? null : transform.ArrayData as double[]; });
+            if (o.suppressed != false) { result.warnings.Add(id + ": suppressed/unavailable occurrence; descendants and engineering properties not assessed."); OccurrenceCompleted(); return; }
             Try(id, "definition status", () => {
                 int native = component.GetConstrainedStatus();
                 o.nativeConstrainedStatus = MetadataMath.ComponentStatus(native);
@@ -577,7 +606,8 @@ namespace CADVision.SolidWorks
             else result.warnings.Add(id + ": source document is unloaded/lightweight; custom properties and material unavailable.");
             // Explicit occurrence selection uses the referenced configuration in assembly context.
             Try(id, "mass properties", () => ReadMass(o, new object[] { component }));
-            if (type == "assembly") foreach (var child in Items(component.GetChildren()).Cast<Component2>()) Visit(child, o);
+            OccurrenceCompleted();
+            if (type == "assembly") foreach (var child in Children(component)) Visit(child, o);
         }
 
         private void Report(string message) { if (options.Progress != null) options.Progress(message); }
@@ -670,8 +700,8 @@ namespace CADVision.SolidWorks
         // convenience fields, while every discovered property remains in the dictionaries.
         private void ReadProperties(ModelDoc2 doc, CadObject o)
         {
-            Try(o.id, "document properties", () => ReadPropertyManager(doc.Extension.CustomPropertyManager[""], o.documentProperties));
-            Try(o.id, "configuration properties", () => ReadPropertyManager(doc.Extension.CustomPropertyManager[o.configuration], o.configurationProperties));
+            Try(o.id, "document properties", () => propertyReads.Read(doc, "", o.documentProperties, target => ReadPropertyManager(doc.Extension.CustomPropertyManager[""], target)));
+            Try(o.id, "configuration properties", () => propertyReads.Read(doc, o.configuration, o.configurationProperties, target => ReadPropertyManager(doc.Extension.CustomPropertyManager[o.configuration], target)));
             foreach (var p in o.documentProperties) o.customProperties[p.Key] = p.Value;
             foreach (var p in o.configurationProperties) o.customProperties[p.Key] = p.Value;
             string value;
@@ -815,10 +845,11 @@ namespace CADVision.SolidWorks
         private void Try(string id, string field, Action read)
         {
             try { read(); }
-            catch (Exception e) { if (!(e is COMException || e is InvalidOperationException || e is IOException || e is System.Xml.XmlException || e is UnauthorizedAccessException)) throw; result.warnings.Add(id + ": " + field + " unavailable: " + e.Message); }
+            catch (Exception e) { if (!(e is COMException || e is InvalidOperationException || e is InvalidDataException || e is IOException || e is System.Xml.XmlException || e is UnauthorizedAccessException)) throw; result.warnings.Add(id + ": " + field + " unavailable: " + e.Message); }
         }
     }
 }
+
 
 
 
@@ -831,6 +862,42 @@ namespace CADVision.SolidWorks
         // Native interference calculation can be expensive for large assemblies.
         public bool RunInterferenceDetection = true;
         public Action<string> Progress;
+        // Fraction completed within extraction, kept separate from diagnostic text.
+        public Action<double, string> Completion;
+        public bool ForceFreshProcessing;
+    }
+
+    // Per-export snapshots only. Cache successful reads, copy values into each
+    // occurrence, and retain partial results if a native read throws.
+    public sealed class PropertyReadCache
+    {
+        private readonly Dictionary<Tuple<object,string>, Dictionary<string,string>> values = new Dictionary<Tuple<object,string>, Dictionary<string,string>>();
+        public void Clear() { values.Clear(); }
+        public void Read(object document, string configuration, Dictionary<string,string> target, Action<Dictionary<string,string>> read)
+        {
+            var key=Tuple.Create(document,configuration);
+            Dictionary<string,string> snapshot;
+            if(values.TryGetValue(key,out snapshot)) { foreach(var p in snapshot) target[p.Key]=p.Value; return; }
+            read(target);
+            values.Add(key,new Dictionary<string,string>(target,target.Comparer));
+        }
+    }
+
+    // Work-weighted estimate, not a promise: native calls vary with model complexity.
+    public sealed class ExportProgressEstimate
+    {
+        private double fraction;
+        public string Update(double value, double elapsedSeconds)
+        {
+            if (Double.IsNaN(value) || Double.IsInfinity(value)) value = fraction;
+            fraction = Math.Max(fraction, Math.Max(0, Math.Min(1, value)));
+            int percent = fraction >= 1 ? 100 : Math.Min(99, (int)(fraction * 100));
+            if (fraction >= 1) return "100% â€” Local export complete";
+            if (elapsedSeconds < 3 || fraction < 0.02) return percent + "% â€” Estimating time remainingâ€¦";
+            double seconds = Math.Min(864000, Math.Max(1, elapsedSeconds * (1 - fraction) / fraction));
+            return percent + "% â€” About " + (seconds < 60 ? Math.Ceiling(seconds) + " sec" : Math.Ceiling(seconds / 60) + " min") + " remaining (estimate)";
+        }
+        public int Percent { get { return fraction >= 1 ? 100 : Math.Min(99, (int)(fraction * 100)); } }
     }
 
     // Pure conversions are kept separate so unit/coordinate mistakes can be tested
@@ -1093,7 +1160,8 @@ namespace CADVision.SolidWorks
                         if (dim == null) continue;
                         var name = dim.FullName;
                         if (!dimensions.Add(name)) continue;
-                        var record = new DimensionRecord { id = SourceId(doc, dim, "DIM", owner.id, name), name = name, nativeDisplayType = display.Type2, nativeParameterType = dim.GetType(), type = MetadataMath.DimensionType(display.Type2) };
+                        int displayType = display.Type2;
+                        var record = new DimensionRecord { id = SourceId(doc, dim, "DIM", owner.id, name), name = name, nativeDisplayType = displayType, nativeParameterType = dim.GetType(), type = MetadataMath.DimensionType(displayType) };
                         owner.dimensions.Add(record);
                         // Tolerance methods read the source document's active configuration.
                         // Do not infer them from a different configuration or annotation text.
@@ -1293,7 +1361,7 @@ namespace CADVision.SolidWorks
         {
             var config = doc.GetConfigurationByName(o.configuration) as Configuration;
             if (config == null) return;
-            if (String.IsNullOrEmpty(o.description)) o.description = String.IsNullOrEmpty(config.Description) ? null : config.Description;
+            if (String.IsNullOrEmpty(o.description)) { string description = config.Description; o.description = String.IsNullOrEmpty(description) ? null : description; }
             var seen = new HashSet<string>(StringComparer.Ordinal);
             while (config != null && seen.Add(config.Name))
             {
@@ -1460,6 +1528,46 @@ namespace CADVision.SolidWorks
     // Engineering values remain exclusively in the existing native metadata extractor.
     public static class CustomGlbExporter
     {
+        private static readonly object cacheLock = new object();
+        private static string cachedInput;
+        private static byte[] cachedGlb;
+        // One bounded, process-local entry. Read all native input again before
+        // matching; never treat document timestamps as proof of unchanged geometry.
+        public static bool WriteCached(string path, List<MeshNode> input, bool forceFresh = false)
+        {
+            string key;
+            using(var sha=System.Security.Cryptography.SHA256.Create())
+            using(var hash=new System.Security.Cryptography.CryptoStream(Stream.Null,sha,System.Security.Cryptography.CryptoStreamMode.Write)) {
+                using(var writer=new BinaryWriter(hash,Encoding.UTF8,true)) {
+                    writer.Write("CADVision-GLB-cache-1");writer.Write(input.Count);
+                    foreach(var node in input) Fingerprint(writer,node);
+                    writer.Flush();
+                }
+                hash.FlushFinalBlock();key=Convert.ToBase64String(sha.Hash);
+            }
+            byte[] hit=null;
+            lock(cacheLock) { if(!forceFresh && key==cachedInput) hit=cachedGlb; }
+            if(hit!=null) {
+                using(var output=new FileStream(path,FileMode.CreateNew,FileAccess.Write)) output.Write(hit,0,hit.Length);
+                GlbExporter.CheckContainer(path);return true;
+            }
+            Write(path,input);
+            // Never keep an unbounded assembly in memory just to accelerate a retry.
+            if(new FileInfo(path).Length<=64L*1024*1024) {
+                var bytes=File.ReadAllBytes(path);
+                lock(cacheLock) { cachedInput=key;cachedGlb=bytes; }
+            } else { lock(cacheLock) {cachedInput=null;cachedGlb=null;} }
+            return false;
+        }
+        private static void Fingerprint(BinaryWriter writer, MeshNode node)
+        {
+            foreach(string value in new[]{node.Id,node.Name,node.Exclusion,node.AppearanceSource}) {writer.Write(value!=null);if(value!=null)writer.Write(value);}
+            writer.Write(node.Parent);
+            foreach(var values in new[]{node.World,node.Appearance}) {writer.Write(values==null?-1:values.Length);if(values!=null)foreach(double value in values)writer.Write(value);}
+            writer.Write(node.Positions.Count);foreach(float value in node.Positions)writer.Write(value);
+            writer.Write(node.Normals.Count);foreach(float value in node.Normals)writer.Write(value);
+            writer.Write(node.Surfaces.Count);foreach(var surface in node.Surfaces)Fingerprint(writer,surface);
+        }
         public sealed class MeshNode
         {
             public string Id, Name, Exclusion;
@@ -1471,7 +1579,14 @@ namespace CADVision.SolidWorks
             public List<float> Positions = new List<float>(), Normals = new List<float>();
         }
         private static IEnumerable<object> Items(object value) { return value is Array ? ((Array)value).Cast<object>() : Enumerable.Empty<object>(); }
-        private static float[] Floats(object value) { return value is Array ? ((Array)value).Cast<object>().Select(Convert.ToSingle).ToArray() : null; }
+        private static float[] Floats(object value)
+        {
+            // Native tessellation normally already arrives as float[]. Do not box
+            // and duplicate every coordinate; AppendFace only reads these arrays.
+            var floats = value as float[];
+            if (floats != null) return floats;
+            return value is Array ? ((Array)value).Cast<object>().Select(Convert.ToSingle).ToArray() : null;
+        }
         private static bool Finite(double v) { return !Double.IsNaN(v) && !Double.IsInfinity(v); }
 
         // Convert root-space occurrence transforms to glTF parent-local matrices.
@@ -1499,7 +1614,7 @@ namespace CADVision.SolidWorks
             for(int r=0;r<3;r++) m[12+r]=t[9+r]*meters;
             Inverse(m);return m;
         }
-        public static void Export(ModelDoc2 model, Metadata metadata, string path, Action<string> progress)
+        public static void Export(ModelDoc2 model, Metadata metadata, string path, Action<string> progress, Action<double, string> completion = null, bool forceFresh = false)
         {
             var components=new Dictionary<string,Component2>(StringComparer.Ordinal);
             if(model.GetType()==(int)swDocumentTypes_e.swDocASSEMBLY) {
@@ -1555,8 +1670,11 @@ namespace CADVision.SolidWorks
                     if(bodyCount==0 || n.Surfaces.Sum(v=>v.Positions.Count)==0) throw new InvalidDataException("No visible tessellated bodies for "+o.name+". Resolve/load the component and retry.");
                 }
                 indices.Add(o.id,nodes.Count);nodes.Add(n);
+                if (completion != null) completion(0.95 * nodes.Count / Math.Max(1, metadata.objects.Count), "Generating GLB geometry");
             }
-            Write(path,nodes);
+            bool reused=WriteCached(path,nodes,forceFresh);
+            if(progress!=null)progress(reused?"GLB processing cache hit: freshly read inputs match exactly.":"GLB processing cache miss: generated fresh output.");
+            if (completion != null) completion(1, "GLB written");
             var report=new MappingReport { method="cad_ids_assigned_during_custom_glb_generation",status="assigned_by_exporter",
                 verificationScope="CAD IDs assigned directly; live geometry placement and Unity runtime require validation" };
             for(int i=0;i<nodes.Count;i++) report.objects.Add(new NodeMapping {objectId=nodes[i].Id,glbNodeIndex=i,glbNodeName=nodes[i].Name,
@@ -1594,13 +1712,22 @@ namespace CADVision.SolidWorks
             public List<float> Positions=new List<float>(),Normals=new List<float>();
             public List<uint> Indices=new List<uint>();
         }
+        private struct VertexKey : IEquatable<VertexKey>
+        {
+            private readonly float x, y, z, nx, ny, nz;
+            public VertexKey(List<float> p, List<float> n, int i) { x=p[i];y=p[i+1];z=p[i+2];nx=n[i];ny=n[i+1];nz=n[i+2]; }
+            public bool Equals(VertexKey other) { return x.Equals(other.x)&&y.Equals(other.y)&&z.Equals(other.z)&&nx.Equals(other.nx)&&ny.Equals(other.ny)&&nz.Equals(other.nz); }
+            public override bool Equals(object other) { return other is VertexKey && Equals((VertexKey)other); }
+            public override int GetHashCode() { unchecked { int h=x.GetHashCode();h=h*31+y.GetHashCode();h=h*31+z.GetHashCode();h=h*31+nx.GetHashCode();h=h*31+ny.GetHashCode();return h*31+nz.GetHashCode(); } }
+        }
         public static IndexedMesh Index(MeshNode mesh)
         {
             var output=new IndexedMesh();
-            var seen=new Dictionary<Tuple<float,float,float,float,float,float>,uint>();
+            output.Indices.Capacity=mesh.Positions.Count/3;
+            var seen=new Dictionary<VertexKey,uint>();
             for(int i=0;i<mesh.Positions.Count;i+=3) {
                 var p=mesh.Positions;var n=mesh.Normals;
-                var key=Tuple.Create(p[i],p[i+1],p[i+2],n[i],n[i+1],n[i+2]);uint index;
+                var key=new VertexKey(p,n,i);uint index;
                 if(!seen.TryGetValue(key,out index)) {
                     index=(uint)(output.Positions.Count/3);seen.Add(key,index);
                     for(int k=0;k<3;k++){output.Positions.Add(p[i+k]);output.Normals.Add(n[i+k]);}
@@ -1621,8 +1748,8 @@ namespace CADVision.SolidWorks
                 if(x*x+y*y+z*z==0) continue;
                 double dot=x*(n[i]+n[i+3]+n[i+6])+y*(n[i+1]+n[i+4]+n[i+7])+z*(n[i+2]+n[i+5]+n[i+8]);
                 if(dot==0) throw new InvalidDataException("Native normals cannot establish triangle winding.");
-                int[] order=dot<0?new[]{0,6,3}:new[]{0,3,6};
-                foreach(int v in order) {
+                for(int corner=0;corner<3;corner++) {
+                    int v=corner==0?0:(dot<0?3-corner:corner)*3;
                     double length=Math.Sqrt(n[i+v]*n[i+v]+n[i+v+1]*n[i+v+1]+n[i+v+2]*n[i+v+2]);
                     if(length<1e-12) throw new InvalidDataException("Zero native normal.");
                     for(int k=0;k<3;k++) {node.Positions.Add(p[i+v+k]);node.Normals.Add((float)(n[i+v+k]/length));}
@@ -1635,13 +1762,22 @@ namespace CADVision.SolidWorks
         {
             if(input.Count==0 || input[0].Parent!=-1 || input.Select(n=>n.Id).Distinct().Count()!=input.Count) throw new InvalidDataException("Invalid mesh hierarchy/IDs.");
             var nodes=new List<Dictionary<string,object>>();var meshes=new List<object>();var views=new List<object>();var accessors=new List<object>();var materials=new List<object>();
+            // Build adjacency and inverse matrices once, instead of rescanning the
+            // whole assembly and reinverting a shared parent for every occurrence.
+            var childLists=new List<int>[input.Count];
+            var inverses=new double[input.Count][];
+            for(int i=0;i<input.Count;i++) {
+                childLists[i]=new List<int>();
+                if(i>0 && (input[i].Parent<0 || input[i].Parent>=i)) throw new InvalidDataException("Parent must precede child.");
+                if(i>0) childLists[input[i].Parent].Add(i);
+                inverses[i]=Inverse(input[i].World);
+            }
             using(var data=new MemoryStream()) using(var bin=new BinaryWriter(data)) {
                 for(int i=0;i<input.Count;i++) {
                     var n=input[i];if(i>0 && (n.Parent<0 || n.Parent>=i)) throw new InvalidDataException("Parent must precede child.");
-                    Inverse(n.World);
-                    var local=n.Parent<0?n.World:GlbMapping.Multiply(Inverse(input[n.Parent].World),n.World);
+                    var local=n.Parent<0?n.World:GlbMapping.Multiply(inverses[n.Parent],n.World);
                     var node=new Dictionary<string,object>{{"name",n.Name},{"matrix",local},{"extras",new {cadObjectId=n.Id,geometryStatus=n.Exclusion??"included"}}};
-                    int[] children=Enumerable.Range(0,input.Count).Where(j=>input[j].Parent==i).ToArray();if(children.Length>0)node["children"]=children;
+                    if(childLists[i].Count>0)node["children"]=childLists[i].ToArray();
                     var primitives=new List<object>();
                     foreach(var surface in n.Surfaces.Count>0?n.Surfaces:new List<MeshNode>{n}) {
                         if(surface.Positions.Count==0)continue;
@@ -1682,7 +1818,8 @@ namespace CADVision.SolidWorks
                 using(var file=new BinaryWriter(new FileStream(path,FileMode.CreateNew))) {
                     file.Write(0x46546C67u);file.Write(2u);file.Write((uint)size);file.Write((uint)padded);file.Write(0x4E4F534Au);file.Write(json);
                     for(int j=json.Length;j<padded;j++)file.Write((byte)32);
-                    file.Write((uint)data.Length);file.Write(0x004E4942u);file.Write(data.ToArray());
+                    file.Write((uint)data.Length);file.Write(0x004E4942u);
+                    file.Flush();data.Position=0;data.CopyTo(file.BaseStream);
                 }
             }
             GlbExporter.CheckContainer(path);
@@ -1840,13 +1977,19 @@ namespace CADVision.SolidWorks
             Directory.CreateDirectory(stage);
             try
             {
-                var metadata = new Extractor().Extract(app, options);
+                var extraction = new ExtractionOptions {
+                    RunInterferenceDetection = options == null || options.RunInterferenceDetection,
+                    Progress = options == null ? null : options.Progress,
+                    Completion = options == null || options.Completion == null ? (Action<double, string>)null : (value, message) => options.Completion(value * 0.98, message)
+                };
+                var metadata = new Extractor().Extract(app, extraction);
                 EnsureSameModel(app, model, source, configuration, stamp);
                 metadata.extractionStatus["glb"] = "not_requested";
                 metadata.extractionStatus["exportPair"] = "metadata_only";
                 metadata.extractionStatus["glbMapping"] = "not_applicable";
                 metadata.Write(Path.Combine(stage, "metadata.json"));
                 Directory.Move(stage, destination);
+                if (options != null && options.Completion != null) options.Completion(1, "Local export complete");
                 return metadata;
             }
             catch (Exception ex) { throw new IOException("Metadata export failed. Diagnostic folder: " + stage + ". " + ex.Message, ex); }
@@ -1880,6 +2023,7 @@ namespace CADVision.SolidWorks
                 // Pass detailed metadata progress through the combined runner without
                 // mutating the caller's options or dropping its existing callback.
                 var metadataOptions = new ExtractionOptions {
+                    Completion = options == null || options.Completion == null ? (Action<double, string>)null : (value, message) => options.Completion(value * 0.80, message),
                     RunInterferenceDetection = options == null || options.RunInterferenceDetection,
                     Progress = message => {
                         if (progress != null) progress(message);
@@ -1903,7 +2047,8 @@ namespace CADVision.SolidWorks
                 if (customGlb)
                 {
                     if (progress != null) progress("Metadata ready. Generating custom model.glb from native tessellation...");
-                    CustomGlbExporter.Export(model, metadata, glbPath, progress);
+                    CustomGlbExporter.Export(model, metadata, glbPath, progress,
+                        options == null || options.Completion == null ? (Action<double, string>)null : (value, message) => options.Completion(0.80 + value * 0.17, message), options != null && options.ForceFreshProcessing);
                 }
                 else if (existingGlb == null)
                 {
@@ -1921,6 +2066,7 @@ namespace CADVision.SolidWorks
                 }
                 EnsureSameModel(app, model, source, configuration, updateStamp);
                 metadata.glbAsset = DescribeGlb(glbPath, existingGlb);
+                if (options != null && options.Completion != null) options.Completion(0.98, "Validating and publishing files");
                 metadata.extractionStatus["glb"] = existingGlb == null ? "native_export_container_checked_mapping_unverified" : "supplied_glb_container_checked_correspondence_unverified";
                 // The native GLB is never rescaled to the JSON display units. GLB
                 // specifies meters; its actual geometry/axis mapping awaits pair validation.
@@ -1943,6 +2089,7 @@ namespace CADVision.SolidWorks
                 File.Replace(finalized, Path.Combine(stage, "metadata.json"), null);
                 // Publish both files together, only after both exporters have succeeded.
                 Directory.Move(stage, destination);
+                if (options != null && options.Completion != null) options.Completion(1, "Local export complete");
                 if (progress != null) progress("Published model.glb + metadata.json.");
                 return metadata;
             }
@@ -2154,6 +2301,8 @@ namespace CADVision.SolidWorks
                 Console.Error.WriteLine(ex.Message);
                 Console.Error.WriteLine("Usage: CADVision.Export.exe [new-output-directory] [--custom-glb | --glb existing.glb] [--skip-interferences] [--shipper CadenShipper.exe]");
                 Console.Error.WriteLine("Publish: --custom-glb --publish-cadfiles, or --publish-pair existing-pair-directory");
+                Console.Error.WriteLine("Quest: --custom-glb --quest http://HEADSET-IP:8085/design");
+                Console.Error.WriteLine("Retry existing pair: --send-pair existing-pair-directory --quest http://HEADSET-IP:8085/design");
                 Console.Error.WriteLine("Offline: CADVision.Export.exe [new-output-directory] --map-pair existing-pair-directory");
                 Console.Error.WriteLine("Default: metadata only. Automatic GLB export and native diagnostics are paused.");
                 return 2;
@@ -2161,6 +2310,11 @@ namespace CADVision.SolidWorks
             try
             {
                 string folder = command.Directory ?? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "export-" + DateTime.Now.ToString("yyyyMMdd-HHmmss-fff"));
+                if (command.SendPair != null)
+                {
+                    Console.WriteLine(QuestTransfer.Send(command.SendPair, command.Quest));
+                    return 0;
+                }
                 if (command.PublishPair != null)
                 {
                     CadFilesPublisher.Publish(command.PublishPair);
@@ -2183,13 +2337,28 @@ namespace CADVision.SolidWorks
                 var app = (SldWorks)Marshal.GetActiveObject("SldWorks.Application");
                 progress("SolidWorks revision: " + app.RevisionNumber() + (command.CustomGlb ? "; custom GLB from SolidWorks tessellation" : command.Glb == null ? "; metadata only (automatic GLB export paused)" : "; supplied GLB copied unchanged"));
                 Console.WriteLine("Keep the active SolidWorks model unchanged until extraction completes.");
-                var options = new ExtractionOptions { RunInterferenceDetection = !command.SkipInterferences, Progress = progress };
-                var metadata = command.Glb == null && !command.CustomGlb
+                var options = new ExtractionOptions { RunInterferenceDetection = !command.SkipInterferences, Progress = progress, ForceFreshProcessing = command.ForceFreshProcessing };
+                var estimate = new ExportProgressEstimate();
+                int lastPercent = -1;
+                options.Completion = (fraction, stage) => {
+                    string summary = estimate.Update(fraction, clock.Elapsed.TotalSeconds);
+                    if (estimate.Percent != lastPercent) { lastPercent = estimate.Percent; progress(stage + ": " + summary); }
+                };
+                // SolidWorks documents this flag for faster out-of-process API batches.
+                // Restore the prior state on success or failure, before copying/uploading.
+                var metadata = ExportCommand.RunApiBatch(() => app.CommandInProgress,
+                    value => app.CommandInProgress = value, () => command.Glb == null && !command.CustomGlb
                     ? ExportPipeline.ExportMetadataOnly(app, folder, options)
-                    : ExportPipeline.Export(app, folder, new ExtractionOptions { RunInterferenceDetection = !command.SkipInterferences }, progress, command.Glb, null, command.CustomGlb);
+                    : ExportPipeline.Export(app, folder, options, progress, command.Glb, null, command.CustomGlb));
                 if (command.PublishCadFiles) {
                     CadFilesPublisher.Publish(folder);
                     progress("Replaced CadFiles contents: " + CadFilesPublisher.Destination);
+                }
+                if (command.Quest != null)
+                {
+                    progress("Sending completed pair to CAD Vision receiver");
+                    try { progress(QuestTransfer.Send(folder, command.Quest)); }
+                    catch (Exception ex) { Console.Error.WriteLine("Transfer not confirmed: " + ex.Message + ". Export retained at " + Path.GetFullPath(folder)); return 3; }
                 }
                 Console.WriteLine((command.Glb == null && !command.CustomGlb ? "Exported metadata.json to " : "Exported model.glb + metadata.json to ") + Path.GetFullPath(folder));
                 Console.WriteLine(metadata.objects.Count + " objects; " + metadata.mates.Count + " mates; " + clock.Elapsed.TotalSeconds.ToString("F1") + " seconds.");
@@ -2239,14 +2408,23 @@ namespace CADVision.SolidWorks
     // CLI parsing has no SolidWorks dependency. No model/source-file path is required.
     public sealed class ExportCommand
     {
-        public string Directory, Shipper, Glb, MapPair, NativeGlbPath, PublishPair;
-        public bool SkipInterferences, ProbeNativeGlb, CustomGlb, PublishCadFiles;
+        public static T RunApiBatch<T>(Func<bool> getState, Action<bool> setState, Func<T> export)
+        {
+            bool previous = getState();
+            try { if (!previous) setState(true); return export(); }
+            finally { if (!previous) setState(previous); }
+        }
+        public string Directory, Shipper, Glb, MapPair, NativeGlbPath, PublishPair, Quest, SendPair;
+        public bool SkipInterferences, ProbeNativeGlb, CustomGlb, PublishCadFiles, ForceFreshProcessing;
         public static ExportCommand Parse(string[] args)
         {
             var result = new ExportCommand();
             for (int i = 0; i < args.Length; i++)
             {
-                if (args[i] == "--skip-interferences" && !result.SkipInterferences) result.SkipInterferences = true;
+                if(args[i]=="--fresh" && !result.ForceFreshProcessing) {result.ForceFreshProcessing=true;continue;}
+                if (args[i] == "--quest" && result.Quest == null && i+1 < args.Length && !args[i+1].StartsWith("--")) result.Quest = QuestTransfer.Endpoint(args[++i]).AbsoluteUri;
+                else if (args[i] == "--send-pair" && result.SendPair == null && i+1 < args.Length && !args[i+1].StartsWith("--")) result.SendPair = Path.GetFullPath(args[++i]);
+                else if (args[i] == "--skip-interferences" && !result.SkipInterferences) result.SkipInterferences = true;
                 else if (args[i] == "--publish-cadfiles" && !result.PublishCadFiles) result.PublishCadFiles = true;
                 else if (args[i] == "--publish-pair" && result.PublishPair == null && i+1 < args.Length && !args[i+1].StartsWith("--")) result.PublishPair = Path.GetFullPath(args[++i]);
                 else if (args[i] == "--custom-glb" && !result.CustomGlb) result.CustomGlb = true;
@@ -2273,7 +2451,107 @@ namespace CADVision.SolidWorks
                 throw new ArgumentException("--publish-cadfiles requires --custom-glb or --glb.");
             if (result.PublishPair != null && (result.Directory != null || result.CustomGlb || result.Glb != null || result.MapPair != null || result.SkipInterferences || result.Shipper != null || result.PublishCadFiles))
                 throw new ArgumentException("--publish-pair is an offline-only publishing mode.");
+            if (result.Quest != null && (result.PublishCadFiles || result.PublishPair != null || result.MapPair != null || result.Shipper != null))
+                throw new ArgumentException("--quest sends directly; do not combine with folder publishing, mapping or an external shipper.");
+            if (result.SendPair != null && (result.Quest == null || result.Directory != null || result.CustomGlb || result.Glb != null || result.SkipInterferences))
+                throw new ArgumentException("Use --send-pair existing-folder --quest http://HEADSET-IP:8085/design alone.");
+            if (result.Quest != null && result.SendPair == null && !result.CustomGlb && result.Glb == null)
+                throw new ArgumentException("--quest requires --custom-glb or --glb to produce a complete pair.");
             return result;
+        }
+    }
+    // Windows-side shipper for the existing Unity POST /design receiver.
+    // The executable stays on the PC; only the two-file ZIP crosses the network.
+    public static class QuestTransfer
+    {
+        public static Uri Endpoint(string address)
+        {
+            Uri uri;
+            if (!Uri.TryCreate(address, UriKind.Absolute, out uri) ||
+                (uri.Scheme != "http" && uri.Scheme != "https") || uri.AbsolutePath != "/design" ||
+                uri.UserInfo.Length != 0 || uri.Query.Length != 0 || uri.Fragment.Length != 0)
+                throw new ArgumentException("Use the receiver URL, for example http://192.168.1.50:8085/design.");
+            return uri;
+        }
+
+        // Snapshot and validate bytes before packaging: the ZIP contains exactly the checked pair.
+        public static byte[] Package(string folder)
+        {
+            string glbPath = Path.Combine(folder, "model.glb"), jsonPath = Path.Combine(folder, "metadata.json");
+            if (new FileInfo(glbPath).Length > 100L * 1024 * 1024 || new FileInfo(jsonPath).Length > 8L * 1024 * 1024)
+                throw new InvalidDataException("Pair exceeds receiver limits (100 MiB GLB, 8 MiB JSON).");
+            byte[] glb = File.ReadAllBytes(glbPath), json = File.ReadAllBytes(jsonPath);
+            if (glb.Length < 20 || glb.Length > 100 * 1024 * 1024 || json.Length == 0 || json.Length > 8 * 1024 * 1024 ||
+                BitConverter.ToUInt32(glb, 0) != 0x46546C67u || BitConverter.ToUInt32(glb, 4) != 2 || BitConverter.ToUInt32(glb, 8) != glb.Length)
+                throw new InvalidDataException("Invalid or oversized export pair.");
+            var serializer = new System.Web.Script.Serialization.JavaScriptSerializer { MaxJsonLength = 8 * 1024 * 1024, RecursionLimit = 256 };
+            var metadata = serializer.Deserialize<Metadata>(new System.Text.UTF8Encoding(false, true).GetString(json).TrimStart('\uFEFF'));
+            if (metadata == null) throw new InvalidDataException("Missing metadata.");
+            metadata.Validate();
+            string hash;
+            using (var sha = System.Security.Cryptography.SHA256.Create()) hash = BitConverter.ToString(sha.ComputeHash(glb)).Replace("-", "").ToLowerInvariant();
+            if (metadata.glbAsset == null || !String.Equals(hash, metadata.glbAsset.sha256, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("GLB hash does not match metadata; nothing sent.");
+            using (var output = new MemoryStream())
+            {
+                using (var zip = new System.IO.Compression.ZipArchive(output, System.IO.Compression.ZipArchiveMode.Create, true))
+                {
+                    using (var entry = zip.CreateEntry("model.glb").Open()) entry.Write(glb, 0, glb.Length);
+                    using (var entry = zip.CreateEntry("metadata.json").Open()) entry.Write(json, 0, json.Length);
+                }
+                if (output.Length > 108L * 1024 * 1024 + 65536) throw new InvalidDataException("ZIP exceeds receiver upload limit.");
+                return output.ToArray();
+            }
+        }
+
+        public static string Send(string folder, string address)
+        {
+            var endpoint = Endpoint(address);
+            byte[] package = Package(folder);
+            var request = (System.Net.HttpWebRequest)System.Net.WebRequest.Create(endpoint);
+            request.Method = "POST";
+            request.ContentType = "application/zip";
+            request.ContentLength = package.Length;
+            request.SendChunked = false;
+            request.AllowAutoRedirect = false;
+            request.Proxy = null;
+            request.KeepAlive = false;
+            request.ServicePoint.Expect100Continue = false;
+            request.Timeout = 150000;
+            request.ReadWriteTimeout = 150000;
+            // No retries: an interrupted acknowledgement may follow a completed import.
+            try
+            {
+                using (var stream = request.GetRequestStream()) stream.Write(package, 0, package.Length);
+                using (var response = (System.Net.HttpWebResponse)request.GetResponse())
+                {
+                    if (response.StatusCode != System.Net.HttpStatusCode.OK) throw new IOException("Receiver did not confirm import (HTTP " + (int)response.StatusCode + ").");
+                    using (var reader = new StreamReader(response.GetResponseStream()))
+                    {
+                        char[] buffer = new char[65537];
+                        int count = reader.ReadBlock(buffer, 0, buffer.Length);
+                        if (count > 65536) throw new IOException("Receiver acknowledgement is too large.");
+                        return Confirm(new string(buffer, 0, count));
+                    }
+                }
+            }
+            catch (System.Net.WebException ex)
+            {
+                var response = ex.Response as System.Net.HttpWebResponse;
+                string status = response == null ? ex.Status.ToString() : "HTTP " + (int)response.StatusCode;
+                if (response != null) response.Dispose();
+                throw new IOException("Receiver transfer failed (" + status + "). Check that CAD Vision is running at " + endpoint + ". Import is not confirmed", ex);
+            }
+        }
+
+        public static string Confirm(string json)
+        {
+            var serializer = new System.Web.Script.Serialization.JavaScriptSerializer { MaxJsonLength = 65536 };
+            var result = serializer.Deserialize<System.Collections.Generic.Dictionary<string, object>>(json);
+            object success;
+            if (result == null || !result.TryGetValue("success", out success) || !(success is bool) || !(bool)success)
+                throw new IOException("Receiver did not acknowledge a successful import.");
+            return "CAD Vision receiver confirmed successful import.";
         }
     }
     public static class CadFilesPublisher
