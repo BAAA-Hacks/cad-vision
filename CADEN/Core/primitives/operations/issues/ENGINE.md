@@ -142,8 +142,10 @@ evaluate the whole scope; singleton islands are supported. See the
 [mechanical contract](../../../tools/MECHANICAL_CONTRACT.md) for eligibility and coverage.
 
 Mate/dangling/suppression detection, unavailable-material extraction checks,
-physical-value classification, density/unit comparisons, repeated-part checks, persistence,
-and automatic host/chat integration remain deferred. The initial precedence policy contains
+physical-value classification, density/unit comparisons, repeated-part checks and finding
+history persistence remain deferred. Automatic host scans and chat read/revalidation tools
+are connected through [IssueAccess](../../../tools/ISSUE_CONTRACT.md), with durable action
+receipts. The initial precedence policy contains
 only the two supported groups; add further groups together with their checker contracts.
 
 `IssueEngineChecks` uses synthetic exports and fake checkers to verify discovery, per-subject

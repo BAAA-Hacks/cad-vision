@@ -28,7 +28,7 @@ internal static class SemanticQueryChecks
         }
         JObject Filter(string property, string op, JObject value) => new() { ["property"] = property, ["operator"] = op, ["value"] = value };
         var summary = await Call("get_model_summary");
-        Require((string?)summary["contractVersion"] == "3.0" && (string?)summary["snapshotId"] == snapshot.SnapshotId && registry.Declarations.Count == 4, "Canonical envelope/declarations missing.");
+        Require((string?)summary["contractVersion"] == "3.0" && (string?)summary["snapshotId"] == snapshot.SnapshotId && registry.Declarations.Count == 6, "Canonical envelope/declarations missing.");
         var stale = await registry.ExecuteAsync("get_object_details", new JObject { ["projectId"] = "caden-test", ["snapshotId"] = "old", ["objectIds"] = new JArray("A") });
         Require((string?)stale["errors"]![0]!["code"] == "STALE_SNAPSHOT_REFERENCE" && stale["projectId"] != null, "Stale references accepted or error lacks context.");
         Require((string?)(await registry.ExecuteAsync("get_object_details", new JObject { ["objectIds"] = new JArray("A") }))["errors"]![0]!["code"] == "INVALID_ARGUMENT", "Snapshot scope not required.");
@@ -81,7 +81,7 @@ internal static class SemanticQueryChecks
         var degradedDocument = Document(); degradedDocument["objects"]![2]!["parentId"] = "missing";
         var degraded = LoadProject.Load(degradedDocument.ToString()).Snapshot!; var degradedTools = SemanticQueryTools.Create(degraded, new Core.Primitives.DataStructures.Memory.ProjectAssociation("caden-test"));
         var unavailable = await degradedTools.ExecuteAsync("query_hierarchy", new JObject { ["projectId"] = "caden-test", ["snapshotId"] = degraded.SnapshotId, ["objectId"] = "R", ["direction"] = "children" });
-        Require((bool)unavailable["success"]! && unavailable["data"]!["items"]!.Type == JTokenType.Null && (string?)unavailable["coverage"]!["status"] == "unavailable", "Invalid hierarchy became an empty tree.");
+        Require(!(bool)unavailable["success"]! && (string?)unavailable["errors"]![0]!["code"] == "CAPABILITY_UNAVAILABLE" && (string?)unavailable["errors"]![0]!["details"]!["reasonCode"] == "HIERARCHY_INVALID", "Invalid hierarchy became an empty tree or lost its reason.");
         var healthyProperties = await degradedTools.ExecuteAsync("get_object_details", new JObject { ["projectId"] = "caden-test", ["snapshotId"] = degraded.SnapshotId, ["objectIds"] = new JArray("A") });
         Require((bool)healthyProperties["success"]!, "Invalid hierarchy blocked usable properties.");
         using var cancelled = new CancellationTokenSource(); cancelled.Cancel();

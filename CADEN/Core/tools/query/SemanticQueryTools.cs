@@ -5,14 +5,18 @@ using System.Threading;
 using System.Threading.Tasks;
 using Core.Primitives.DataStructures.Project;
 using Core.Primitives.DataStructures.Memory;
+using Core.Tools.Issues;
+using Core.Tools.Memory;
 using Newtonsoft.Json.Linq;
 
 namespace Core.Tools.Query
 {
     public static class SemanticQueryTools
     {
-        public static ToolRegistry Create(ProjectSnapshot? snapshot, ProjectAssociation? association, ToolLimits? limits = null)
+        public static ToolRegistry Create(ProjectSnapshot? snapshot, ProjectAssociation? association, ToolLimits? limits = null, IssueAccess? issues = null, MemoryAccess? memory = null, IReadOnlyDictionary<string, HostCapabilityFailure>? initializationFailures = null)
         {
+            if (issues != null && (snapshot == null || issues.Snapshot.SnapshotId != snapshot.SnapshotId || issues.Association.ProjectId != association?.ProjectId)) throw new ArgumentException("Issue access must match the host project and loaded snapshot.");
+            if (memory != null && (snapshot == null || memory.Snapshot.SnapshotId != snapshot.SnapshotId || memory.Association.ProjectId != association?.ProjectId)) throw new ArgumentException("Memory access must match the host project and loaded snapshot.");
             limits ??= new ToolLimits();
             var hierarchy = new Dictionary<string, JObject>(StringComparer.Ordinal);
             var cursors = new QueryCursors();
@@ -21,9 +25,14 @@ namespace Core.Tools.Query
                 var raw = component.CopyRawRecord();
                 hierarchy.Add(component.Id, new JObject { ["parentId"] = raw["parentId"], ["childIds"] = raw["childIds"] });
             }
-            return new ToolRegistry(new[] { "get_model_summary", "get_object_details", "find_objects", "query_hierarchy" }
-                .Select(name => (ICadenTool)new SemanticQueryTool(name, snapshot, hierarchy, association, cursors, limits))
-                .Concat(new[] { "get_mechanical_neighborhood", "find_mechanical_path" }.Select(name => (ICadenTool)new MechanicalQueryTool(name, snapshot, limits))), snapshot, semantic: true, association: association, limits: limits);
+            var handlers = new[] { "get_model_summary", "get_object_details", "find_objects", "query_hierarchy" }
+                .Select(name => (ICadenTool)new SemanticQueryTool(name, snapshot, hierarchy, association, cursors, limits, issues, memory))
+                .Concat(new[] { "get_mechanical_neighborhood", "find_mechanical_path" }.Select(name => (ICadenTool)new MechanicalQueryTool(name, snapshot, limits)))
+                .Concat(new ICadenTool[] { new MateQueryTool(snapshot, limits) })
+                .Concat(new[] { "get_diagnostic_summary", "get_diagnostics" }.Select(name => (ICadenTool)new DiagnosticTool(name, snapshot, limits)))
+                .Concat(IssueTools.Create(issues, limits)).Concat(MemoryTools.Create(memory, limits)).ToArray();
+            return new ToolRegistry(handlers, snapshot, semantic: true, association: association, limits: limits,
+                capabilities: new ToolCapabilities(snapshot, handlers, initializationFailures));
         }
     }
 
@@ -34,13 +43,15 @@ namespace Core.Tools.Query
         private readonly ProjectAssociation? association;
         private readonly QueryCursors cursors;
         private readonly ToolLimits limits;
+        private readonly IssueAccess? issues;
+        private readonly MemoryAccess? memory;
         private ProjectSnapshot Store => snapshot ?? throw new ToolInputException("MODEL_NOT_LOADED", "Load metadata first.");
         public string Name { get; }
         private static readonly string[] Fields = { "name", "type", "parentId", "sourceDocument", "configuration", "partNumber", "description", "suppressed", "fixed", "material", "mass", "volume", "centerOfMass", "inertia", "constraintStatus", "remainingDOF", "dimensions", "referenceGeometry", "customProperties" };
         private static readonly string[] Defaults = { "suppressed", "fixed", "material", "mass", "constraintStatus" };
-        public SemanticQueryTool(string name, ProjectSnapshot? snapshot, Dictionary<string, JObject> hierarchy, ProjectAssociation? association, QueryCursors cursors, ToolLimits limits)
+        public SemanticQueryTool(string name, ProjectSnapshot? snapshot, Dictionary<string, JObject> hierarchy, ProjectAssociation? association, QueryCursors cursors, ToolLimits limits, IssueAccess? issues, MemoryAccess? memory)
         {
-            Name = name; this.snapshot = snapshot; records = hierarchy; this.association = association; this.cursors = cursors; this.limits = limits;
+            Name = name; this.snapshot = snapshot; records = hierarchy; this.association = association; this.cursors = cursors; this.limits = limits; this.issues = issues; this.memory = memory;
         }
         private static JObject String(params string[] values) => values.Length == 0 ? new JObject { ["type"] = "string", ["minLength"] = 1, ["maxLength"] = 512 }
             : new JObject { ["type"] = "string", ["enum"] = new JArray(values) };
@@ -71,7 +82,7 @@ namespace Core.Tools.Query
                 }
                 else
                 {
-                    description = "Read authoritative metadata containment, never mechanical connectivity. parent/children return depth 1; ancestors/descendants allow maxDepth 0-" + limits.MaxDepth + " (default 1). Start object excluded. Depth 0 returns no relatives. Inspect coverage.depthLimited separately from pagination; invalid/unavailable hierarchy returns unavailable items, not a confirmed empty tree.";
+                    description = "Read authoritative metadata containment, never mechanical connectivity. parent/children return depth 1; ancestors/descendants allow maxDepth 0-" + limits.MaxDepth + " (default 1). Start object excluded. Depth 0 returns no relatives. Inspect coverage.depthLimited separately from pagination; invalid/unavailable hierarchy fails with CAPABILITY_UNAVAILABLE.";
                     p["objectId"] = String(); required.Add("objectId"); p["direction"] = String("parent", "children", "ancestors", "descendants"); required.Add("direction");
                     p["maxDepth"] = Integer(0, limits.MaxDepth); p["limit"] = Integer(1, limits.MaxResults); p["cursor"] = String();
                 }
@@ -109,7 +120,7 @@ namespace Core.Tools.Query
             ["name"] = Store.Name, ["rootObjectId"] = Store.Capabilities.Hierarchy == CapabilityState.Available ? Store.CopyProjectMetadata()["rootObjectId"] : null,
             ["objectCount"] = Store.ComponentsById.Count, ["partCount"] = Store.ComponentsById.Values.Count(c => c.Type == "part"),
             ["assemblyCount"] = Store.ComponentsById.Values.Count(c => c.Type == "assembly"),
-            ["capabilities"] = new JObject { ["properties"] = Store.Capabilities.Properties.ToString(), ["hierarchy"] = Store.Capabilities.Hierarchy.ToString(), ["mechanicalGraph"] = Store.Capabilities.MechanicalGraph.ToString(), ["issueTools"] = "Unavailable" },
+            ["capabilities"] = new JObject { ["properties"] = Store.Capabilities.Properties.ToString(), ["hierarchy"] = Store.Capabilities.Hierarchy.ToString(), ["mechanicalGraph"] = Store.Capabilities.MechanicalGraph.ToString(), ["issueTools"] = issues == null ? "Unavailable" : "Available", ["memoryTools"] = memory == null ? "Unavailable" : "Available", ["mateLookup"] = new MateQueryTool(snapshot, limits).Available ? "Available" : "Unavailable" },
             ["loadDiagnostics"] = new JObject { ["count"] = Store.LoadDiagnostics.Count, ["codes"] = new JArray(Store.LoadDiagnostics.Select(d => d.Code).Distinct().Take(32)) },
             ["coverage"] = Coverage("Complete", Store.ComponentsById.Count, 0)
         };

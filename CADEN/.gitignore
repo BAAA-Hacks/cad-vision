@@ -7,3 +7,5 @@ __pycache__/
 **/obj/
 !*.csproj
 data/metadata.json
+data/issues.caden.json*
+data/memory.caden.json*

@@ -44,18 +44,21 @@ namespace Core.Tools
         private readonly bool semantic;
         private readonly ProjectAssociation? association;
         private readonly ToolLimits limits;
+        private readonly ToolCapabilities? capabilities;
         public string? ProjectId => semantic ? association?.ProjectId : snapshot?.ProjectId;
         public string? SnapshotId => snapshot?.SnapshotId;
-        public ToolRegistry(IEnumerable<ICadenTool> handlers, ProjectSnapshot? snapshot = null, bool semantic = false, ProjectAssociation? association = null, ToolLimits? limits = null)
+        public bool SupportsStartupContext => capabilities != null;
+        public ToolRegistry(IEnumerable<ICadenTool> handlers, ProjectSnapshot? snapshot = null, bool semantic = false, ProjectAssociation? association = null, ToolLimits? limits = null, ToolCapabilities? capabilities = null)
         {
             if (semantic && snapshot != null && association == null) throw new ArgumentException("Semantic tools require an explicit host ProjectAssociation.");
             if (association?.TrustedSourceProjectId != null && snapshot != null && association.TrustedSourceProjectId != snapshot.ProjectId) throw new ArgumentException("Trusted source project does not match snapshot.");
             this.association = association;
+            this.capabilities = capabilities;
             this.limits = limits ?? new ToolLimits();
             this.snapshot = snapshot; this.semantic = semantic;
             foreach (var tool in handlers) tools.Add(tool.Name, tool);
         }
-        public JArray Declarations => new JArray(tools.Values.Where(t => !(t is ICapabilityCadenTool c) || c.Available).Select(t => t.Declaration.DeepClone()));
+        public JArray Declarations => new JArray(tools.Values.Where(t => (capabilities?.IsAvailable(t.Name) ?? true) && (!(t is ICapabilityCadenTool c) || c.Available)).Select(t => t.Declaration.DeepClone()));
         public static JObject Error(string code, string message) => new JObject
         {
             ["contractVersion"] = ContractVersion, ["ok"] = false,
@@ -69,7 +72,7 @@ namespace Core.Tools
         public async Task<JObject> ExecuteAsync(string name, JToken? arguments, CancellationToken cancellationToken = default)
         {
             if (!semantic) cancellationToken.ThrowIfCancellationRequested();
-            if (!tools.TryGetValue(name, out var tool)) return Envelope(Error("UNKNOWN_TOOL", "That tool is not available."));
+            if (!tools.TryGetValue(name, out var tool)) return Envelope(capabilities?.Failure(name) ?? Error("UNKNOWN_TOOL", "That tool is not available."));
             if (!(arguments is JObject args)) return Envelope(Error("INVALID_ARGUMENTS", "Arguments must be a JSON object."));
             try
             {
@@ -77,11 +80,13 @@ namespace Core.Tools
                 Validate(args, (JObject)tool.Declaration["parameters"]!, "arguments", 0);
                 if (tool is IActionCadenTool && (args["operationId"]?.Type != JTokenType.String || string.IsNullOrWhiteSpace((string?)args["operationId"])))
                     throw new ToolInputException("INVALID_ARGUMENT", "Actions require a non-empty operationId.");
-                if (semantic && snapshot == null) throw new ToolInputException("MODEL_NOT_LOADED", "Load metadata before querying the model.");
+                if (semantic && snapshot == null && name != "get_model_summary") return Envelope(capabilities?.Failure(name) ?? Error("MODEL_NOT_LOADED", "Load metadata before querying the model."));
                 if (semantic && name != "get_model_summary" && (string?)args["projectId"] != association!.ProjectId)
                     throw new ToolInputException("WRONG_PROJECT", "Request does not reference the active CADEN project.");
                 if (semantic && name != "get_model_summary" && (string?)args["snapshotId"] != snapshot!.SnapshotId)
                     throw new ToolInputException("STALE_SNAPSHOT", "Refresh get_model_summary and resolve IDs against the current snapshot.");
+                var unavailable = capabilities?.Failure(name, args);
+                if (unavailable != null) return Envelope(unavailable);
                 var copied = (JObject)args.DeepClone();
                 if (cancellationToken.IsCancellationRequested && tool is IActionCadenTool recovering)
                 {
@@ -89,7 +94,13 @@ namespace Core.Tools
                     if (recovered != null) return ActionEnvelope(recovered, (string)args["operationId"]!);
                 }
                 cancellationToken.ThrowIfCancellationRequested();
-                var result = tool is IAsyncCadenTool asyncTool ? await asyncTool.ExecuteAsync(copied, cancellationToken).ConfigureAwait(false) : tool.Execute(copied);
+                var result = name == "get_model_summary" && snapshot == null && capabilities != null ? new JObject { ["modelLoaded"] = false }
+                    : tool is IAsyncCadenTool asyncTool ? await asyncTool.ExecuteAsync(copied, cancellationToken).ConfigureAwait(false) : tool.Execute(copied);
+                if (name == "get_model_summary" && capabilities != null)
+                {
+                    result["modelLoaded"] = snapshot != null; result["toolCapabilities"] = capabilities.Describe();
+                    result["capabilityPolicy"] = "Usable means the handler can run, not complete evidence. Inspect response coverage and property availability. Unavailable requirements need host/data changes; do not retry unchanged requests.";
+                }
                 if (tool is IActionCadenTool) return ActionEnvelope(result, (string)args["operationId"]!);
                 cancellationToken.ThrowIfCancellationRequested();
                 var envelope = Envelope(new JObject { ["contractVersion"] = ContractVersion, ["ok"] = true, ["data"] = result });

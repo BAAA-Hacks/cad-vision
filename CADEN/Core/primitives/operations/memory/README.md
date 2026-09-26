@@ -3,8 +3,8 @@
 `ProjectMemoryStore` implements the seven V1 operations: GetProjectMemory,
 GetObjectMemory, GetRequirements, GetIssueDisposition, UpsertMemory, UpsertRequirement,
 and SetIssueDisposition. It owns CADEN knowledge only; it never edits imported metadata
-or persists generated issue findings. No Gemini declarations or automatic desktop project
-association are added in this milestone.
+or persists generated issue findings. The [memory tool adapter](../../../tools/MEMORY_CONTRACT.md)
+now connects reads/writes to Gemini and desktop storage using the host's explicit association.
 
 ## Host binding and storage
 
@@ -164,6 +164,6 @@ validity, fixture safeguards, disposition restoration/evidence changes, corrupti
 actual file replacement and competing-writer rejection. Tests use temporary sidecars and
 synthetic snapshots, without Gemini.
 
-The primitives and desktop file adapter are ready for host integration. Project selection/
-association UI, memory tools, persistent disposition actions, and automatic desktop wiring
-are not implemented here. Never expose the full sidecar or its mutation history to Gemini.
+Desktop memory wiring and tool exposure live in the separate MemoryAccess adapter. Issue
+disposition actions use IssueAccess and its own journal. Project selection/association UI
+remains deferred. Never expose the full sidecar or its mutation history to Gemini.

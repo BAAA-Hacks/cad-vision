@@ -5,6 +5,34 @@ using Newtonsoft.Json.Linq;
 using Core.Tools.Query;
 using Core.Primitives.Operations.Project;
 
+if (args.Contains("--assess-orchestration"))
+{
+    int start = Array.IndexOf(args, "--assess-orchestration") + 1;
+    if (args.Length < start + 3) throw new ArgumentException("Usage: --assess-orchestration <results.json> <cases.json> <assessment.json>");
+    var report = JObject.Parse(File.ReadAllText(args[start]));
+    var cases = JArray.Parse(File.ReadAllText(args[start + 1]));
+    var assessments = new JArray();
+    foreach (var turn in report["turns"]!)
+    {
+        var testCase = cases[(int)turn["number"]! - 1];
+        if ((string?)turn["prompt"] != (string?)testCase["prompt"]) throw new ArgumentException("Results do not match case prompts.");
+        var assessment = OrchestrationAssessment.Assess(turn, testCase);
+        assessment["number"] = turn["number"]; assessment["caseId"] = testCase["id"]; assessments.Add(assessment);
+    }
+    File.WriteAllText(args[start + 2], assessments.ToString());
+    Console.WriteLine($"Structural checks: {assessments.Count(a => (bool)a["passed"]!)}/{cases.Count}. Semantic review still required.");
+    return;
+}
+
+if (args.Contains("--orchestration"))
+{
+    if (!args.Contains("--live")) throw new ArgumentException("Live orchestration requires explicit --live authorization.");
+    int start = Array.IndexOf(args, "--orchestration") + 1;
+    if (args.Length < start + 4) throw new ArgumentException("Usage: --live --orchestration <new-run-directory> <metadata.json> <config-directory> <cases.json>");
+    await LiveOrchestrationRunner.RunAsync(args.Skip(start).Take(4).ToArray());
+    return;
+}
+
 static void Require(bool value, string message)
 {
     if (!value) throw new Exception(message);
@@ -145,6 +173,10 @@ finally
 await QueryChecks.RunAsync();
 await SemanticQueryChecks.RunAsync();
 await ToolContractChecks.RunAsync();
+await IssueAccessChecks.RunAsync();
+await MemoryToolChecks.RunAsync();
+await CapabilityChecks.RunAsync();
+await OrchestrationChecks.RunAsync();
 await MechanicalQueryChecks.RunAsync();
 await Schema21Checks.RunAsync();
 await DiagnosticChecks.RunAsync();

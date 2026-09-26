@@ -67,6 +67,10 @@ namespace Core.Tools.Query
                 }
                 result["limitations"] = new JArray("MATE_PATH_DOES_NOT_ESTABLISH_RIGIDITY", "MATE_RELATIONSHIP_DOES_NOT_ESTABLISH_VALID_CONSTRAINT");
                 result["coverage"] = Coverage(scope, bounded, (int?)args["maxHops"]);
+                result["interpretation"] = new JObject {
+                    ["evidenceScope"] = "exported_mate_relationships_only",
+                    ["reportCoverageLimitation"] = !MechanicalQueries.Complete(scope) || bounded,
+                    ["summary"] = !MechanicalQueries.Complete(scope) ? "Export coverage is partial; report this limitation. No solved DOF, rigidity, satisfaction or exhaustive absence claim follows." : bounded ? "Search is depth-bounded; report the boundary." : "Coverage is complete for this scoped exported relationship query, not solver validity." };
                 return result;
             }
             catch (MechanicalQueryException ex) { throw new ToolInputException(ex.Code, ex.Message); }

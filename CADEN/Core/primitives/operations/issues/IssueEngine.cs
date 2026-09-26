@@ -30,6 +30,7 @@ namespace Core.Primitives.Operations.Issues
             { Checker = checker; Version = IssueValidation.Text(checker.Version, "version"); Kind = checker.SubjectKind; Capabilities = checker.RequiredCapabilities; }
         }
         private readonly Dictionary<string, Registration> checkers = new Dictionary<string, Registration>(StringComparer.Ordinal);
+        public IReadOnlyList<string> CheckerIds => checkers.Keys.OrderBy(id => id, StringComparer.Ordinal).ToList().AsReadOnly();
         public IssueEngine(IEnumerable<ISubjectIssueChecker> checkers)
         {
             foreach (var checker in checkers ?? throw new ArgumentNullException(nameof(checkers)))

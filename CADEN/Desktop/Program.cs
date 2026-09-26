@@ -5,6 +5,9 @@ using Core.Tools.Query;
 using Core.Primitives.DataStructures.Project;
 using Core.Primitives.Operations.Project;
 using Core.Diagnostics;
+using Core.Tools.Issues;
+using Core.Tools.Memory;
+using Desktop.Persistence;
 
 namespace Desktop;
 
@@ -80,14 +83,14 @@ internal sealed class ChatWindow : Form
         Controls.Add(layout);
         send.Click += async (_, _) => await SendAsync(input.Text);
         retry.Click += async (_, _) => await SendAsync(failedPrompt ?? "");
-        reset.Click += (_, _) => Reload();
-        loadMetadata.Click += (_, _) =>
+        reset.Click += async (_, _) => await ReloadAsync();
+        loadMetadata.Click += async (_, _) =>
         {
             using var picker = new OpenFileDialog { Title = "Load CADEN metadata (starts a new chat)", Filter = "JSON metadata (*.json)|*.json", CheckFileExists = true };
             if (picker.ShowDialog(this) == DialogResult.OK)
             {
                 // Validate before replacing the active design or clearing its conversation.
-                try { Reload(picker.FileName); }
+                try { await ReloadAsync(picker.FileName); }
                 catch (Exception ex) { error.Text = DiagnosticLog.Report(ex, "desktop.load_metadata").UserMessage; }
             }
         };
@@ -96,7 +99,7 @@ internal sealed class ChatWindow : Form
         FormClosing += (_, _) => request?.Cancel();
         DiagnosticLog.Reported += ShowDiagnostic;
         FormClosed += (_, _) => { DiagnosticLog.Reported -= ShowDiagnostic; http.Dispose(); };
-        Reload();
+        Shown += async (_, _) => await ReloadAsync();
     }
 
     private void ShowDiagnostic(DiagnosticReceipt receipt)
@@ -111,27 +114,61 @@ internal sealed class ChatWindow : Form
         else Display();
     }
 
-    private void Reload(string? replacementPath = null)
+    private async Task ReloadAsync(string? replacementPath = null)
     {
+        if (request != null) return;
+        request = new CancellationTokenSource(); var token = request.Token;
+        send.Enabled = reset.Enabled = loadMetadata.Enabled = retry.Enabled = false; cancel.Enabled = true;
+        error.Clear(); status.Text = "Loading metadata and scanning issues…";
         try
         {
-            var settings = LocalConfiguration.Load(directory);
             string? nextPath = replacementPath ?? metadataPath;
-            var metadata = nextPath == null ? null : ReadMetadata(nextPath);
-            var association = ProjectAssociationFile.LoadOrCreate(directory);
-            var nextClient = new GeminiClient(http, settings, SemanticQueryTools.Create(metadata, association));
-            transcript.Clear(); error.Clear(); input.Clear(); failedPrompt = null; retry.Enabled = false;
+            var loaded = await Task.Run(async () =>
+            {
+                token.ThrowIfCancellationRequested();
+                var settings = LocalConfiguration.Load(directory);
+                var metadata = nextPath == null ? null : ReadMetadata(nextPath);
+                var association = ProjectAssociationFile.LoadOrCreate(directory);
+                IssueAccess? issues = null;
+                MemoryAccess? memory = null;
+                var initializationFailures = new Dictionary<string, HostCapabilityFailure>();
+                if (metadata != null)
+                {
+                    try { issues = await IssueAccess.OpenAsync(metadata, association, new ProjectMemoryFile(Path.Combine(directory, "data", "issues.caden.json")), token); }
+                    catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+                    catch (Exception ex) { var diagnostic = DiagnosticLog.Report(ex, "issues.startup_scan", association.ProjectId, metadata.SnapshotId); initializationFailures["issues"] = HostCapabilityFailure.FromException("issues", ex, diagnostic.Entry.CorrelationId); }
+                    token.ThrowIfCancellationRequested();
+                    try { memory = MemoryAccess.Open(metadata, association, new ProjectMemoryFile(Path.Combine(directory, "data", "memory.caden.json"))); }
+                    catch (Exception ex) { var diagnostic = DiagnosticLog.Report(ex, "memory.startup_load", association.ProjectId, metadata.SnapshotId); initializationFailures["memory"] = HostCapabilityFailure.FromException("memory", ex, diagnostic.Entry.CorrelationId); }
+                }
+                return (settings, metadata, association, issues, memory, initializationFailures);
+            }, token);
+            token.ThrowIfCancellationRequested(); if (IsDisposed || Disposing) return;
+            var (settings, metadata, association, issues, memory, initializationFailures) = loaded;
+            var nextClient = new GeminiClient(http, settings, SemanticQueryTools.Create(metadata, association, issues: issues, memory: memory, initializationFailures: initializationFailures));
+            await nextClient.InitializeSessionAsync(token);
+            token.ThrowIfCancellationRequested(); if (IsDisposed || Disposing) return;
+            transcript.Clear(); input.Clear(); failedPrompt = null; retry.Enabled = false;
             metadataPath = nextPath; gemini = nextClient; currentSnapshot = metadata;
             session = new ChatSession(gemini);
             design.Text = metadata == null ? "No metadata loaded — use Load metadata." : metadata.Name + " · " + metadata.ComponentsById.Count + " objects" + (metadata.IsFixture ? " · synthetic fixture" : " · exported metadata") + " · hierarchy " + metadata.Capabilities.Hierarchy;
-            model.Text = settings.Model; status.Text = "Ready"; send.Enabled = true;
+            model.Text = settings.Model; status.Text = issues == null ? "Ready · issue scan unavailable" : "Ready · " + issues.InitialFindingCount + " issues · scan " + issues.InitialScanStatus; send.Enabled = true;
             if (metadata != null && metadata.LoadDiagnostics.Any(d => d.IsError))
                 DiagnosticLog.Report(new InvalidDataException(string.Join(Environment.NewLine, metadata.LoadDiagnostics.Where(d => d.IsError).Select(d => d.Code + " at " + d.Path + ": " + d.Message))), "metadata.degraded_load", metadata.ProjectId, metadata.SnapshotId);
         }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        { if (!IsDisposed && !Disposing) status.Text = "Load cancelled; previous chat retained"; }
         catch (Exception ex)
         {
-            error.Text = DiagnosticLog.Report(ex, "desktop.reload").UserMessage;
+            var diagnostic = DiagnosticLog.Report(ex, "desktop.reload");
+            if (IsDisposed || Disposing) return;
+            error.Text = diagnostic.UserMessage;
             send.Enabled = session != null; status.Text = session == null ? "Configuration needed" : "Reload failed; previous chat retained";
+        }
+        finally
+        {
+            request.Dispose(); request = null;
+            if (!IsDisposed && !Disposing) { send.Enabled = session != null; reset.Enabled = loadMetadata.Enabled = true; cancel.Enabled = false; retry.Enabled = failedPrompt != null; }
         }
     }
 

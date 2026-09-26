@@ -1,4 +1,4 @@
-# Exporter-only changes: AssemTest2 metadata
+ # Exporter-only changes: AssemTest2 metadata
 
 Please make these two additions to the schema 2.1 export:
 1. Export the actual suppression state on every mate.

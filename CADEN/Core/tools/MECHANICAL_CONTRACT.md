@@ -101,7 +101,8 @@ neighborhood hops/start count if oversized. Oversized paths currently fail visib
 `InitialIssueCheckers.CreateEngine(snapshot)` adds scope-specific unmated/island checker
 registrations; the parameterless factory retains the four existing property checkers.
 Checker IDs contain a SHA-256 of the canonical assembly/configuration pair. Version is
-separate. Host-owned automatic issue scanning and Gemini issue tools remain separate work.
+separate. Host-owned automatic issue scanning and Gemini issue reads/revalidation are
+connected through the [issue access contract](ISSUE_CONTRACT.md).
 
 Unmated requires a part, suppressed=false, fixed=false, complete scoped coverage, and
 exactly zero active incident mates. Unknown fixed or potentially incident suppression

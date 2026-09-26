@@ -60,7 +60,7 @@ revision. They are opaque, session-local and invalidated on registry replacement
 or mismatched tokens return INVALID_CURSOR; start a fresh query. There is no public offset.
 
 Use ExecuteAsync with cancellation. Read cancellation returns CANCELLED and the host omits
-the cancelled chat turn. IActionCadenTool defines future mutating handlers: they require
+the cancelled chat turn. IActionCadenTool defines mutating handlers: they require
 operationId, durable commit before success, and RecoverCommittedAsync validating the same
 operation ID and request content without executing uncommitted work. A committed action
 returns/replays its receipt despite cancellation or a recoverable post-commit exception:
@@ -70,8 +70,8 @@ returns/replays its receipt despite cancellation or a recoverable post-commit ex
 
 Replays preserve the original receipt and set replayed=true. Oversized optional action
 results may be omitted while preserving the receipt. Revision/idempotency enforcement and
-durable receipt storage belong to the action subsystem. No action is exposed by the current
-query registry; these execution guarantees are checked using offline action doubles.
+durable receipt storage belong to the action subsystem. Issue revalidation implements
+these guarantees; offline checks cover persistence failure, cancellation and replay.
 
 Public codes include INVALID_ARGUMENT, UNKNOWN_OBJECT_ID, STALE_SNAPSHOT_REFERENCE,
 WRONG_PROJECT, CAPABILITY_UNAVAILABLE, UNIT_MISMATCH, QUERY_TOO_LARGE, MAX_DEPTH_EXCEEDED,
@@ -84,7 +84,11 @@ Unknown IDs reject a requested batch atomically.
 `get_model_summary {}` returns name, validated root ID when hierarchy is available,
 occurrence counts, property/hierarchy/graph capability states and bounded diagnostic codes.
 Capability states are Available/Unavailable/Invalid; they do not certify analysis coverage.
-No issue/memory/runtime action tools are registered. Two [mechanical queries](MECHANICAL_CONTRACT.md)
+Nine [issue tools](ISSUE_CONTRACT.md) are registered when the host supplies a successfully
+initialized IssueAccess session. Two [memory tools](MEMORY_CONTRACT.md) are registered when
+the host supplies MemoryAccess. No Unity action tools are registered. get_mates reads usable
+exported mate records even when scoped traversal is unavailable.
+Two scoped [mechanical traversal queries](MECHANICAL_CONTRACT.md)
 are declared when explicit scoped graph data is available; the summary lists their scopes.
 
 `get_object_details {projectId, snapshotId, objectIds, fields?}` returns contextual identity plus
@@ -152,8 +156,9 @@ object is excluded. Ancestors are nearest-first; descendants preserve exported c
 within each depth. Results report relative depth, with coverage.requestedMaxDepth and coverage.depthLimited independently
 of pagination. Depth zero returns no relatives and reports whether deeper relatives exist.
 Complete coverage applies to the bounded requested traversal, not every deeper descendant.
-Invalid/unavailable hierarchy returns success=true, items=null and a coverage reason/state,
-never a confirmed empty tree. Metadata hierarchy remains authoritative.
+Invalid/unavailable hierarchy is hidden from declarations and returns success=false with
+CAPABILITY_UNAVAILABLE and HIERARCHY_INVALID/HIERARCHY_UNAVAILABLE if called directly.
+It never becomes a confirmed empty tree. Metadata hierarchy remains authoritative.
 
 ## Verification and next milestones
 
@@ -163,7 +168,7 @@ filters, unknown booleans/not_equals, exact scope, nested validation, hierarchy 
 pagination, cancellation and fake-HTTP Gemini dispatch. No live API call is required.
 Legacy query checks remain to catch compatibility regressions.
 
-Next: host-owned initial issue scans and issue read/revalidation/disposition tools,
-then memory tool exposure and Unity actions. Scoped mechanical query tools are implemented.
-Issue presentation/freshness and durable memory primitives exist; these capabilities are
-not advertised as working tools before their implementation.
+Host-owned initial scans and issue reads/revalidation are implemented and covered by
+IssueAccessChecks, including a fake-HTTP Gemini tool exchange. set_issue_disposition adds
+durable Open/Resolved/Ignored state with evidence and revision guards. Memory reads/writes
+and mate lookup are covered by MemoryToolChecks. Unity actions remain deferred.

@@ -26,6 +26,9 @@ namespace Core.Primitives.Operations.Memory
         private State state;
         public long Revision { get { lock (gate) return (long)state.Document["revision"]!; } }
         public string ProjectId => association.ProjectId;
+        // Includes historical attachments, not just IDs in the current snapshot.
+        internal IReadOnlyList<string> ReferencedObjectIds()
+        { lock (gate) return state.ObjectMemory.Keys.Concat(state.ObjectRequirements.Keys).Distinct(StringComparer.Ordinal).OrderBy(id => id, StringComparer.Ordinal).ToArray(); }
 
         private sealed class State
         {

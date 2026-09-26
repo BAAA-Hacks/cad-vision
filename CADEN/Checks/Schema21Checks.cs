@@ -51,7 +51,7 @@ internal static class Schema21Checks
         var registry = SemanticQueryTools.Create(s, new ProjectAssociation("test"));
         var response = await registry.ExecuteAsync("get_object_details", new JObject { ["projectId"] = "test", ["snapshotId"] = s.SnapshotId, ["objectIds"] = new JArray("R"), ["fields"] = new JArray("fixed", "material", "dimensions") });
         Require((bool)response["success"]! && (string?)response["data"]!["items"]![0]!["properties"]!["fixed"]!["status"] == "not_applicable", "Tool lost inapplicability.");
-        Require(registry.Declarations.Count == 4, "Unscoped 2.1 export advertised mechanical tools.");
+        Require(!registry.Declarations.Any(t => (string?)t["name"] == "find_mechanical_path"), "Unscoped 2.1 export advertised traversal.");
         doc = Document();
         doc["objects"]![1]!["inertia"] = new JObject { ["ixx"] = 2, ["iyy"] = 3, ["izz"] = 4, ["ixy"] = .1, ["ixz"] = -.2, ["iyz"] = .3 };
         var spatialSnapshot = Load(doc); var spatialRegistry = SemanticQueryTools.Create(spatialSnapshot, new ProjectAssociation("test"));
@@ -91,14 +91,16 @@ internal static class Schema21Checks
         var loaded = LoadProject.Load(File.ReadAllText(path));
         foreach (var d in loaded.Diagnostics) Console.WriteLine($"{d.Code} {d.Path}: {d.Message}");
         if (!loaded.Success) throw new Exception("Metadata audit failed to load; see diagnostics above.");
-        var s = loaded.Snapshot!; var registry = SemanticQueryTools.Create(s, new ProjectAssociation("offline-audit"));
+        var s = loaded.Snapshot!; var association = new ProjectAssociation("offline-audit");
+        var issues = await Core.Tools.Issues.IssueAccess.OpenAsync(s, association, new IssueAccessChecks.Storage());
+        var registry = SemanticQueryTools.Create(s, association, issues: issues);
         Console.WriteLine($"LOADED: schema {s.SchemaVersion}, {s.ComponentsById.Count} objects, {s.MatesById.Count} mate records; hierarchy={s.Capabilities.Hierarchy}, graph={s.Capabilities.MechanicalGraph}, declared tools={registry.Declarations.Count}");
         var details = await registry.ExecuteAsync("get_object_details", new JObject { ["projectId"] = "offline-audit", ["snapshotId"] = s.SnapshotId, ["objectIds"] = new JArray(s.ComponentsById.Keys.Take(32)), ["fields"] = new JArray("mass", "volume", "fixed", "material", "dimensions", "centerOfMass", "inertia") });
         Require((bool)details["success"]!, "Offline detail query failed: " + details);
         foreach (var row in (JArray)details["data"]!["items"]!) Console.WriteLine(row["name"] + ": " + string.Join(", ", ((JObject)row["properties"]!).Properties().Select(p => p.Name + "=" + p.Value["status"] + (p.Name == "mass" || p.Name == "volume" ? " (" + p.Value["value"] + " " + p.Value["unit"] + ")" : ""))));
-        var store = new IssueStore(s); var scan = await InitialIssueCheckers.CreateEngine(s).ScanAsync(store);
-        Require(scan.Success, "Offline issue scan failed.");
-        foreach (var issue in store.GetPresentation()) Console.WriteLine("FINDING: " + issue.Finding.Key.CheckerId + " " + issue.Finding.Severity);
+        var report = await registry.ExecuteAsync("list_issues", new JObject { ["projectId"] = association.ProjectId, ["snapshotId"] = s.SnapshotId });
+        Require((bool)report["success"]!, "Offline issue access failed.");
+        foreach (var issue in (JArray)report["data"]!["items"]!) Console.WriteLine("FINDING: " + issue["checkerId"] + " " + issue["severity"] + " " + issue["issueId"]);
         Console.WriteLine("PASS: offline metadata load, semantic detail query and explicit issue scan. No Gemini, persistence or UI changes.");
     }
 }

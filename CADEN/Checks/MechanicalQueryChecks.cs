@@ -64,7 +64,10 @@ internal static class MechanicalQueryChecks
         Require(islands.Count == 3 && islands[0].SequenceEqual(new[] { "A", "B", "C", "D" }) && islands[1][0] == "X", "Island main/tie/singleton semantics wrong.");
         var association = new ProjectAssociation("caden"); var registry = SemanticQueryTools.Create(snapshot, association);
         JObject Args(string a = "A", string b = "D") => new() { ["projectId"] = association.ProjectId, ["snapshotId"] = snapshot.SnapshotId, ["scopeAssemblyId"] = "R", ["configuration"] = "Default", ["startObjectId"] = a, ["endObjectId"] = b };
-        Require(registry.Declarations.Count == 6, "Mechanical capabilities not advertised.");
+        Require(registry.Declarations.Count == 9, "Mechanical capabilities not advertised.");
+        var wrongScope = Args(); wrongScope["configuration"] = "NotExported";
+        var scopedFailure = await registry.ExecuteAsync("find_mechanical_path", wrongScope);
+        Require((string?)scopedFailure["errors"]![0]!["details"]!["reasonCode"] == "MECHANICAL_SCOPE_MISSING" && !(bool)scopedFailure["errors"]![0]!["details"]!["retryable"]!, "Per-request scope failure lacks shared recovery contract.");
         var response = await registry.ExecuteAsync("find_mechanical_path", Args());
         Require((bool)response["success"]! && (string?)response["coverage"]!["countUnit"] == "objects" && (string?)response["coverage"]!["mates"]!["countUnit"] == "mates" && ((JArray)response["data"]!["parallelMates"]![0]!["eligibleMateIds"]!).Count == 2, "Tool envelope/parallel evidence broken.");
         var invalidArgs = Args("R"); Require((string?)(await registry.ExecuteAsync("find_mechanical_path", invalidArgs))["errors"]![0]!["code"] == "OBJECT_OUTSIDE_SCOPE", "Out-of-scope object accepted.");
@@ -77,13 +80,13 @@ internal static class MechanicalQueryChecks
         {
             doc = Document(); doc["mechanicalScopes"]![0]!["mateCoverage"] = state;
             var unavailable = Load(doc); var tools = SemanticQueryTools.Create(unavailable, association); var args = Args(); args["snapshotId"] = unavailable.SnapshotId;
-            Require(tools.Declarations.Count == 4 && (string?)(await tools.ExecuteAsync("find_mechanical_path", args))["errors"]![0]!["code"] == "CAPABILITY_UNAVAILABLE", "Unavailable/invalid scope exposed or returned success.");
+            Require(!tools.Declarations.Any(t => (string?)t["name"] == "find_mechanical_path") && (string?)(await tools.ExecuteAsync("find_mechanical_path", args))["errors"]![0]!["code"] == "CAPABILITY_UNAVAILABLE", "Unavailable/invalid scope exposed or returned success.");
         }
         doc = Document(); ((JArray)doc["mechanicalScopes"]![0]!["occurrenceIds"]!).RemoveAt(0);
         Require(Load(doc).Capabilities.MechanicalGraph == CapabilityState.Invalid, "Mate endpoint outside membership did not invalidate scope.");
         doc = Document(); ((JArray)doc["mechanicalScopes"]!).Add(doc["mechanicalScopes"]![0]!.DeepClone());
         Require(Load(doc).MechanicalScopes.All(s => s.State == GraphDataState.Invalid), "Duplicate scope key remained usable.");
-        doc = Document(); doc.Remove("mechanicalScopes"); Require(Load(doc).MechanicalScopes.Count == 0 && SemanticQueryTools.Create(Load(doc), association).Declarations.Count == 4, "Unscoped export advertised connectivity.");
+        doc = Document(); doc.Remove("mechanicalScopes"); Require(Load(doc).MechanicalScopes.Count == 0 && !SemanticQueryTools.Create(Load(doc), association).Declarations.Any(t => (string?)t["name"] == "find_mechanical_path"), "Unscoped export advertised connectivity.");
         doc = Document(); doc["sampleInfo"] = new JObject { ["fixture"] = true }; Require(Scope(doc).State == GraphDataState.Unavailable, "Fixture became mechanical evidence.");
         var unmated = new MechanicalIssueChecker("R", "Default", false); var islandChecker = new MechanicalIssueChecker("R", "Default", true);
         var subject = new IssueSubject(IssueSubjectKind.Object, "X");
