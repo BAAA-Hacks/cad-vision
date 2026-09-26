@@ -1,6 +1,6 @@
-# CADEN semantic tool contract 2.0
+# CADEN semantic tool contract 3.0
 
-The desktop uses `SemanticQueryTools.Create(ProjectSnapshot)` with the canonical loader.
+The desktop uses `SemanticQueryTools.Create(ProjectSnapshot, ProjectAssociation, ToolLimits?)` with the canonical loader.
 The earlier `QueryTools`/`MetadataStore` API remains for compatibility checks; its four
 legacy declarations are not exposed by the desktop. Do not mix the two registries in a chat.
 Replacing metadata creates a new registry and conversation only after loading succeeds.
@@ -10,53 +10,84 @@ Invalid graph/hierarchy capability does not discard usable property metadata.
 
 ```json
 {
-  "contractVersion": "2.0",
-  "ok": true,
-  "context": {
-    "projectId": "P",
-    "snapshotId": "sha256:...",
+  "contractVersion": "3.0",
+  "success": true,
+  "projectId": "caden-project-id",
+  "snapshotId": "sha256:...",
+  "provenance": {
     "identityScope": "SnapshotOnly",
-    "fixture": false
+    "fixture": false,
+    "sourceProjectId": "exporter-project-id",
+    "sourceIdentityTrusted": false
   },
-  "data": {}
+  "data": {},
+  "coverage": {
+    "status": "complete",
+    "countUnit": "objects",
+    "requestedCount": 10,
+    "evaluatedCount": 10,
+    "excludedUnknownCount": 0,
+    "excludedSuppressedCount": 0,
+    "reasonCodes": []
+  },
+  "pagination": null,
+  "errors": []
 }
 ```
 
-Failures replace `data` with `error: {code,message}` and retain context. With no model,
-context fields are null. `ok=true` means a query executed, not an engineering pass.
-All queries except `get_model_summary` require `snapshotId` from the summary's context.
-A mismatch returns STALE_SNAPSHOT before retrieving objects. IDs are case-sensitive;
-matching strings across exports do not establish persistent identity. Snapshot replacement
-also resets chat history. Project identity is bound by the snapshot and registry.
+Failures set success=false and data/coverage/pagination=null, with structured errors
+containing code, message and details. Unexpected errors also carry correlationId linked
+to the host's redacted stack-trace diagnostics. Success means execution succeeded, not
+that engineering checks passed. Revalidation may successfully commit an UnableToEvaluate
+result. Coverage describes evaluated subjects, independently of matching rows and pages.
 
-The registry recursively validates declared object/array/scalar shapes, enums, numeric
-bounds, finite numbers and required fields; unexpected fields are rejected. Handlers
-enforce cross-field rules. No strings are coerced into numbers or booleans.
-Inputs and responses are capped at 64,000 JSON characters; oversized results return
-RESULT_TOO_LARGE rather than silently dropping data. Details accept 1-32 object IDs,
-1-32 explicit fields; search scopes accept 0-256 IDs. Pagination uses limit 1-50 (default
-20), offset 0-10000 (default 0), total, truncated, nextOffset. Total counts matching rows
-within the requested scope/depth, not the whole assembly regardless of limits.
+Every query except get_model_summary requires its top-level projectId and snapshotId.
+The host must supply an explicit ProjectAssociation; exporter identity stays provenance.
+Wrong project and stale snapshot are rejected before retrieval. IDs are case-sensitive;
+matching strings across exports do not establish persistent identity. Replacing metadata
+resets chat history and session cursors. Missing model context returns CAPABILITY_UNAVAILABLE.
 
-Execution uses `ExecuteAsync` and a cancellation token through the Gemini client.
-Cancellation propagates without committing a chat turn. The synchronous Execute adapter
-is retained for legacy callers; hosts should use async execution. Tools in this milestone
-are read-only. Action idempotency/receipts will be implemented before any action is exposed.
+The registry validates declared shapes, enums, finite numbers, bounds and required fields;
+unexpected fields are rejected. Handlers enforce cross-field rules. No scalar coercion.
+Defaults: 64,000 input/response JSON characters, 1-32 detail IDs, 1-32 fields, 0-256 scope
+IDs, page limit 1-50 (default 20), hierarchy depth 0-32. Host ToolLimits configures detail
+IDs, scope IDs, page size, depth and response size. Oversized reads fail QUERY_TOO_LARGE.
 
-Errors include UNKNOWN_TOOL, INVALID_ARGUMENTS, MODEL_NOT_LOADED, STALE_SNAPSHOT,
-OBJECT_NOT_FOUND, RESULT_TOO_LARGE and TOOL_EXECUTION_FAILED. Unexpected exceptions do
-not expose raw details to Gemini. Unexpected failures include error.correlationId linked
-to the host's redacted stack-trace diagnostics and desktop error notification.
-Unknown IDs in a requested batch reject the entire request.
+Pagination is top-level {limit,total,nextCursor}. Total counts matching rows within the
+requested scope/depth. Send nextCursor as cursor with the same query arguments, including
+limit. Tokens bind the tool, normalized query, project, snapshot and relevant subsystem
+revision. They are opaque, session-local and invalidated on registry replacement. Invalid
+or mismatched tokens return INVALID_CURSOR; start a fresh query. There is no public offset.
+
+Use ExecuteAsync with cancellation. Read cancellation returns CANCELLED and the host omits
+the cancelled chat turn. IActionCadenTool defines future mutating handlers: they require
+operationId, durable commit before success, and RecoverCommittedAsync validating the same
+operation ID and request content without executing uncommitted work. A committed action
+returns/replays its receipt despite cancellation or a recoverable post-commit exception:
+
+    receipt: {operationId, subsystem: "memory" | "issues" | "view",
+              revision, applied: true, replayed: false}
+
+Replays preserve the original receipt and set replayed=true. Oversized optional action
+results may be omitted while preserving the receipt. Revision/idempotency enforcement and
+durable receipt storage belong to the action subsystem. No action is exposed by the current
+query registry; these execution guarantees are checked using offline action doubles.
+
+Public codes include INVALID_ARGUMENT, UNKNOWN_OBJECT_ID, STALE_SNAPSHOT_REFERENCE,
+WRONG_PROJECT, CAPABILITY_UNAVAILABLE, UNIT_MISMATCH, QUERY_TOO_LARGE, MAX_DEPTH_EXCEEDED,
+PERSISTENCE_FAILED, REVISION_CONFLICT, IDEMPOTENCY_CONFLICT, UNSUPPORTED_SCHEMA_VERSION,
+CORRUPT_STORAGE, CANCELLED and INTERNAL_ERROR. UNKNOWN_TOOL and INVALID_CURSOR are extensions.
+Unknown IDs reject a requested batch atomically.
 
 ## Tools
 
 `get_model_summary {}` returns name, validated root ID when hierarchy is available,
 occurrence counts, property/hierarchy/graph capability states and bounded diagnostic codes.
 Capability states are Available/Unavailable/Invalid; they do not certify analysis coverage.
-No issue/mechanical/memory/runtime tools are registered by this milestone.
+No issue/memory/runtime action tools are registered. Two [mechanical queries](MECHANICAL_CONTRACT.md)
+are declared when explicit scoped graph data is available; the summary lists their scopes.
 
-`get_object_details {snapshotId, objectIds, fields?}` returns contextual identity plus
+`get_object_details {projectId, snapshotId, objectIds, fields?}` returns contextual identity plus
 availability-wrapped properties. Default fields: suppressed, fixed, material, mass,
 constraintStatus. Identity includes ID/name/type, wrapped parentId, ancestor path and
 childCount. Path/count are null when hierarchy is unusable; names are never merged.
@@ -78,11 +109,11 @@ inspect property status individually. Nested material density retains its separa
 `find_objects` accepts exactly one of two modes:
 
 ```json
-{"snapshotId":"...","query":"R_0805","limit":20}
+{"projectId":"...","snapshotId":"...","query":"R_0805","limit":20}
 ```
 
 ```json
-{"snapshotId":"...","property":"mass","operator":"greater_than",
+{"projectId":"...","snapshotId":"...","property":"mass","operator":"greater_than",
  "value":{"number":2,"unit":"kg"},"scopeObjectIds":["A","B"]}
 ```
 
@@ -109,29 +140,30 @@ and unsupported units are rejected. Unknown/missing/invalid values never satisfy
 comparisons, including not_equals.
 
 Omitted or null scopeObjectIds means all occurrences; [] means no objects. Explicit scopes
-are deduplicated exact ID sets, not subtrees. Search reports coverage.status Complete/Partial,
-scopeCount, evaluatedCount, unknownCount and a bounded unknownObjectIds list with its own
-truncation flag. UnknownCount includes values lacking a comparable scalar. An empty match
-page with Partial coverage is not proof that no matches exist among unknown subjects.
+are deduplicated exact ID sets, not subtrees. Search reports coverage.status complete/partial,
+scopeCount, evaluatedCount, excludedUnknownCount and a bounded unknownObjectIds list with its own
+truncation flag. excludedUnknownCount includes values lacking a comparable scalar. An empty match
+page with partial coverage is not proof that no matches exist among unknown subjects.
 Pagination does not change query evaluation coverage.
 
-`query_hierarchy {snapshotId, objectId, direction, maxDepth?, limit?, offset?}` supports
+`query_hierarchy {projectId, snapshotId, objectId, direction, maxDepth?, limit?, cursor?}` supports
 parent/children (depth exactly 1) and ancestors/descendants (depth 0-32, default 1). Start
 object is excluded. Ancestors are nearest-first; descendants preserve exported child order
-within each depth. Results report relative depth, maxDepth and depthLimited independently
+within each depth. Results report relative depth, with coverage.requestedMaxDepth and coverage.depthLimited independently
 of pagination. Depth zero returns no relatives and reports whether deeper relatives exist.
 Complete coverage applies to the bounded requested traversal, not every deeper descendant.
-Invalid/unavailable hierarchy returns ok=true, items=null and a coverage reason/state,
+Invalid/unavailable hierarchy returns success=true, items=null and a coverage reason/state,
 never a confirmed empty tree. Metadata hierarchy remains authoritative.
 
 ## Verification and next milestones
 
+`ToolContractChecks` verifies envelope, host identity, cursor bindings and action recovery.
 `SemanticQueryChecks` verifies snapshot guards, canonical property mapping, unit-aware
 filters, unknown booleans/not_equals, exact scope, nested validation, hierarchy degradation,
 pagination, cancellation and fake-HTTP Gemini dispatch. No live API call is required.
 Legacy query checks remain to catch compatibility regressions.
 
-Next: host-owned initial issue scans and issue read/revalidation/disposition tools, followed
-by mechanical tools when coverage is trustworthy, then persistent memory and Unity actions.
-Issue presentation/freshness and action idempotency contracts remain as agreed; they are
+Next: host-owned initial issue scans and issue read/revalidation/disposition tools,
+then memory tool exposure and Unity actions. Scoped mechanical query tools are implemented.
+Issue presentation/freshness and durable memory primitives exist; these capabilities are
 not advertised as working tools before their implementation.

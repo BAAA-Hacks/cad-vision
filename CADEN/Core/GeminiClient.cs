@@ -105,6 +105,9 @@ namespace Core
                             if (call["id"] != null) response["id"] = call["id"]!.DeepClone();
                             responses.Add(new JObject { ["functionResponse"] = response }); LastToolCallCount++;
                         }
+                        // A tool may have committed and returned its receipt after cancellation.
+                        // Preserve the subsystem receipt, but do not send another model request.
+                        turnTimeout.Token.ThrowIfCancellationRequested();
                         var toolContent = new JObject { ["role"] = "user", ["parts"] = responses };
                         contents.Add(toolContent); continuation.Add(new ChatMessage(toolContent));
                         continue;

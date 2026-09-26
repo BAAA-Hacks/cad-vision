@@ -2,11 +2,18 @@
 
 Primitives are internal building blocks. Gemini sees higher-level tools, not these APIs.
 
+Scoped mechanical projections, confirmed-active neighborhoods/paths and connectivity
+checkers use the [mechanical query contract](../tools/MECHANICAL_CONTRACT.md). The low-level
+builder below treats its supplied objects as explicit vertices; the canonical loader
+projects only exporter-listed scope membership into each published mechanical graph.
+
 The [canonical loader](operations/project/README.md) provides immutable project snapshots.
 The [runtime issue store](operations/issues/README.md) layers indexed findings and separate
 user dispositions over a snapshot, with targeted checker revalidation.
 The [issue engine](operations/issues/ENGINE.md) adds per-subject discovery/coverage,
 candidate presentation rules and the first material/native-constraint checkers.
+The [project memory store](operations/memory/README.md) adds selective persistent knowledge,
+requirements and disposition coordination through a host-provided storage adapter.
 
 ```text
 primitives/
@@ -114,8 +121,9 @@ Cancellation throws OperationCanceledException without returning partial results
 Nodes and mates with suppression=true are excluded by default. Separate options include
 suppressed components and suppressed mates. Suppressed start IDs are listed in
 ExcludedStartIds; if all starts are excluded the query successfully returns an empty scope.
-Unknown suppression states remain eligible. UnknownSuppressionNodeCount and
-UnknownSuppressionMateCount describe the reached nodes and included edges, and
+Unknown suppression states are excluded, including when suppressed entities are opted in.
+UnknownSuppressionNodeCount and UnknownSuppressionMateCount describe the entire supplied
+graph's unknown states, independently of the reached nodes and included edges, and
 SuppressionInformationComplete reports whether those states are fully known.
 
 Type/status allowlists are case-insensitive; IDs remain case-sensitive. All active

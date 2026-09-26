@@ -73,7 +73,7 @@ internal static class MechanicalGraphChecks
         var nearest = Traverse(graph, Query(2, "A", "D")); Require(nearest.DepthByNodeId!["C"] == 1, "Nearest-start distance failed.");
         var suppressedStart = Traverse(graph, Query(null, "S")); Require(suppressedStart.Aggregates.ComponentCount == 0 && suppressedStart.ExcludedStartIds.SequenceEqual(new[] { "S" }), "Suppressed start was silently traversed.");
         var allQuery = Query(); allQuery.IncludeSuppressedComponents = true; allQuery.EdgeFilter.IncludeSuppressed = true;
-        var all = Traverse(graph, allQuery); Require(all.Aggregates.ComponentCount == 7 && all.Aggregates.MateCount == 9 && all.UnknownSuppressionNodeCount == 1 && !all.SuppressionInformationComplete, "Suppression opt-in/unknown diagnostics failed.");
+        var all = Traverse(graph, allQuery); Require(all.Aggregates.ComponentCount == 6 && all.Aggregates.MateCount == 7 && all.UnknownSuppressionNodeCount == 1 && !all.SuppressionInformationComplete, "Suppression opt-in must still exclude unknown state.");
         var types = Query(); types.EdgeFilter.AllowedMateTypes = new() { "COINCIDENT" };
         var filtered = Traverse(graph, types); Require(filtered.Aggregates.ComponentCount == 2 && filtered.Aggregates.MateCount == 1, "Type filter failed.");
         types.EdgeFilter.AllowedMateStatuses = new(); Require(Traverse(graph, types).Aggregates.MateCount == 0, "Empty filter should allow no mates.");

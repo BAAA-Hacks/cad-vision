@@ -4,22 +4,26 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Core.Primitives.DataStructures.Project;
+using Core.Primitives.DataStructures.Memory;
 using Newtonsoft.Json.Linq;
 
 namespace Core.Tools.Query
 {
     public static class SemanticQueryTools
     {
-        public static ToolRegistry Create(ProjectSnapshot? snapshot)
+        public static ToolRegistry Create(ProjectSnapshot? snapshot, ProjectAssociation? association, ToolLimits? limits = null)
         {
+            limits ??= new ToolLimits();
             var hierarchy = new Dictionary<string, JObject>(StringComparer.Ordinal);
+            var cursors = new QueryCursors();
             if (snapshot != null) foreach (var component in snapshot.ComponentsById.Values)
             {
                 var raw = component.CopyRawRecord();
                 hierarchy.Add(component.Id, new JObject { ["parentId"] = raw["parentId"], ["childIds"] = raw["childIds"] });
             }
             return new ToolRegistry(new[] { "get_model_summary", "get_object_details", "find_objects", "query_hierarchy" }
-                .Select(name => (ICadenTool)new SemanticQueryTool(name, snapshot, hierarchy)), snapshot, semantic: true);
+                .Select(name => (ICadenTool)new SemanticQueryTool(name, snapshot, hierarchy, association, cursors, limits))
+                .Concat(new[] { "get_mechanical_neighborhood", "find_mechanical_path" }.Select(name => (ICadenTool)new MechanicalQueryTool(name, snapshot, limits))), snapshot, semantic: true, association: association, limits: limits);
         }
     }
 
@@ -27,13 +31,16 @@ namespace Core.Tools.Query
     {
         private readonly ProjectSnapshot? snapshot;
         private readonly Dictionary<string, JObject> records;
+        private readonly ProjectAssociation? association;
+        private readonly QueryCursors cursors;
+        private readonly ToolLimits limits;
         private ProjectSnapshot Store => snapshot ?? throw new ToolInputException("MODEL_NOT_LOADED", "Load metadata first.");
         public string Name { get; }
         private static readonly string[] Fields = { "name", "type", "parentId", "sourceDocument", "configuration", "partNumber", "description", "suppressed", "fixed", "material", "mass", "volume", "centerOfMass", "inertia", "constraintStatus", "remainingDOF", "dimensions", "referenceGeometry", "customProperties" };
         private static readonly string[] Defaults = { "suppressed", "fixed", "material", "mass", "constraintStatus" };
-        public SemanticQueryTool(string name, ProjectSnapshot? snapshot, Dictionary<string, JObject> hierarchy)
+        public SemanticQueryTool(string name, ProjectSnapshot? snapshot, Dictionary<string, JObject> hierarchy, ProjectAssociation? association, QueryCursors cursors, ToolLimits limits)
         {
-            Name = name; this.snapshot = snapshot; records = hierarchy;
+            Name = name; this.snapshot = snapshot; records = hierarchy; this.association = association; this.cursors = cursors; this.limits = limits;
         }
         private static JObject String(params string[] values) => values.Length == 0 ? new JObject { ["type"] = "string", ["minLength"] = 1, ["maxLength"] = 512 }
             : new JObject { ["type"] = "string", ["enum"] = new JArray(values) };
@@ -46,12 +53,12 @@ namespace Core.Tools.Query
             get
             {
                 var p = new JObject(); var required = new JArray(); string description;
-                if (Name != "get_model_summary") { p["snapshotId"] = String(); required.Add("snapshotId"); }
-                if (Name == "get_model_summary") description = "Discover the loaded project's snapshot ID, identity scope, counts and capability states. Call first; use its snapshotId in all other queries. Counts describe exported occurrences, not verified BOM quantities.";
+                if (Name != "get_model_summary") { p["snapshotId"] = String(); required.Add("snapshotId"); p["projectId"] = String(); required.Add("projectId"); }
+                if (Name == "get_model_summary") description = "Discover the loaded CADEN project ID, snapshot ID, identity scope, counts and capability states. Call first; use its top-level projectId and snapshotId in all other queries. Counts describe exported occurrences, not verified BOM quantities.";
                 else if (Name == "get_object_details")
                 {
                     description = "Read known object IDs with compact identity and requested availability-wrapped properties. Unknown fields are errors; missing values are not false or zero. Default fields: suppressed, fixed, material, mass, constraintStatus.";
-                    p["objectIds"] = Array(String(), min: 1); required.Add("objectIds"); p["fields"] = Array(String(Fields), min: 1);
+                    p["objectIds"] = Array(String(), limits.MaxObjectIds, min: 1); required.Add("objectIds"); p["fields"] = Array(String(Fields), min: 1);
                 }
                 else if (Name == "find_objects")
                 {
@@ -59,14 +66,14 @@ namespace Core.Tools.Query
                     p["query"] = String(); p["property"] = String(Fields.Where(f => new[] { "name", "type", "sourceDocument", "configuration", "partNumber", "description", "suppressed", "fixed", "mass", "volume", "constraintStatus", "parentId" }.Contains(f)).Concat(new[] { "material.name", "material.assigned" }).ToArray());
                     p["operator"] = String("equals", "not_equals", "greater_than", "greater_than_or_equal", "less_than", "less_than_or_equal", "in");
                     p["value"] = Operand(); p["values"] = Array(Operand(), min: 1);
-                    p["scopeObjectIds"] = Array(String(), 256); p["scopeObjectIds"]!["nullable"] = true;
-                    p["limit"] = Integer(1, 50); p["offset"] = Integer(0, 10000);
+                    p["scopeObjectIds"] = Array(String(), limits.MaxScopeIds); p["scopeObjectIds"]!["nullable"] = true;
+                    p["limit"] = Integer(1, limits.MaxResults); p["cursor"] = String();
                 }
                 else
                 {
-                    description = "Read authoritative metadata containment, never mechanical connectivity. parent/children return depth 1; ancestors/descendants allow maxDepth 0-32 (default 1). Start object excluded. Depth 0 returns no relatives. Inspect depthLimited separately from pagination; invalid/unavailable hierarchy returns unavailable items, not a confirmed empty tree.";
+                    description = "Read authoritative metadata containment, never mechanical connectivity. parent/children return depth 1; ancestors/descendants allow maxDepth 0-" + limits.MaxDepth + " (default 1). Start object excluded. Depth 0 returns no relatives. Inspect coverage.depthLimited separately from pagination; invalid/unavailable hierarchy returns unavailable items, not a confirmed empty tree.";
                     p["objectId"] = String(); required.Add("objectId"); p["direction"] = String("parent", "children", "ancestors", "descendants"); required.Add("direction");
-                    p["maxDepth"] = Integer(0, 32); p["limit"] = Integer(1, 50); p["offset"] = Integer(0, 10000);
+                    p["maxDepth"] = Integer(0, limits.MaxDepth); p["limit"] = Integer(1, limits.MaxResults); p["cursor"] = String();
                 }
                 return new JObject { ["name"] = Name, ["description"] = description, ["parameters"] = new JObject { ["type"] = "object", ["properties"] = p, ["required"] = required } };
             }
@@ -76,6 +83,12 @@ namespace Core.Tools.Query
         private JObject Run(JObject args, CancellationToken token)
         {
             token.ThrowIfCancellationRequested();
+            if (Name == "find_objects" || Name == "query_hierarchy")
+            {
+                if (Name == "query_hierarchy" && args["maxDepth"] == null) args["maxDepth"] = 1;
+                if (args["limit"] == null) args["limit"] = Math.Min(20, limits.MaxResults);
+                args["offset"] = cursors.Resolve(Name, association!.ProjectId, Store.SnapshotId, args);
+            }
             switch (Name)
             {
                 case "get_model_summary": return Summary();
@@ -85,9 +98,13 @@ namespace Core.Tools.Query
             }
         }
         private ComponentMetadata Get(string id) => Store.ComponentsById.TryGetValue(id, out var component) ? component : throw new ToolInputException("OBJECT_NOT_FOUND", "Unknown object ID: " + id);
-        private static JObject Coverage(string status, int evaluated, int unknown) => new JObject { ["status"] = status, ["evaluatedCount"] = evaluated, ["unknownCount"] = unknown };
+        private static JObject Coverage(string status, int evaluated, int unknown) => new JObject { ["status"] = status.ToLowerInvariant(), ["countUnit"] = "objects", ["requestedCount"] = evaluated + unknown,
+            ["evaluatedCount"] = evaluated, ["excludedUnknownCount"] = unknown, ["excludedSuppressedCount"] = 0,
+            ["reasonCodes"] = unknown > 0 ? new JArray("PROPERTY_VALUE_UNAVAILABLE") : new JArray() };
         private JObject Summary() => new JObject
         {
+            ["mechanicalScopes"] = new JArray(Store.MechanicalScopes.Select(s => new JObject { ["scopeAssemblyId"] = s.ScopeAssemblyId, ["configuration"] = s.Configuration,
+                ["state"] = s.State.ToString(), ["membershipCoverage"] = s.MembershipCoverage.ToString(), ["mateCoverage"] = s.MateCoverage.ToString(), ["source"] = s.Source })),
             ["name"] = Store.Name, ["rootObjectId"] = Store.Capabilities.Hierarchy == CapabilityState.Available ? Store.CopyProjectMetadata()["rootObjectId"] : null,
             ["objectCount"] = Store.ComponentsById.Count, ["partCount"] = Store.ComponentsById.Values.Count(c => c.Type == "part"),
             ["assemblyCount"] = Store.ComponentsById.Values.Count(c => c.Type == "assembly"),
@@ -137,19 +154,20 @@ namespace Core.Tools.Query
             foreach (var id in ids) { token.ThrowIfCancellationRequested(); var item = Identity(id); var props = new JObject(); foreach (var field in fields) props[field] = Property(Get(id), field); item["properties"] = props; items.Add(item); }
             return new JObject { ["items"] = items, ["coverage"] = Coverage("Complete", ids.Length, 0) };
         }
-        private static JObject Page(List<JObject> rows, JObject args)
+        private JObject Page(List<JObject> rows, JObject args)
         {
             int offset = (int?)args["offset"] ?? 0, limit = (int?)args["limit"] ?? 20;
             var page = rows.Skip(offset).Take(limit).ToArray(); bool more = offset + page.Length < rows.Count;
-            return new JObject { ["items"] = new JArray(page), ["total"] = rows.Count, ["offset"] = offset, ["limit"] = limit,
-                ["truncated"] = more, ["nextOffset"] = more ? new JValue(offset + page.Length) : JValue.CreateNull() };
+            return new JObject { ["items"] = new JArray(page),
+                ["pagination"] = new JObject { ["limit"] = limit, ["total"] = rows.Count,
+                    ["nextCursor"] = more ? new JValue(cursors.Issue(Name, association!.ProjectId, Store.SnapshotId, args, offset + page.Length)) : JValue.CreateNull() } };
         }
         private static string PropertyType(string field) => field == "mass" || field == "volume" ? "number" : field == "suppressed" || field == "fixed" || field == "material.assigned" ? "boolean" : "text";
         private static double UnitFactor(string property, string? unit)
         {
             var factors = property == "mass" ? new Dictionary<string, double> { ["kg"] = 1, ["g"] = 0.001, ["lb"] = 0.45359237 }
                 : new Dictionary<string, double> { ["m^3"] = 1, ["cm^3"] = 1e-6, ["mm^3"] = 1e-9, ["in^3"] = 0.000016387064, ["ft^3"] = 0.028316846592 };
-            return unit != null && factors.TryGetValue(unit, out var factor) ? factor : throw new ToolInputException("INVALID_ARGUMENTS", "A supported " + property + " unit is required.");
+            return unit != null && factors.TryGetValue(unit, out var factor) ? factor : throw new ToolInputException("UNIT_MISMATCH", "A supported " + property + " unit is required.");
         }
         private static JToken OperandValue(JObject operand, string property)
         {
@@ -215,7 +233,7 @@ namespace Core.Tools.Query
             string id = (string)args["objectId"]!, direction = (string)args["direction"]!; Get(id);
             int depth = (int?)args["maxDepth"] ?? 1;
             if ((direction == "parent" || direction == "children") && depth != 1) throw new ToolInputException("INVALID_ARGUMENTS", "parent/children require maxDepth=1; use ancestors/descendants for other depths.");
-            if (Store.Capabilities.Hierarchy != CapabilityState.Available) return new JObject { ["items"] = null, ["coverage"] = new JObject { ["status"] = Store.Capabilities.Hierarchy.ToString(), ["reason"] = "Metadata hierarchy is not usable; no empty-tree conclusion is supported." } };
+            if (Store.Capabilities.Hierarchy != CapabilityState.Available) return new JObject { ["items"] = null, ["coverage"] = new JObject { ["status"] = "unavailable", ["countUnit"] = "objects", ["reasonCodes"] = new JArray("HIERARCHY_" + Store.Capabilities.Hierarchy.ToString().ToUpperInvariant()) } };
             bool down = direction == "children" || direction == "descendants", limited = false;
             IEnumerable<string> Adjacent(string current) => down ? ((JArray)records[current]["childIds"]!).Select(v => (string)v!) : records[current]["parentId"]?.Type == JTokenType.String ? new[] { (string)records[current]["parentId"]! } : System.Array.Empty<string>();
             var queue = new Queue<(string Id, int Depth)>(); queue.Enqueue((id, 0)); var rows = new List<JObject>();
@@ -228,7 +246,7 @@ namespace Core.Tools.Query
                 else foreach (var next in adjacent) queue.Enqueue((next, current.Depth + 1));
             }
             var result = Page(rows, args); result["root"] = Identity(id); result["direction"] = direction; result["maxDepth"] = depth;
-            result["depthLimited"] = limited; result["coverage"] = Coverage("Complete", rows.Count, 0); return result;
+            result["coverage"] = Coverage("Complete", rows.Count, 0); result["coverage"]!["depthLimited"] = limited; result["coverage"]!["requestedMaxDepth"] = depth; return result;
         }
     }
 }

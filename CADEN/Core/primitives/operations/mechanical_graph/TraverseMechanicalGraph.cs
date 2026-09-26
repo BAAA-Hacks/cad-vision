@@ -120,11 +120,13 @@ namespace Core.Primitives.Operations.MechanicalGraph
             bool includeNodesSuppressed = validQuery.IncludeSuppressedComponents, includeEdgesSuppressed = filter.IncludeSuppressed;
             int? maxDepth = validQuery.MaxDepth; var spec = validQuery.Return!.Snapshot();
             cancellation.ThrowIfCancellationRequested();
-            bool EdgeAllowed(MateEdge edge) => (includeEdgesSuppressed || edge.Suppressed != true)
+            bool EdgeAllowed(MateEdge edge) => edge.Suppressed.HasValue && (includeEdgesSuppressed || edge.Suppressed == false)
                 && (types == null || edge.Type != null && types.Contains(edge.Type))
                 && (statuses == null || edge.Status != null && statuses.Contains(edge.Status));
 
             var result = new GraphQueryResult { SnapshotId = graph!.SnapshotId };
+            result.UnknownSuppressionNodeCount = graph.NodesById.Values.Count(n => n.Suppressed == null);
+            result.UnknownSuppressionMateCount = graph.MatesById.Values.Count(e => e.Suppressed == null);
             var aggregate = result.Aggregates;
             if (spec.SumMass) aggregate.Mass = new QuantityAggregate("kg");
             if (spec.SumVolume) aggregate.Volume = new QuantityAggregate("m^3");
@@ -137,9 +139,9 @@ namespace Core.Primitives.Operations.MechanicalGraph
             var collectedNodes = spec.IncludeNodes ? new List<ComponentNode>() : null;
             var collectedEdges = spec.IncludeEdges ? new List<MateEdge>() : null;
             var issues = spec.IncludeIssueIds ? new HashSet<string>(StringComparer.Ordinal) : null;
-            foreach (string start in starts.Distinct(StringComparer.Ordinal))
+            foreach (string start in starts.Distinct(StringComparer.Ordinal).OrderBy(id => id, StringComparer.Ordinal))
             {
-                if (!includeNodesSuppressed && graph.NodesById[start].Suppressed == true) { excluded.Add(start); continue; }
+                if (graph.NodesById[start].Suppressed == null || !includeNodesSuppressed && graph.NodesById[start].Suppressed == true) { excluded.Add(start); continue; }
                 depths.Add(start, 0); queue.Enqueue(start);
             }
             while (queue.Count > 0)
@@ -148,7 +150,6 @@ namespace Core.Primitives.Operations.MechanicalGraph
                 string id = queue.Dequeue(); var node = graph.NodesById[id]; int depth = depths[id];
                 collectedNodes?.Add(node);
                 if (issues != null) issues.UnionWith(node.IssueIds);
-                if (node.Suppressed == null) result.UnknownSuppressionNodeCount++;
                 aggregate.MaterialCounts?.Add(node.Material); aggregate.ConstraintStatusCounts?.Add(node.ConstraintStatus);
                 if (node.Type == "part") { aggregate.Mass?.Add(node.Mass); aggregate.Volume?.Add(node.Volume); }
                 else
@@ -156,12 +157,12 @@ namespace Core.Primitives.Operations.MechanicalGraph
                     if (aggregate.Mass != null) aggregate.Mass.ExcludedAssemblyCount++;
                     if (aggregate.Volume != null) aggregate.Volume.ExcludedAssemblyCount++;
                 }
-                foreach (var edge in node.Edges)
+                foreach (var edge in node.Edges.OrderBy(e => e.GetOtherEndpoint(id), StringComparer.Ordinal).ThenBy(e => e.Id, StringComparer.Ordinal))
                 {
                     cancellation.ThrowIfCancellationRequested();
                     if (visitedMates.Contains(edge.Id) || !EdgeAllowed(edge)) continue;
                     string otherId = edge.GetOtherEndpoint(id); var other = graph.NodesById[otherId];
-                    if (!includeNodesSuppressed && other.Suppressed == true) continue;
+                    if (other.Suppressed == null || !includeNodesSuppressed && other.Suppressed == true) continue;
                     if (!depths.ContainsKey(otherId) && (maxDepth == null || depth < maxDepth))
                     { depths.Add(otherId, depth + 1); queue.Enqueue(otherId); }
                     // All nodes at a boundary depth are discovered before any boundary node is expanded.
@@ -169,7 +170,6 @@ namespace Core.Primitives.Operations.MechanicalGraph
                     if (!depths.ContainsKey(otherId)) continue;
                     visitedMates.Add(edge.Id); collectedEdges?.Add(edge);
                     if (issues != null) issues.UnionWith(edge.IssueIds);
-                    if (edge.Suppressed == null) result.UnknownSuppressionMateCount++;
                     aggregate.MateTypeCounts?.Add(edge.Type);
                 }
             }

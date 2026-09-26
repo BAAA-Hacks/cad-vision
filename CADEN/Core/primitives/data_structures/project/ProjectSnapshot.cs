@@ -98,16 +98,19 @@ namespace Core.Primitives.DataStructures.Project
         // Empty when mate topology is invalid; raw rejected records remain in CopyRawExport.
         public IReadOnlyDictionary<string, MateMetadata> MatesById { get; }
         public IReadOnlyList<LoadDiagnostic> LoadDiagnostics { get; }
+        public IReadOnlyList<Core.Primitives.DataStructures.MechanicalGraph.MechanicalScope> MechanicalScopes { get; }
         public JObject CopyProjectMetadata() => (JObject)document["project"]!.DeepClone();
         public JObject CopyRawExport() => (JObject)document.DeepClone();
         internal ProjectSnapshot(JObject document, string projectId, string snapshotId, string name, string? revisionId, bool fixture,
             IdentityScope identityScope, ProjectCapabilities capabilities, Dictionary<string, ComponentMetadata> components,
-            Dictionary<string, MateMetadata> mates, List<LoadDiagnostic> diagnostics)
+            Dictionary<string, MateMetadata> mates, List<LoadDiagnostic> diagnostics,
+            IReadOnlyList<Core.Primitives.DataStructures.MechanicalGraph.MechanicalScope> mechanicalScopes)
         {
             this.document = (JObject)document.DeepClone(); ProjectId = projectId; SnapshotId = snapshotId; Name = name;
             RevisionId = revisionId; IsFixture = fixture; IdentityScope = identityScope; Capabilities = capabilities;
             ComponentsById = new ReadOnlyDictionary<string, ComponentMetadata>(components);
             MatesById = new ReadOnlyDictionary<string, MateMetadata>(mates); LoadDiagnostics = diagnostics.AsReadOnly();
+            MechanicalScopes = mechanicalScopes;
         }
     }
 

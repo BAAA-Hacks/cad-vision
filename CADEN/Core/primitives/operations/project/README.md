@@ -8,7 +8,7 @@ remain in defensive raw-export copies; they are not silently treated as validate
 ```csharp
 var result = LoadProject.Load(json, new ProjectLoadOptions
 {
-    MateExportState = CapabilityState.Available, // only after exporter confirms coverage
+    MateExportState = CapabilityState.Available, // legacy topology availability; not coverage completeness
     ComponentIdsStableAcrossSnapshots = true    // only with an exporter identity guarantee
 });
 if (!result.Success) { /* inspect fatal diagnostics */ return; }
@@ -59,17 +59,18 @@ Limits: 10 MB UTF-8, 10,000 components, 128 JSON/hierarchy levels, bounded names
 Graph validation retains its 50,000-mate cap. Parser-range failures produce fatal JSON
 diagnostics; representable large integers follow ordinary field availability rules.
 
-## Deliberate migration boundary
+## Query and mechanical integration
 
-This is a tested foundation, not yet the desktop's active loader. The existing desktop
-query path still uses MetadataStore and its stricter loading behavior. Query primitives,
-property indexes, and graph projection migration are the next milestone.
+The desktop uses this loader and the semantic query registry. MetadataStore remains only
+for legacy compatibility. Optional mechanicalScopes records publish immutable, explicitly
+scoped graph projections with separate membership and mate coverage; see the
+[mechanical export contract](../../../tools/MECHANICAL_CONTRACT.md). Old exports without
+that extension retain general queries but cannot establish scoped mechanical connectivity.
 
 To avoid divergent property rules, both canonical loading and the existing query adapter
 use MetadataPropertyRules here. Mechanical topology validation reuses the graph builder
-on the already-parsed document; the temporary graph projection is not published on the
-snapshot. The later migration should consume canonical fields directly and remove that
-transitional projection. This milestone does not add issue generation or memory storage.
+on the already-parsed document. Published MechanicalScopes carry canonical snapshot
+identity. Invalid scope data emits nonfatal LoadDiagnostics; other metadata remains usable.
 
 ProjectLoaderChecks runs with the existing offline checks. One independent review of
 this foundation found a large-integer conversion bug in reused graph validation; that

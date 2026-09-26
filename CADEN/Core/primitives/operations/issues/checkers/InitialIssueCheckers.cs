@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Core.Primitives.DataStructures.Issues;
@@ -10,8 +11,11 @@ namespace Core.Primitives.Operations.Issues.Checkers
 {
     public static class InitialIssueCheckers
     {
-        public static IssueEngine CreateEngine() => new IssueEngine(new ISubjectIssueChecker[]
-        { new MissingMaterialChecker(), new UnsolvableConstraintChecker(), new OverDefinedConstraintChecker(), new UnderDefinedComponentChecker() });
+        public static IssueEngine CreateEngine(ProjectSnapshot? snapshot = null) => new IssueEngine(new ISubjectIssueChecker[]
+        { new MissingMaterialChecker(), new UnsolvableConstraintChecker(), new OverDefinedConstraintChecker(), new UnderDefinedComponentChecker() }
+            .Concat((snapshot?.MechanicalScopes ?? Array.Empty<Core.Primitives.DataStructures.MechanicalGraph.MechanicalScope>())
+                .GroupBy(s => (s.ScopeAssemblyId, s.Configuration)).SelectMany(g => new ISubjectIssueChecker[] {
+                    new MechanicalIssueChecker(g.Key.ScopeAssemblyId, g.Key.Configuration, false), new MechanicalIssueChecker(g.Key.ScopeAssemblyId, g.Key.Configuration, true) })));
     }
 
     public abstract class ComponentIssueChecker : ISubjectIssueChecker

@@ -9,5 +9,7 @@
     <ProjectReference Include="../Core/Core.csproj" />
     <Compile Include="../Desktop/LocalConfiguration.cs" Link="LocalConfiguration.cs" />
     <Compile Include="../Desktop/FileDiagnostics.cs" Link="FileDiagnostics.cs" />
+    <Compile Include="../Desktop/ProjectMemoryFile.cs" Link="ProjectMemoryFile.cs" />
+    <Compile Include="../Desktop/ProjectAssociationFile.cs" Link="ProjectAssociationFile.cs" />
   </ItemGroup>
 </Project>

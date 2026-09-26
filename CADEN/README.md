@@ -42,6 +42,12 @@ Variable expansion and multiline values are not supported.
 For a separate configuration directory:
 `run-caden.cmd --config-dir "C:\path\to\CADEN"`.
 
+The desktop creates `caden-project.json` in that directory with a durable CADEN project ID.
+Keep it when re-exporting the same project; use a separate configuration directory for a
+different project. All metadata selected within one workspace shares that association.
+Exporter IDs remain source provenance. A corrupt association file fails visibly and is
+never silently replaced. Unity will supply its own explicit `ProjectAssociation`.
+
 ## Behavior
 
 - Send with the button or Ctrl+Enter; Enter inserts a newline.
@@ -52,7 +58,7 @@ For a separate configuration directory:
 - Failed turns remain outside history and can be retried manually.
 - Errors include status, Google's explanation, and guidance, with credentials redacted.
 - The transcript displays plain text, including any Markdown syntax returned.
-- Four read-only query tools are connected; automatic retry and visualization remain future work.
+- Four general queries are connected; two mechanical queries appear when scoped export data is usable. Automatic retry and visualization remain future work.
 
 ## Query metadata
 
@@ -70,14 +76,21 @@ number of queries executed for the last successful turn.
 Tools live in `Core/tools`, with query code in `Core/tools/query`.
 See [the shared semantic tool contract](Core/tools/SEMANTIC_CONTRACT.md) for formats, bounds and errors.
 The hidden system prompt defines CADEN's role and the same evidence rules.
+Responses use contract 3.0: `success`, explicit project/snapshot identity, top-level
+coverage and pagination, structured errors, and opaque cursors bound to the query.
+Action receipt/recovery support is implemented and checked offline; the exposed
+tools remain read-only. See [mechanical queries and exporter fields](Core/tools/MECHANICAL_CONTRACT.md)
+for the required `mechanicalScopes` extension. The FRED fixture does not provide usable
+mate evidence, so it will retain the four general queries.
 
 ## Structure and Unity migration
 
 - **Core:** .NET Standard 2.1; chat history, Gemini REST client, settings, and IChatClient.
-- **Core/tools:** registry, JSON contract, and the four query handlers plus metadata parsing.
+- **Core/tools:** registry, shared JSON contract, general queries and scoped mechanical queries.
 - **Core/primitives:** internal data structures and operations, including the [mechanical multigraph](Core/primitives/README.md). It is not exposed to Gemini.
 - **Canonical loader:** [ProjectSnapshot and scoped load diagnostics](Core/primitives/operations/project/README.md). Used by the desktop semantic queries; unusable graph/hierarchy data degrades independently from properties.
-- **Issue store:** [Immutable findings, indexed queries, dispositions and targeted revalidation](Core/primitives/operations/issues/README.md). Persistent memory remains future work.
+- **Issue store:** [Immutable findings, indexed queries, dispositions and targeted revalidation](Core/primitives/operations/issues/README.md).
+- **Project memory:** [Durable sidecar primitives](Core/primitives/operations/memory/README.md) with explicit CADEN project association, retirement, provenance, stale references and persistent dispositions. Host selection and Gemini tools remain deferred.
 - **Issue engine:** [Subject-level scans, candidate presentation and initial checkers](Core/primitives/operations/issues/ENGINE.md). Includes missing material and native constraint-state checks; host/chat integration and export-dependent checks remain deferred.
 - **Desktop:** .NET 10 Windows Forms; temporary chat UI and local configuration loader.
 - **Checks:** console-based offline checks and an optional live connectivity check.

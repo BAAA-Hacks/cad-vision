@@ -113,7 +113,9 @@ Inspect both `IssueResult.Success` and `Value.Outcome`: successful handling of
 
 Originating acceptance provenance is preserved. Snapshot-only/fixture identities cannot
 be silently remapped across exports. Missing IDs return `NOT_FOUND`; a future persistent
-memory layer must retain such references as stale. This store does not guess replacements
+memory layer must retain such references as stale. The [project memory primitive](../memory/README.md)
+now provides that persistence/reconciliation layer and durable disposition coordination.
+This runtime issue store does not guess replacements
 or implement disk persistence, stale-memory reconciliation, Gemini tool declarations,
 or visualization. Detection and scanning are provided separately by IssueEngine.
 Import failures remain `LoadDiagnostics`.

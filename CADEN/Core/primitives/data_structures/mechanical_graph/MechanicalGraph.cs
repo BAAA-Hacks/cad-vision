@@ -109,11 +109,11 @@ namespace Core.Primitives.DataStructures.MechanicalGraph
 
     public sealed class MechanicalGraph
     {
-        public string SnapshotId { get; } = Guid.NewGuid().ToString("N");
+        public string SnapshotId { get; }
         public IReadOnlyDictionary<string, ComponentNode> NodesById { get; }
         public IReadOnlyDictionary<string, MateEdge> MatesById { get; }
-        internal MechanicalGraph(Dictionary<string, ComponentNode> nodes, Dictionary<string, MateEdge> mates)
-        { NodesById = new ReadOnlyDictionary<string, ComponentNode>(nodes); MatesById = new ReadOnlyDictionary<string, MateEdge>(mates); }
+        internal MechanicalGraph(Dictionary<string, ComponentNode> nodes, Dictionary<string, MateEdge> mates, string? snapshotId = null)
+        { SnapshotId = snapshotId ?? Guid.NewGuid().ToString("N"); NodesById = new ReadOnlyDictionary<string, ComponentNode>(nodes); MatesById = new ReadOnlyDictionary<string, MateEdge>(mates); }
     }
 
     public sealed class GraphBuildResult

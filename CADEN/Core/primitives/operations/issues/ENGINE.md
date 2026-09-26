@@ -134,12 +134,14 @@ finding; source fields/provenance remain accessible through that canonical snaps
 
 ## Scope boundaries
 
-This milestone supports single object-occurrence or mate subjects. Their project,
-snapshot and occurrence identity bind the context; it does not implement cross-configuration
-evaluation or assembly-scoped mate-coverage claims. Future connectivity/group checks need
-explicit scoped targets, coverage metadata and structured group keys before being enabled.
+Evaluation addresses use object-occurrence or mate subjects. Mechanical checker registrations
+bind an explicit assembly/configuration scope using a canonical structured-key hash. Pass
+the loaded snapshot to InitialIssueCheckers.CreateEngine(snapshot) to register these checks.
+Island findings are keyed to one deterministic representative, carry all affected IDs and
+evaluate the whole scope; singleton islands are supported. See the
+[mechanical contract](../../../tools/MECHANICAL_CONTRACT.md) for eligibility and coverage.
 
-Mate/dangling/suppression detection, connectivity, unavailable-material extraction checks,
+Mate/dangling/suppression detection, unavailable-material extraction checks,
 physical-value classification, density/unit comparisons, repeated-part checks, persistence,
 and automatic host/chat integration remain deferred. The initial precedence policy contains
 only the two supported groups; add further groups together with their checker contracts.

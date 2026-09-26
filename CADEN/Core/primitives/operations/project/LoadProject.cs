@@ -90,12 +90,20 @@ namespace Core.Primitives.Operations.Project
                 components.Add(pair.Key, new ComponentMetadata(pair.Key, (string)o["name"]!, (string)o["type"]!, o, values));
             }
             var hierarchy = ValidateHierarchy(project, records, diagnostics);
-            // Graph validation reuses the parsed snapshot. Graph projection migration is a later milestone.
+            // Validate topology once, then build explicit assembly/configuration projections.
             var graphState = options.MateExportState == CapabilityState.Available ? GraphDataState.Available : options.MateExportState == CapabilityState.Invalid ? GraphDataState.Invalid : GraphDataState.Unavailable;
-            var graphResult = BuildMechanicalGraph.BuildParsed(doc, graphState);
+            if (doc["mechanicalScopes"] is JArray declaredScopes && graphState != GraphDataState.Invalid &&
+                declaredScopes.OfType<JObject>().Any(s => s["mateCoverage"]?.Type == JTokenType.String && ((string?)s["mateCoverage"] == "Complete" || (string?)s["mateCoverage"] == "Partial"))) graphState = GraphDataState.Available;
+            var graphResult = BuildMechanicalGraph.BuildParsed(doc, graphState, snapshotId);
             foreach (var d in graphResult.Errors) diagnostics.Add(new LoadDiagnostic(d.Code, d.Path, d.Message, DiagnosticScope.MechanicalGraph, true));
             foreach (var d in graphResult.Warnings) diagnostics.Add(new LoadDiagnostic(d.Code, d.Path, d.Message, DiagnosticScope.MechanicalGraph, false));
             var graphCapability = graphResult.State == GraphDataState.Available ? CapabilityState.Available : graphResult.State == GraphDataState.Invalid ? CapabilityState.Invalid : CapabilityState.Unavailable;
+            var scopeDiagnostics = new List<GraphDiagnostic>();
+            var mechanicalScopes = LoadMechanicalScopes.Load(doc, graphResult, scopeDiagnostics, snapshotId);
+            foreach (var d in scopeDiagnostics) diagnostics.Add(new LoadDiagnostic(d.Code, d.Path, d.Message, DiagnosticScope.MechanicalGraph, true));
+            if (doc["mechanicalScopes"] != null)
+                graphCapability = mechanicalScopes.Any(s => s.State == GraphDataState.Available) ? CapabilityState.Available
+                    : scopeDiagnostics.Count > 0 || mechanicalScopes.Any(s => s.State == GraphDataState.Invalid) || graphResult.State == GraphDataState.Invalid ? CapabilityState.Invalid : CapabilityState.Unavailable;
             var mates = new Dictionary<string, MateMetadata>(StringComparer.Ordinal);
             if (graphCapability != CapabilityState.Invalid && !fixture && doc["mates"] is JArray mateRecords)
                 for (int i = 0; i < mateRecords.Count; i++)
@@ -108,7 +116,7 @@ namespace Core.Primitives.Operations.Project
             if (project["revisionId"] != null && project["revisionId"]!.Type != JTokenType.Null && revision == null)
                 diagnostics.Add(new LoadDiagnostic("INVALID_REVISION", "/project/revisionId", "Revision label is malformed; content-derived SnapshotId remains authoritative.", DiagnosticScope.Project, false));
             var snapshot = new ProjectSnapshot(doc, projectId, snapshotId, (string)project["name"]!, revision, fixture, identity,
-                new ProjectCapabilities(hierarchy, graphCapability), components, mates, diagnostics);
+                new ProjectCapabilities(hierarchy, graphCapability), components, mates, diagnostics, mechanicalScopes);
             return new ProjectLoadResult(snapshot, diagnostics);
         }
 

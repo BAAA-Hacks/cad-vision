@@ -25,18 +25,19 @@ namespace Core.Primitives.Operations.MechanicalGraph
             new List<GraphDiagnostic> { new GraphDiagnostic(code, path, message) }, new List<GraphDiagnostic>());
 
         // Reuse validation on the canonical loader's parsed document without reparsing JSON.
-        internal static GraphBuildResult BuildParsed(JObject document, GraphDataState state) => new Builder(document, state).Run();
+        internal static GraphBuildResult BuildParsed(JObject document, GraphDataState state, string? snapshotId = null) => new Builder(document, state, snapshotId).Run();
 
         private sealed class Builder
         {
             private readonly JObject doc;
             private readonly GraphDataState state;
+            private readonly string? snapshotId;
             private readonly List<GraphDiagnostic> errors = new List<GraphDiagnostic>();
             private readonly List<GraphDiagnostic> warnings = new List<GraphDiagnostic>();
             private readonly Dictionary<string, ComponentNode> nodes = new Dictionary<string, ComponentNode>(StringComparer.Ordinal);
             private readonly Dictionary<string, MateEdge> mates = new Dictionary<string, MateEdge>(StringComparer.Ordinal);
             private bool fixture;
-            public Builder(JObject doc, GraphDataState state) { this.doc = doc; this.state = state; }
+            public Builder(JObject doc, GraphDataState state, string? snapshotId = null) { this.doc = doc; this.state = state; this.snapshotId = snapshotId; }
             private void Error(string code, string path, string message) => errors.Add(new GraphDiagnostic(code, path, message));
             private void Warn(string path, string message) => warnings.Add(new GraphDiagnostic("INVALID_PROPERTY", path, message));
             private static string? String(JToken? token) => token?.Type == JTokenType.String && !string.IsNullOrWhiteSpace((string?)token) ? (string?)token : null;
@@ -176,11 +177,11 @@ namespace Core.Primitives.Operations.MechanicalGraph
                 if (errors.Count > 0) return new GraphBuildResult(GraphDataState.Invalid, null, errors, warnings);
                 if (fixture || state != GraphDataState.Available)
                 {
-                    warnings.Add(new GraphDiagnostic("MATE_DATA_UNAVAILABLE", "/mates", fixture ? "Synthetic fixture does not establish mate relationships." : "Mate extraction has not been confirmed complete."));
+                    warnings.Add(new GraphDiagnostic("MATE_DATA_UNAVAILABLE", "/mates", fixture ? "Synthetic fixture does not establish mate relationships." : "Mate extraction availability has not been established."));
                     return new GraphBuildResult(GraphDataState.Unavailable, null, errors, warnings);
                 }
                 foreach (var edge in mates.Values) { nodes[edge.ObjectAId].Attach(edge); nodes[edge.ObjectBId].Attach(edge); }
-                return new GraphBuildResult(GraphDataState.Available, new DataStructures.MechanicalGraph.MechanicalGraph(nodes, mates), errors, warnings);
+                return new GraphBuildResult(GraphDataState.Available, new DataStructures.MechanicalGraph.MechanicalGraph(nodes, mates, snapshotId), errors, warnings);
             }
         }
     }

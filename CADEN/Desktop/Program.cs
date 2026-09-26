@@ -118,7 +118,8 @@ internal sealed class ChatWindow : Form
             var settings = LocalConfiguration.Load(directory);
             string? nextPath = replacementPath ?? metadataPath;
             var metadata = nextPath == null ? null : ReadMetadata(nextPath);
-            var nextClient = new GeminiClient(http, settings, SemanticQueryTools.Create(metadata));
+            var association = ProjectAssociationFile.LoadOrCreate(directory);
+            var nextClient = new GeminiClient(http, settings, SemanticQueryTools.Create(metadata, association));
             transcript.Clear(); error.Clear(); input.Clear(); failedPrompt = null; retry.Enabled = false;
             metadataPath = nextPath; gemini = nextClient; currentSnapshot = metadata;
             session = new ChatSession(gemini);
