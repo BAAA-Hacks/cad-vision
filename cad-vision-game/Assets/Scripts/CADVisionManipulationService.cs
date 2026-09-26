@@ -646,6 +646,22 @@ public class CADVisionManipulationService : MonoBehaviour
             cadObject.transform.SetPositionAndRotation(position, rotation);
     }
 
+    // Scale the selected hierarchy while preserving a chosen world-space pivot.
+    // This also compensates for CAD origins located far outside the visible geometry.
+    public void SetObjectScaleAroundPoint(string id, Vector3 localScale,
+        Vector3 pivotLocal, Vector3 pivotWorld)
+    {
+        if (!float.IsFinite(localScale.x) || !float.IsFinite(localScale.y) ||
+            !float.IsFinite(localScale.z) || localScale.x == 0f ||
+            localScale.y == 0f || localScale.z == 0f)
+            return;
+        if (!TryGetObject(id, out CADObject cadObject)) return;
+
+        Transform target = cadObject.transform;
+        target.localScale = localScale;
+        target.position += pivotWorld - target.TransformPoint(pivotLocal);
+    }
+
     public void ResetObject(string id)
     {
         if (TryGetObject(id, out CADObject cadObject))
