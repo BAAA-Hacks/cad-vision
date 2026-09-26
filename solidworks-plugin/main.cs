@@ -39,6 +39,7 @@ namespace CADVision.SolidWorks
         public List<string> notices = new List<string>();
         public string mappingStatus = "not_correlated_to_glb";
         public string coordinateSystem = "SolidWorks root assembly; SI; inertia about center of mass aligned with root axes";
+        public string valuePolicy = "Prefer authoritative SolidWorks API values; only normalize representation or derive unavailable fields with explicit provenance.";
 
         // Check IDs, parent/child links, tree connectivity, and mate targets.
         // This validates the exported structure, not the correctness of the CAD design.
@@ -104,6 +105,8 @@ namespace CADVision.SolidWorks
         public Material material = new Material();
         public Material documentMaterial;
         public double? mass, volume;
+        public double? effectiveDensity;
+        public string effectiveDensitySource, partNumberSource;
         public double[] centerOfMass, transform;
         public Inertia inertia;
         public string definitionStatus = "unknown";
@@ -361,6 +364,7 @@ namespace CADVision.SolidWorks
                     MetadataMath.ReadPhysicalFields(o, () => mass.Mass, () => mass.Volume,
                         () => mass.CenterOfMass as double[], () => mass.GetMomentOfInertia(where) as double[],
                         (field, read) => Try(o.id, "IMassProperty2." + field, read));
+                    Try(o.id, "IMassProperty2.Density", () => SetNativeDensity(o, mass.Density, "IMassProperty2.Density"));
                 }
                 catch (COMException e) { throw new InvalidOperationException(stage + " failed (0x" + e.ErrorCode.ToString("X8") + "): " + e.Message, e); }
             });
@@ -368,7 +372,7 @@ namespace CADVision.SolidWorks
             // The older supported API can recover part-body calculations when the newer
             // COM object fails. Restrict fallback to standalone parts: AddBodies has
             // different assembly semantics and must not select the whole assembly by mistake.
-            if (MetadataMath.PhysicalStatus(o) != "complete" && model.GetType() == (int)swDocumentTypes_e.swDocPART)
+            if ((MetadataMath.PhysicalStatus(o) != "complete" || o.effectiveDensity == null) && model.GetType() == (int)swDocumentTypes_e.swDocPART)
             {
                 o.extractionStatus["massPropertiesMethod"] = "IMassProperty2_then_IMassProperty_fallback";
                 stage = "CreateMassProperty";
@@ -383,6 +387,7 @@ namespace CADVision.SolidWorks
                         MetadataMath.ReadPhysicalFields(o, () => legacy.Mass, () => legacy.Volume,
                             () => legacy.CenterOfMass as double[], () => legacy.GetMomentOfInertia(where) as double[],
                             (field, read) => Try(o.id, "IMassProperty." + field, read));
+                        if (o.effectiveDensity == null) Try(o.id, "IMassProperty.Density", () => SetNativeDensity(o, legacy.Density, "IMassProperty.Density"));
                     }
                     catch (COMException e) { throw new InvalidOperationException(stage + " failed (0x" + e.ErrorCode.ToString("X8") + "): " + e.Message, e); }
                 });
@@ -402,7 +407,7 @@ namespace CADVision.SolidWorks
             foreach (var p in o.documentProperties) o.customProperties[p.Key] = p.Value;
             foreach (var p in o.configurationProperties) o.customProperties[p.Key] = p.Value;
             string value;
-            if (o.customProperties.TryGetValue("PartNumber", out value) || o.customProperties.TryGetValue("Part Number", out value)) o.partNumber = value;
+            if (o.customProperties.TryGetValue("PartNumber", out value) || o.customProperties.TryGetValue("Part Number", out value)) { o.partNumber = value; o.partNumberSource = "custom_property_fallback"; }
             if (o.customProperties.TryGetValue("Description", out value)) o.description = value;
             Try(o.id, "BOM source", () => ReadBomSource(doc, o));
         }
@@ -656,6 +661,51 @@ namespace CADVision.SolidWorks
 
     public sealed partial class Extractor
     {
+        public static void SetBomValue(CadObject o, string value, string source)
+        {
+            if (String.IsNullOrWhiteSpace(value)) return;
+            o.partNumber = value; o.partNumberSource = source;
+        }
+        public static void SetNativeDensity(CadObject o, double value, string source)
+        {
+            if (!MetadataMath.Finite(value) || value <= 0) throw new InvalidDataException("Native density is invalid.");
+            o.effectiveDensity = value; o.effectiveDensitySource = source;
+        }
+        // Let SolidWorks apply its own transform convention and vector normalization.
+        // We still derive an axis direction from its two native endpoints because that
+        // API returns endpoints, not a ready-made direction vector.
+        private double[] NativeTransform(double[] values, double[] transform, bool direction)
+        {
+            if (values == null || values.Length != 3 || values.Any(v => !Finite(v))) throw new InvalidDataException("Invalid native coordinate input.");
+            var math = application.GetMathUtility() as MathUtility;
+            if (math == null) throw new InvalidOperationException("SolidWorks MathUtility unavailable.");
+            MathTransform nativeTransform = null;
+            if (transform != null)
+            {
+                nativeTransform = math.CreateTransform(transform) as MathTransform;
+                if (nativeTransform == null) throw new InvalidDataException("SolidWorks rejected the transform.");
+            }
+            double[] output;
+            if (direction)
+            {
+                var vector = math.CreateVector(values) as MathVector;
+                if (vector == null) throw new InvalidDataException("SolidWorks rejected the vector.");
+                if (nativeTransform != null) vector = vector.MultiplyTransform(nativeTransform) as MathVector;
+                if (vector == null) throw new InvalidDataException("Native vector transform failed.");
+                vector = vector.Normalise();
+                output = vector == null ? null : vector.ArrayData as double[];
+            }
+            else
+            {
+                var point = math.CreatePoint(values) as MathPoint;
+                if (point == null) throw new InvalidDataException("SolidWorks rejected the point.");
+                if (nativeTransform != null) point = point.MultiplyTransform(nativeTransform) as MathPoint;
+                output = point == null ? null : point.ArrayData as double[];
+            }
+            if (output == null || output.Length != 3 || output.Any(v => !Finite(v)) || (direction && output.All(v => v == 0)))
+                throw new InvalidDataException("Native coordinate conversion returned invalid data.");
+            return output;
+        }
         private readonly Dictionary<string, XDocument> materialDatabases = new Dictionary<string, XDocument>(StringComparer.OrdinalIgnoreCase);
 
         // Reference features are read from their source document, then transformed
@@ -780,8 +830,8 @@ namespace CADVision.SolidWorks
                 var a = ((RefAxis)specific).GetRefAxisParams() as double[];
                 if (a == null || a.Length != 6) throw new InvalidDataException("Invalid reference axis.");
                 o.referenceGeometry.axes.Add(new AxisRecord { id = id, name = f.Name,
-                    origin = MetadataMath.Transform(a.Take(3).ToArray(), t, false),
-                    direction = MetadataMath.Transform(new[] { a[3]-a[0], a[4]-a[1], a[5]-a[2] }, t, true) });
+                    origin = NativeTransform(a.Take(3).ToArray(), t, false),
+                    direction = NativeTransform(new[] { a[3]-a[0], a[4]-a[1], a[5]-a[2] }, t, true) });
             }
             else if (specific is RefPlane)
             {
@@ -789,14 +839,14 @@ namespace CADVision.SolidWorks
                 if (planeTransform == null) throw new InvalidDataException("Reference plane transform unavailable.");
                 var p = planeTransform.ArrayData as double[];
                 o.referenceGeometry.planes.Add(new PlaneRecord { id = id, name = f.Name,
-                    origin = MetadataMath.Transform(MetadataMath.Transform(new double[] {0,0,0}, p, false), t, false),
-                    normal = MetadataMath.Transform(MetadataMath.Transform(new double[] {0,0,1}, p, true), t, true) });
+                    origin = NativeTransform(NativeTransform(new double[] {0,0,0}, p, false), t, false),
+                    normal = NativeTransform(NativeTransform(new double[] {0,0,1}, p, true), t, true) });
             }
             else if (specific is RefPoint)
             {
                 var point = ((RefPoint)specific).GetRefPoint();
                 if (point == null) throw new InvalidDataException("Reference point unavailable.");
-                o.referenceGeometry.points.Add(new PointRecord { id = id, name = f.Name, position = MetadataMath.Transform(point.ArrayData as double[], t, false) });
+                o.referenceGeometry.points.Add(new PointRecord { id = id, name = f.Name, position = NativeTransform(point.ArrayData as double[], t, false) });
             }
             else throw new InvalidDataException("Unsupported reference feature interface.");
         }
@@ -839,13 +889,13 @@ namespace CADVision.SolidWorks
             }
             return "unknown";
         }
-        private static double[] ReadMateAxis(MateEntity2 entity, Component2 owner)
+        private double[] ReadMateAxis(MateEntity2 entity, Component2 owner)
         {
             // This helper is called only for supported mate/reference combinations.
             // Avoid treating selection-type enum values as mate-geometry enum values.
             var p = entity.EntityParams as double[];
             if (p == null || p.Length < 6) return null;
-            return MetadataMath.Transform(p.Skip(3).Take(3).ToArray(), ComponentTransform(owner), true);
+            return NativeTransform(p.Skip(3).Take(3).ToArray(), ComponentTransform(owner), true);
         }
         private static MateLimits ReadLimits(Feature f, int type)
         {
@@ -865,21 +915,21 @@ namespace CADVision.SolidWorks
         }
 
         // BOM configuration settings are distinct from an arbitrary custom PartNumber.
-        // Prefer the explicitly stored custom value; otherwise honor the native BOM rule.
+        // Honor native BOM settings first. Custom properties are retained as fallback
+        // only if the native configuration does not provide a usable part number.
         private static void ReadBomSource(ModelDoc2 doc, CadObject o)
         {
             var config = doc.GetConfigurationByName(o.configuration) as Configuration;
             if (config == null) return;
             if (String.IsNullOrEmpty(o.description)) o.description = String.IsNullOrEmpty(config.Description) ? null : config.Description;
-            if (!String.IsNullOrEmpty(o.partNumber)) return;
             var seen = new HashSet<string>(StringComparer.Ordinal);
             while (config != null && seen.Add(config.Name))
             {
                 switch ((swBOMPartNumberSource_e)config.BOMPartNoSource)
                 {
-                    case swBOMPartNumberSource_e.swBOMPartNumber_DocumentName: o.partNumber = Path.GetFileNameWithoutExtension(doc.GetPathName()); return;
-                    case swBOMPartNumberSource_e.swBOMPartNumber_ConfigurationName: o.partNumber = config.Name; return;
-                    case swBOMPartNumberSource_e.swBOMPartNumber_UserSpecified: o.partNumber = config.AlternateName; return;
+                    case swBOMPartNumberSource_e.swBOMPartNumber_DocumentName: SetBomValue(o, Path.GetFileNameWithoutExtension(doc.GetPathName()), "IConfiguration.BOMPartNoSource:document_name"); return;
+                    case swBOMPartNumberSource_e.swBOMPartNumber_ConfigurationName: SetBomValue(o, config.Name, "IConfiguration.BOMPartNoSource:configuration_name"); return;
+                    case swBOMPartNumberSource_e.swBOMPartNumber_UserSpecified: SetBomValue(o, config.AlternateName, "IConfiguration.AlternateName"); return;
                     case swBOMPartNumberSource_e.swBOMPartNumber_ParentName: config = config.GetParent() as Configuration; break;
                     default: return;
                 }
@@ -1028,6 +1078,7 @@ namespace CADVision.SolidWorks
         }
     }
 }
+
 namespace CADVision.SolidWorks
 {
     // PART 4: CONSOLE RUNNER
