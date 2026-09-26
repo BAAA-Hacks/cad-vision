@@ -171,7 +171,11 @@ PlayerSettings:
   androidMaxAspectRatio: 2.4
   androidMinAspectRatio: 1
   applicationIdentifier:
+<<<<<<< HEAD
     Android: com.cadvision.receivertest
+=======
+    Android: com.DefaultCompany.cadvisiongame
+>>>>>>> 1f3d8905d91cc10913465c0ec988da3765c3e13f
   buildNumber:
     Standalone: 0
     VisionOS: 0

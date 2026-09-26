@@ -4,7 +4,10 @@
 EditorBuildSettings:
   m_ObjectHideFlags: 0
   serializedVersion: 2
-  m_Scenes: []
+  m_Scenes:
+  - enabled: 1
+    path: Assets/Scenes/ManipulationTest.unity
+    guid: 2901ceef072bb8049b9752b01eecb643
   m_configObjects:
     com.unity.xr.management.loader_settings: {fileID: 11400000, guid: bc496a8ddf9f120429acdf19843ebe61, type: 2}
     com.unity.xr.openxr.settings4: {fileID: 11400000, guid: 9b674107aadce984da9942a70a089594, type: 2}
