@@ -1513,12 +1513,20 @@ namespace CADVision.SolidWorks
 
     public static class ExportPipeline
     {
-        public static Metadata Export(SldWorks app, string directory, ExtractionOptions options, Action<string> progress, string existingGlb = null)
+        public static Metadata Export(SldWorks app, string directory, ExtractionOptions options, Action<string> progress, string existingGlb = null, string nativeGlbPath = null)
         {
             string destination = Path.GetFullPath(directory);
             if (Directory.Exists(destination) || File.Exists(destination))
                 throw new IOException("Choose a new export directory; existing exports are never overwritten.");
             if (existingGlb != null) GlbExporter.CheckContainer(existingGlb);
+            if (nativeGlbPath != null)
+            {
+                nativeGlbPath = Path.GetFullPath(nativeGlbPath);
+                if (existingGlb != null || !String.Equals(Path.GetExtension(nativeGlbPath), ".glb", StringComparison.OrdinalIgnoreCase))
+                    throw new ArgumentException("Native test path must end in .GLB and cannot use a supplied GLB.");
+                if (File.Exists(nativeGlbPath) || Directory.Exists(nativeGlbPath)) throw new IOException("Refusing to overwrite " + nativeGlbPath);
+                Directory.CreateDirectory(Path.GetDirectoryName(nativeGlbPath));
+            }
             var model = app.ActiveDoc as ModelDoc2;
             if (model == null) throw new InvalidOperationException("Open a saved part or assembly in SolidWorks.");
             string source = model.GetPathName();
@@ -1556,7 +1564,11 @@ namespace CADVision.SolidWorks
                 if (existingGlb == null)
                 {
                     if (progress != null) progress("Metadata ready. Exporting native model.glb...");
-                    warnings = GlbExporter.Export(app, model, glbPath);
+                    // Test the exact short path, without the staging-directory suffix.
+                    string nativeTarget = nativeGlbPath ?? glbPath;
+                    if (progress != null) progress("Native GLB target: " + nativeTarget);
+                    warnings = GlbExporter.Export(app, model, nativeTarget);
+                    if (nativeGlbPath != null) CopySuppliedGlb(nativeTarget, glbPath);
                 }
                 else
                 {
@@ -1819,7 +1831,7 @@ namespace CADVision.SolidWorks
                 Console.WriteLine("Keep the active SolidWorks model unchanged until export completes.");
                 if (command.Glb == null) Console.WriteLine("Native export follows the recorded macro; SolidWorks may show export options. No mouse or keyboard automation is used.");
                 var metadata = ExportPipeline.Export(app, folder,
-                    new ExtractionOptions { RunInterferenceDetection = !command.SkipInterferences }, progress, command.Glb);
+                    new ExtractionOptions { RunInterferenceDetection = !command.SkipInterferences }, progress, command.Glb, command.NativeGlbPath);
                 Console.WriteLine("Exported model.glb + metadata.json to " + Path.GetFullPath(folder));
                 Console.WriteLine(metadata.objects.Count + " objects; " + metadata.mates.Count + " mates; " + clock.Elapsed.TotalSeconds.ToString("F1") + " seconds.");
                 PrintMapping(metadata);
@@ -1868,7 +1880,7 @@ namespace CADVision.SolidWorks
     // CLI parsing has no SolidWorks dependency. No model/source-file path is required.
     public sealed class ExportCommand
     {
-        public string Directory, Shipper, Glb, MapPair;
+        public string Directory, Shipper, Glb, MapPair, NativeGlbPath;
         public bool SkipInterferences, ProbeNativeGlb;
         public static ExportCommand Parse(string[] args)
         {
@@ -1879,6 +1891,8 @@ namespace CADVision.SolidWorks
                 else if (args[i] == "--probe-native-glb" && !result.ProbeNativeGlb) result.ProbeNativeGlb = true;
                 else if (args[i] == "--map-pair" && result.MapPair == null && i+1 < args.Length && !args[i+1].StartsWith("--"))
                     result.MapPair = Path.GetFullPath(args[++i]);
+                else if (args[i] == "--native-glb-path" && result.NativeGlbPath == null && i+1 < args.Length && !args[i+1].StartsWith("--"))
+                    result.NativeGlbPath = Path.GetFullPath(args[++i]);
                 else if (args[i] == "--glb" && result.Glb == null && i+1 < args.Length && !args[i+1].StartsWith("--"))
                     result.Glb = Path.GetFullPath(args[++i]);
                 else if (args[i] == "--shipper" && result.Shipper == null && i+1 < args.Length && !args[i+1].StartsWith("--"))
@@ -1889,6 +1903,8 @@ namespace CADVision.SolidWorks
             if (result.MapPair != null && (result.Glb != null || result.Shipper != null || result.SkipInterferences)) throw new ArgumentException("--map-pair is an offline-only mode; do not combine it with CAD export/shipper options.");
             if (result.ProbeNativeGlb && (result.MapPair != null || result.Glb != null || result.Shipper != null || result.SkipInterferences))
                 throw new ArgumentException("--probe-native-glb cannot be combined with other modes.");
+            if (result.NativeGlbPath != null && (result.Glb != null || result.MapPair != null || result.ProbeNativeGlb))
+                throw new ArgumentException("--native-glb-path is only for native paired export.");
             return result;
         }
     }
