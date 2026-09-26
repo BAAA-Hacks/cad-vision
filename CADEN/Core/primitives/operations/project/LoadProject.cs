@@ -14,6 +14,7 @@ namespace Core.Primitives.Operations.Project
 {
     public sealed class ProjectLoadOptions
     {
+        public PrecomputeOptions Precompute { get; set; } = new PrecomputeOptions();
         public CapabilityState MateExportState { get; set; } = CapabilityState.Unavailable;
         // The host must establish this guarantee; never infer stability from matching ID strings.
         public bool ComponentIdsStableAcrossSnapshots { get; set; }
@@ -26,6 +27,7 @@ namespace Core.Primitives.Operations.Project
             options ??= new ProjectLoadOptions();
             var diagnostics = new List<LoadDiagnostic>();
             void Fatal(string code, string path, string message) => diagnostics.Add(new LoadDiagnostic(code, path, message, DiagnosticScope.Project, true, true));
+            if (options.Precompute == null || options.Precompute.MaxScopeMemberships < 0 || options.Precompute.OptionalStartupMilliseconds < 0 || options.Precompute.MaxDtoCacheCharacters < 0) Fatal("INVALID_OPTIONS", "", "Precompute budgets must be non-negative.");
             if (!Enum.IsDefined(typeof(CapabilityState), options.MateExportState)) Fatal("INVALID_OPTIONS", "", "Unknown mate export state.");
             if (json == null || Encoding.UTF8.GetByteCount(json) > 10000000) Fatal("INVALID_JSON", "", "Expected at most 10 MB of UTF-8 metadata.");
             if (diagnostics.Count > 0) return new ProjectLoadResult(null, diagnostics);
@@ -118,7 +120,7 @@ namespace Core.Primitives.Operations.Project
             if (project["revisionId"] != null && project["revisionId"]!.Type != JTokenType.Null && revision == null)
                 diagnostics.Add(new LoadDiagnostic("INVALID_REVISION", "/project/revisionId", "Revision label is malformed; content-derived SnapshotId remains authoritative.", DiagnosticScope.Project, false));
             var snapshot = new ProjectSnapshot(doc, projectId, snapshotId, (string)project["name"]!, revision, fixture, identity,
-                new ProjectCapabilities(hierarchy, graphCapability), components, mates, diagnostics, mechanicalScopes);
+                new ProjectCapabilities(hierarchy, graphCapability), components, mates, diagnostics, mechanicalScopes, options.Precompute!);
             return new ProjectLoadResult(snapshot, diagnostics);
         }
 

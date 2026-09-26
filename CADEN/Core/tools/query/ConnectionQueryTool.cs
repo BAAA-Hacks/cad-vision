@@ -38,17 +38,10 @@ namespace Core.Tools.Query
             if (byId == (args["query"] != null)) throw new ToolInputException("INVALID_ARGUMENT", "Supply exactly one of query or objectId.");
             string? query = (string?)args["query"], otherQuery = (string?)args["otherQuery"];
             if (query != null && string.IsNullOrWhiteSpace(query) || otherQuery != null && string.IsNullOrWhiteSpace(otherQuery)) throw new ToolInputException("INVALID_ARGUMENT", "Search text must contain a word.");
-            var raw = s.ComponentsById.ToDictionary(p => p.Key, p => p.Value.CopyRawRecord(), StringComparer.Ordinal);
-            string? Parent(string id) => (string?)raw[id]["parentId"];
-            IEnumerable<string> Ancestors(string id) { for (string? p = Parent(id); p != null; p = Parent(p)) yield return p; }
-            HashSet<string> Expand(string id)
-            {
-                var found = new HashSet<string>(StringComparer.Ordinal); var queue = new Queue<string>(); queue.Enqueue(id);
-                while (queue.Count > 0) { token.ThrowIfCancellationRequested(); var current = queue.Dequeue(); if (!found.Add(current)) continue; foreach (var child in (JArray)raw[current]["childIds"]!) queue.Enqueue((string)child!); }
-                return found;
-            }
-            bool Matches(ComponentMetadata c, string text) => text.Trim().Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
-                .All(word => (c.Id + " " + c.Name).IndexOf(word, StringComparison.OrdinalIgnoreCase) >= 0);
+            string? Parent(string id) => s.Indexes.Parent(id);
+            IEnumerable<string> Ancestors(string id) => s.Indexes.Ancestors(id);
+            HashSet<string> Expand(string id) => new HashSet<string>(s.Indexes.Scope(id, token), StringComparer.Ordinal);
+            bool Matches(ComponentMetadata c, string text) => s.Indexes.Matches(c.Id, text.Trim().Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries));
             ComponentMetadata[] Discover(string text, bool primary)
             {
                 var matches = s.ComponentsById.Values.Where(c => (!primary || scope == null || scope.Includes(c.Id)) && Matches(c, text)).ToArray();
@@ -96,7 +89,7 @@ namespace Core.Tools.Query
             bool? Suppressed(string id) { if (!suppressed.TryGetValue(id, out var v)) { v = Suppression(id); suppressed.Add(id, v); } return v; }
             var matchesByMate = new Dictionary<string, List<(string Candidate, string Relation, bool Hint)>>(StringComparer.Ordinal);
             var incidentIds = new HashSet<string>(StringComparer.Ordinal); int excludedSuppressed = 0, unknownSuppression = 0;
-            foreach (var mate in s.MatesById.Values.OrderBy(m => m.Id, StringComparer.Ordinal))
+            foreach (var mate in s.Indexes.Incident(memberships.Values.SelectMany(v => v)).OrderBy(id => id, StringComparer.Ordinal).Select(id => s.MatesById[id]))
             {
                 token.ThrowIfCancellationRequested(); var matched = new List<(string Candidate, string Relation, bool Hint)>();
                 foreach (var c in candidates)

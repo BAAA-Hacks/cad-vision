@@ -30,7 +30,7 @@ namespace Core.Tools.Query
             if (!(args["objectIds"] is JArray) && activeScope == null) throw new ToolInputException("INVALID_ARGUMENT", "objectIds is required without active scope.");
             var ids = args["objectIds"] is JArray requested ? requested.Select(v => (string)v!).ToHashSet(StringComparer.Ordinal) : activeScope!.ObjectIds.ToHashSet(StringComparer.Ordinal);
             foreach (var id in ids) if (!s.ComponentsById.ContainsKey(id)) throw new ToolInputException("UNKNOWN_OBJECT_ID", "Unknown object: " + id);
-            var matches = s.MatesById.Values.Where(m => ids.Contains(m.ObjectAId) || ids.Contains(m.ObjectBId)).OrderBy(m => m.Id, StringComparer.Ordinal).ToArray();
+            var matches = s.Indexes.Incident(ids).Select(id => s.MatesById[id]).OrderBy(m => m.Id, StringComparer.Ordinal).ToArray();
             bool? Suppressed(MateMetadata m) { var value = m.CopyRawRecord()["suppressed"]; return value?.Type == JTokenType.Boolean ? (bool?)value : null; }
             var visible = matches.Where(m => (bool?)args["includeSuppressed"] == true || Suppressed(m) != true).ToArray();
             int limit = (int?)args["limit"] ?? Math.Min(20, limits.MaxResults); args["limit"] = limit;

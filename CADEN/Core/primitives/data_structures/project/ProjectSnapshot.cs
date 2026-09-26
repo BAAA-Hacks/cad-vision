@@ -92,6 +92,7 @@ namespace Core.Primitives.DataStructures.Project
     public sealed class ProjectSnapshot
     {
         private readonly JObject document;
+        public ProjectIndexes Indexes { get; }
         public string ProjectId { get; }
         public string SnapshotId { get; }
         public string Name { get; }
@@ -114,13 +115,15 @@ namespace Core.Primitives.DataStructures.Project
         internal ProjectSnapshot(JObject document, string projectId, string snapshotId, string name, string? revisionId, bool fixture,
             IdentityScope identityScope, ProjectCapabilities capabilities, Dictionary<string, ComponentMetadata> components,
             Dictionary<string, MateMetadata> mates, List<LoadDiagnostic> diagnostics,
-            IReadOnlyList<Core.Primitives.DataStructures.MechanicalGraph.MechanicalScope> mechanicalScopes)
+            IReadOnlyList<Core.Primitives.DataStructures.MechanicalGraph.MechanicalScope> mechanicalScopes, PrecomputeOptions options)
         {
             this.document = (JObject)document.DeepClone(); ProjectId = projectId; SnapshotId = snapshotId; Name = name;
             RevisionId = revisionId; IsFixture = fixture; IdentityScope = identityScope; Capabilities = capabilities;
             ComponentsById = new ReadOnlyDictionary<string, ComponentMetadata>(components);
             MatesById = new ReadOnlyDictionary<string, MateMetadata>(mates); LoadDiagnostics = diagnostics.AsReadOnly();
             MechanicalScopes = mechanicalScopes;
+            Indexes = new ProjectIndexes(this, options);
+            foreach (var scope in mechanicalScopes) if (scope.Graph != null) Core.Primitives.Operations.MechanicalGraph.MechanicalQueries.Prepare(scope.Graph);
         }
     }
 

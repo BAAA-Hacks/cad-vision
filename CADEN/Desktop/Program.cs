@@ -21,6 +21,7 @@ internal static class Program
         DiagnosticLog.Configure(diagnostics.Write, diagnostics.DirectoryPath);
         var tokenUsage = new FileTokenUsage(diagnostics.DirectoryPath);
         TokenUsageLog.Configure(tokenUsage.Write);
+        ToolPerformanceLog.Configure(tokenUsage.WritePerformance);
         Application.ThreadException += (_, e) => MessageBox.Show(DiagnosticLog.Report(e.Exception, "desktop.ui").UserMessage, "CADEN error");
         AppDomain.CurrentDomain.UnhandledException += (_, e) => DiagnosticLog.Report(e.ExceptionObject as Exception ?? new Exception("Unknown unhandled failure."), "desktop.unhandled");
         try

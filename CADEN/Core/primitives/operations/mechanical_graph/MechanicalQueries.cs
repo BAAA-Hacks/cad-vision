@@ -36,6 +36,37 @@ namespace Core.Primitives.Operations.MechanicalGraph
 
     public static class MechanicalQueries
     {
+        private sealed class Index
+        {
+            internal readonly Dictionary<string, MateEdge[]> Adjacent;
+            internal readonly Dictionary<string, int> Component = new Dictionary<string, int>(StringComparer.Ordinal);
+            internal readonly IReadOnlyList<IReadOnlyList<string>> Islands;
+            internal Index(DataStructures.MechanicalGraph.MechanicalGraph graph)
+            {
+                Adjacent = graph.NodesById.Keys.ToDictionary(id => id, id => graph.NodesById[id].Edges.Where(e => Active(e, graph))
+                    .OrderBy(e => e.GetOtherEndpoint(id), StringComparer.Ordinal).ThenBy(e => e.Id, StringComparer.Ordinal).ToArray(), StringComparer.Ordinal);
+                var islands = new List<IReadOnlyList<string>>();
+                foreach (var id in graph.NodesById.Keys.OrderBy(id => id, StringComparer.Ordinal))
+                {
+                    if (graph.NodesById[id].Suppressed != false || Component.ContainsKey(id)) continue;
+                    int number = islands.Count; var queue = new Queue<string>(); var members = new List<string>();
+                    Component.Add(id, number); queue.Enqueue(id);
+                    while (queue.Count > 0)
+                    {
+                        var current = queue.Dequeue(); members.Add(current);
+                        foreach (var edge in Adjacent[current])
+                        { var next = edge.GetOtherEndpoint(current); if (!Component.ContainsKey(next)) { Component.Add(next, number); queue.Enqueue(next); } }
+                    }
+                    members.Sort(StringComparer.Ordinal); islands.Add(members.AsReadOnly());
+                }
+                islands.Sort((a, b) => { int count = b.Count.CompareTo(a.Count); if (count != 0) return count; for (int i = 0; i < a.Count; i++) { int c = StringComparer.Ordinal.Compare(a[i], b[i]); if (c != 0) return c; } return 0; });
+                Islands = islands.AsReadOnly();
+            }
+        }
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<DataStructures.MechanicalGraph.MechanicalGraph, Index> indexes
+            = new System.Runtime.CompilerServices.ConditionalWeakTable<DataStructures.MechanicalGraph.MechanicalGraph, Index>();
+        private static Index GetIndex(DataStructures.MechanicalGraph.MechanicalGraph graph) => indexes.GetValue(graph, g => new Index(g));
+        internal static void Prepare(DataStructures.MechanicalGraph.MechanicalGraph graph) { GetIndex(graph); }
         public static DataStructures.MechanicalGraph.MechanicalGraph RequireGraph(MechanicalScope scope)
         {
             if (scope == null) throw new ArgumentNullException(nameof(scope));
@@ -60,8 +91,8 @@ namespace Core.Primitives.Operations.MechanicalGraph
             if (hops < 0) throw new MechanicalQueryException("INVALID_ARGUMENT", "maxHops must be non-negative.");
             foreach (var id in ids) if (id == null || !graph.NodesById.ContainsKey(id)) throw new MechanicalQueryException("OBJECT_OUTSIDE_SCOPE", "Occurrence is outside explicit mechanical membership: " + id);
         }
-        private static IEnumerable<MateEdge> Adjacent(DataStructures.MechanicalGraph.MechanicalGraph graph, string id, Func<string, bool>? includes = null) => graph.NodesById[id].Edges
-            .Where(e => Active(e, graph) && (includes == null || includes(e.ObjectAId) && includes(e.ObjectBId))).OrderBy(e => e.GetOtherEndpoint(id), StringComparer.Ordinal).ThenBy(e => e.Id, StringComparer.Ordinal);
+        private static IEnumerable<MateEdge> Adjacent(DataStructures.MechanicalGraph.MechanicalGraph graph, string id, Func<string, bool>? includes = null) => GetIndex(graph).Adjacent[id]
+            .Where(e => includes == null || includes(e.ObjectAId) && includes(e.ObjectBId));
 
         public static MechanicalReach Neighborhood(MechanicalScope scope, IEnumerable<string> startIds, int maxHops, CancellationToken token = default, Func<string, bool>? includes = null)
         {
@@ -87,6 +118,9 @@ namespace Core.Primitives.Operations.MechanicalGraph
             MechanicalPath None(MechanicalPathStatus status, bool bounded, string? reason) => new MechanicalPath(status, Array.Empty<string>(), Array.Empty<MateEdge>(), false, bounded, reason);
             if (graph.NodesById[start].Suppressed != false || graph.NodesById[end].Suppressed != false)
                 return None(MechanicalPathStatus.NotEstablished, false, "ENDPOINT_NOT_CONFIRMED_ACTIVE");
+            if (includes == null && maxHops == null && GetIndex(graph).Component[start] != GetIndex(graph).Component[end])
+                return None(Complete(scope) ? MechanicalPathStatus.ConfirmedDisconnected : MechanicalPathStatus.NotEstablished, false,
+                    Complete(scope) ? null : "INCOMPLETE_CONNECTIVITY_EVIDENCE");
             var depths = new Dictionary<string, int>(StringComparer.Ordinal) { [start] = 0 };
             var parent = new Dictionary<string, (string Id, MateEdge Edge)>(StringComparer.Ordinal); var queue = new Queue<string>(); queue.Enqueue(start);
             while (queue.Count > 0)
@@ -114,16 +148,9 @@ namespace Core.Primitives.Operations.MechanicalGraph
         // Ordered reference island first; lexicographic member sequence breaks equal-size ties.
         public static IReadOnlyList<IReadOnlyList<string>> Islands(MechanicalScope scope, CancellationToken token = default)
         {
-            var graph = RequireGraph(scope); var remaining = new SortedSet<string>(graph.NodesById.Values.Where(n => n.Suppressed == false).Select(n => n.Id), StringComparer.Ordinal);
-            var islands = new List<IReadOnlyList<string>>();
-            while (remaining.Count > 0)
-            {
-                token.ThrowIfCancellationRequested(); var members = new List<string>(); var queue = new Queue<string>(); var start = remaining.Min!; remaining.Remove(start); queue.Enqueue(start);
-                while (queue.Count > 0) { token.ThrowIfCancellationRequested(); var id = queue.Dequeue(); members.Add(id); foreach (var edge in Adjacent(graph, id)) { var next = edge.GetOtherEndpoint(id); if (remaining.Remove(next)) queue.Enqueue(next); } }
-                members.Sort(StringComparer.Ordinal); islands.Add(members.AsReadOnly());
-            }
-            islands.Sort((a, b) => { int count = b.Count.CompareTo(a.Count); if (count != 0) return count; for (int i = 0; i < a.Count; i++) { int c = StringComparer.Ordinal.Compare(a[i], b[i]); if (c != 0) return c; } return 0; });
-            return islands.AsReadOnly();
+            token.ThrowIfCancellationRequested();
+            var result = GetIndex(RequireGraph(scope)).Islands;
+            token.ThrowIfCancellationRequested(); return result;
         }
     }
 }

@@ -16,7 +16,7 @@ namespace Core.Tools.Issues
         private readonly QueryCursors cursors;
         public string Name { get; }
         internal IssueReadTool(string name, IssueAccess access, ToolLimits limits, QueryCursors cursors)
-        { Name = name; this.access = access; this.limits = limits; this.cursors = cursors; }
+        { Name = name; this.access = access; this.limits = limits; this.cursors = cursors; summaries = new BoundedJsonCache(access.Snapshot.Indexes.DtoCacheCharacterBudget); }
         private static JObject Text(params string[] values) => values.Length == 0 ? new JObject { ["type"] = "string", ["minLength"] = 1, ["maxLength"] = 512 } : new JObject { ["type"] = "string", ["enum"] = new JArray(values) };
         public JObject Declaration
         {
@@ -57,7 +57,16 @@ namespace Core.Tools.Issues
             }
         }
         public JObject Execute(JObject args) => ExecuteAsync(args, CancellationToken.None).GetAwaiter().GetResult();
-        public virtual Task<JObject> ExecuteAsync(JObject args, CancellationToken token) => access.ReadAsync(store => Read(store, args), token);
+        private readonly BoundedJsonCache summaries;
+        private long summaryRevision = -1;
+        public virtual Task<JObject> ExecuteAsync(JObject args, CancellationToken token) => access.ReadAsync(store =>
+        {
+            if (Name != "get_issue_summary") return Read(store, args);
+            long revision = store.CaptureRevision();
+            if (revision != summaryRevision) { summaries.Clear(); summaryRevision = revision; }
+            string key = args.ToString(Newtonsoft.Json.Formatting.None) + "|" + ScopeContext.From(args)?.RootObjectId;
+            return summaries.Get(key, () => Read(store, args));
+        }, token);
         private JObject Read(IssueStore store, JObject args)
         {
             var view = store.ReadView(); var all = view.Findings;

@@ -5,6 +5,7 @@ using Newtonsoft.Json.Linq;
 using Core.Tools.Query;
 using Core.Primitives.Operations.Project;
 
+if (args.Length == 3 && args[0] == "--benchmark") { await PerformanceBenchmarks.Run(args[1], args[2]); return; }
 if (args.Contains("--assess-orchestration"))
 {
     int start = Array.IndexOf(args, "--assess-orchestration") + 1;
@@ -188,6 +189,7 @@ await OrchestrationChecks.RunAsync();
 await ContextCacheChecks.RunAsync();
 await ActiveScopeChecks.RunAsync();
 await ConnectionQueryChecks.RunAsync();
+await PrecomputeChecks.RunAsync();
 await TokenUsageChecks.RunAsync();
 await MechanicalQueryChecks.RunAsync();
 await Schema21Checks.RunAsync();

@@ -48,15 +48,9 @@ namespace Core.Tools
             if (snapshot == null) throw new ToolInputException("MODEL_NOT_LOADED", "Load metadata first.");
             if (!snapshot.ComponentsById.TryGetValue(id, out var root)) throw new ToolInputException("UNKNOWN_OBJECT_ID", "Resolve an exact object ID before setting scope.");
             if (snapshot.Capabilities.Hierarchy != CapabilityState.Available) throw new ToolInputException("CAPABILITY_UNAVAILABLE", "Valid authoritative hierarchy is required to resolve scope.");
-            var members = new HashSet<string>(StringComparer.Ordinal); var queue = new Queue<string>(); queue.Enqueue(id);
-            while (queue.Count > 0)
-            {
-                token.ThrowIfCancellationRequested(); string current = queue.Dequeue();
-                if (!members.Add(current)) throw new ToolInputException("INVALID_SCOPE_HIERARCHY", "Repeated or cyclic hierarchy reference; previous scope retained.");
-                foreach (var child in (JArray)snapshot.ComponentsById[current].CopyRawRecord()["childIds"]!) queue.Enqueue((string)child!);
-            }
+            var members = snapshot.Indexes.Scope(id, token).ToArray();
             token.ThrowIfCancellationRequested();
-            string type = root.Type != "assembly" ? "Component" : root.CopyRawRecord()["parentId"]?.Type == JTokenType.String ? "Subassembly" : "WholeAssembly";
+            string type = root.Type != "assembly" ? "Component" : snapshot.Indexes.Parent(id) != null ? "Subassembly" : "WholeAssembly";
             Active = new ScopeContext(id, root.Name, type, members, ++revision, project!, snapshot.SnapshotId);
         }
         internal void Bind(string name, JObject args)

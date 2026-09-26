@@ -1,4 +1,6 @@
 using System;
+using System.Diagnostics;
+using System.Text;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -40,6 +42,7 @@ namespace Core.Tools
     {
         public const string ContractVersion = "1.0";
         private readonly Dictionary<string, ICadenTool> tools = new Dictionary<string, ICadenTool>(StringComparer.Ordinal);
+        private readonly Dictionary<string, JObject> schemas = new Dictionary<string, JObject>(StringComparer.Ordinal);
         private readonly ProjectSnapshot? snapshot;
         private readonly bool semantic;
         private readonly ProjectAssociation? association;
@@ -59,9 +62,24 @@ namespace Core.Tools
             this.capabilities = capabilities;
             this.limits = limits ?? new ToolLimits();
             this.snapshot = snapshot; this.semantic = semantic;
-            foreach (var tool in handlers) tools.Add(tool.Name, tool);
+            foreach (var tool in handlers) { tools.Add(tool.Name, tool); schemas.Add(tool.Name, tool.Declaration); }
         }
-        public JArray Declarations => new JArray(tools.Values.Where(t => (capabilities?.IsAvailable(t.Name) ?? true) && (!(t is ICapabilityCadenTool c) || c.Available)).Select(t => t.Declaration.DeepClone()));
+        private readonly object declarationGate = new object();
+        private string? declarationKey;
+        private JArray? declarations;
+        private JArray BuildDeclarations() => new JArray(tools.Values.Where(t => (capabilities?.IsAvailable(t.Name) ?? true) && (!(t is ICapabilityCadenTool c) || c.Available)).Select(t => schemas[t.Name].DeepClone()));
+        public JArray Declarations
+        {
+            get
+            {
+                lock (declarationGate)
+                {
+                    string key = string.Join("|", tools.Values.Where(t => (capabilities?.IsAvailable(t.Name) ?? true) && (!(t is ICapabilityCadenTool c) || c.Available)).Select(t => t.Name));
+                    if (declarations == null || declarationKey != key) { declarations = BuildDeclarations(); declarationKey = key; }
+                    return (JArray)declarations.DeepClone();
+                }
+            }
+        }
         public static JObject Error(string code, string message) => new JObject
         {
             ["contractVersion"] = ContractVersion, ["ok"] = false,
@@ -74,15 +92,42 @@ namespace Core.Tools
         public JObject Execute(string name, JToken? arguments) => ExecuteAsync(name, arguments, CancellationToken.None).GetAwaiter().GetResult();
         public async Task<JObject> ExecuteAsync(string name, JToken? arguments, CancellationToken cancellationToken = default)
         {
-            // Serialize scope changes and queries; a response is labelled with the scope actually used.
+            var timer = Stopwatch.StartNew();
+            bool measure = ToolPerformanceLog.Enabled;
             await scopeGate.WaitAsync().ConfigureAwait(false);
+            double queueMs = timer.Elapsed.TotalMilliseconds;
+            JObject? result = null;
+            var previousProbe = ToolPerformanceLog.Current.Value;
+            var probe = measure ? new ToolPerformanceLog.Probe() : null;
+            ToolPerformanceLog.Current.Value = probe;
             try
             {
-                var result = await ExecuteCoreAsync(name, arguments, cancellationToken).ConfigureAwait(false);
+                result = await ExecuteCoreAsync(name, arguments, cancellationToken).ConfigureAwait(false);
                 if (Scopes != null) { result["scope"] = Scopes.Describe(); result["scopeBehavior"] = (bool?)result["receipt"]?["replayed"] == true ? "historical_receipt_replay_not_reexecuted_in_current_scope" : name == "get_model_summary" ? "global_discovery" : "active_scope_or_original_defaults"; }
                 return result;
             }
-            finally { scopeGate.Release(); }
+            finally
+            {
+                double executeMs = timer.Elapsed.TotalMilliseconds - queueMs;
+                int? scopeCount = Scopes?.Active?.ObjectCount;
+                scopeGate.Release();
+                ToolPerformanceLog.Current.Value = previousProbe;
+                if (measure)
+                {
+                    var serialization = Stopwatch.StartNew();
+                    int bytes = result == null ? 0 : Encoding.UTF8.GetByteCount(result.ToString(Formatting.None));
+                    serialization.Stop();
+                    ToolPerformanceLog.Write(new JObject { ["timestampUtc"] = DateTimeOffset.UtcNow,
+                        ["toolName"] = tools.ContainsKey(name) ? name : "unknown_tool", ["totalDurationMs"] = timer.Elapsed.TotalMilliseconds,
+                        ["queueDurationMs"] = queueMs, ["executionDurationMs"] = executeMs,
+                        ["measurementSerializationDurationMs"] = serialization.Elapsed.TotalMilliseconds,
+                        ["primitiveDurationMs"] = null, ["cacheHit"] = probe!.Hits + probe.Misses == 0 ? (bool?)null : probe.Hits > 0,
+                        ["cacheHits"] = probe.Hits, ["cacheMisses"] = probe.Misses,
+                        ["inputCount"] = arguments is JObject a ? a.Count : 0, ["inputCountUnit"] = "argument_fields",
+                        ["outputCount"] = ((result?["data"] as JObject)?["items"] as JArray)?.Count, ["scopeObjectCount"] = scopeCount,
+                        ["serializedBytes"] = bytes, ["success"] = result?["success"] ?? result?["ok"] });
+                }
+            }
         }
         public void ResetScope() { if (!scopeGate.Wait(0)) throw new InvalidOperationException("Finish active tool calls before resetting scope."); try { Scopes?.Clear(); } finally { scopeGate.Release(); } }
         private async Task<JObject> ExecuteCoreAsync(string name, JToken? arguments, CancellationToken cancellationToken)
@@ -93,7 +138,7 @@ namespace Core.Tools
             try
             {
                 if (args.ToString(Formatting.None).Length > 64000) throw new ToolInputException("INVALID_ARGUMENTS", "Arguments exceed 64,000 characters.");
-                Validate(args, (JObject)tool.Declaration["parameters"]!, "arguments", 0);
+                Validate(args, (JObject)schemas[name]["parameters"]!, "arguments", 0);
                 if (tool is IActionCadenTool && (args["operationId"]?.Type != JTokenType.String || string.IsNullOrWhiteSpace((string?)args["operationId"])))
                     throw new ToolInputException("INVALID_ARGUMENT", "Actions require a non-empty operationId.");
                 if (semantic && snapshot == null && name != "get_model_summary") return Envelope(capabilities?.Failure(name) ?? Error("MODEL_NOT_LOADED", "Load metadata before querying the model."));

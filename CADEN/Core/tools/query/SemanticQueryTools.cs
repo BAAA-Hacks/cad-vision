@@ -47,12 +47,15 @@ namespace Core.Tools.Query
         private readonly ToolLimits limits;
         private readonly IssueAccess? issues;
         private readonly MemoryAccess? memory;
+        private readonly BoundedJsonCache properties;
+        private JObject? summary;
         private ProjectSnapshot Store => snapshot ?? throw new ToolInputException("MODEL_NOT_LOADED", "Load metadata first.");
         public string Name { get; }
         private static readonly string[] Fields = { "name", "type", "parentId", "sourceDocument", "configuration", "partNumber", "description", "suppressed", "fixed", "material", "mass", "volume", "centerOfMass", "inertia", "constraintStatus", "remainingDOF", "dimensions", "referenceGeometry", "customProperties" };
         private static readonly string[] Defaults = { "suppressed", "fixed", "material", "mass", "constraintStatus" };
         public SemanticQueryTool(string name, ProjectSnapshot? snapshot, Dictionary<string, JObject> hierarchy, ProjectAssociation? association, QueryCursors cursors, ToolLimits limits, IssueAccess? issues, MemoryAccess? memory)
         {
+            properties = new BoundedJsonCache(snapshot?.Indexes.DtoCacheCharacterBudget ?? 0);
             Name = name; this.snapshot = snapshot; records = hierarchy; this.association = association; this.cursors = cursors; this.limits = limits; this.issues = issues; this.memory = memory;
         }
         private static JObject String(params string[] values) => values.Length == 0 ? new JObject { ["type"] = "string", ["minLength"] = 1, ["maxLength"] = 512 }
@@ -114,7 +117,8 @@ namespace Core.Tools.Query
         private static JObject Coverage(string status, int evaluated, int unknown) => new JObject { ["status"] = status.ToLowerInvariant(), ["countUnit"] = "objects", ["requestedCount"] = evaluated + unknown,
             ["evaluatedCount"] = evaluated, ["excludedUnknownCount"] = unknown, ["excludedSuppressedCount"] = 0,
             ["reasonCodes"] = unknown > 0 ? new JArray("PROPERTY_VALUE_UNAVAILABLE") : new JArray() };
-        private JObject Summary() => new JObject
+        private JObject Summary() => (JObject)(summary ??= BuildSummary()).DeepClone();
+        private JObject BuildSummary() => new JObject
         {
             ["exportContext"] = Store.CopyExportContext(),
             ["mechanicalScopes"] = new JArray(Store.MechanicalScopes.Select(s => new JObject { ["scopeAssemblyId"] = s.ScopeAssemblyId, ["configuration"] = s.Configuration,
@@ -138,7 +142,8 @@ namespace Core.Tools.Query
             else { result["path"] = null; result["childCount"] = null; }
             return result;
         }
-        private JObject Property(ComponentMetadata c, string field)
+        private JObject Property(ComponentMetadata c, string field) => properties.Get(c.Id + "\\" + field, () => BuildProperty(c, field));
+        private JObject BuildProperty(ComponentMetadata c, string field)
         {
             if (!Fields.Contains(field) && field != "material.name" && field != "material.assigned") throw new ToolInputException("INVALID_ARGUMENTS", "Unknown public property: " + field);
             if (field == "name" || field == "type" || field == "parentId")
@@ -241,7 +246,7 @@ namespace Core.Tools.Query
             foreach (var c in scoped.OrderBy(c => lexical && string.Equals(c.Id, query?.Trim(), StringComparison.OrdinalIgnoreCase) ? 0 : 1).ThenBy(c => c.Name, StringComparer.OrdinalIgnoreCase).ThenBy(c => c.Id, StringComparer.Ordinal))
             {
                 token.ThrowIfCancellationRequested(); bool match;
-                if (lexical) match = words.All(w => (c.Id + " " + c.Name).IndexOf(w, StringComparison.OrdinalIgnoreCase) >= 0);
+                if (lexical) match = Store.Indexes.Matches(c.Id, words);
                 else
                 {
                     var wrapped = Property(c, property!); var actual = wrapped["value"];
