@@ -6,6 +6,10 @@
 # See: https://github.com/github/gitignore/tree/main/Global
 #
 .utmp/
+# Local project documentation
+/CAD_Vision_CADEN_Project_Brief.md
+/CAD_Vision_Task_2_Runtime_Ingestion.md
+
 /[Ll]ibrary/
 /[Tt]emp/
 /[Oo]bj/

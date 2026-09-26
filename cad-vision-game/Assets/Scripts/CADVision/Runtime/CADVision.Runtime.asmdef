@@ -1,0 +1,5 @@
+{
+  "name": "CADVision.Runtime",
+  "rootNamespace": "CADVision",
+  "references": ["glTFast"]
+}
