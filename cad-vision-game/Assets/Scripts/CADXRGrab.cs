@@ -2,17 +2,10 @@ using System.Linq;
 using UnityEngine;
 
 /// <summary>
-/// TEMP debug fallback: right-controller grip grabs the currently selected CAD object;
-/// releasing grip drops it. Normal use is trigger press-and-drag via CADPointerInteraction.
-/// Uses the same CADGrabSession math (rigid pickup, depth-only reach assist), driven by the
-/// right controller anchor. All pose changes go through the service.
-/// Right-controller grip grabs the currently selected CAD object; releasing grip drops it.
-/// Holding both controller grips scales around the selected object's visible center.
-/// Selection stays with the trigger/ray flow. All pose changes go through the service.
-/// Behaves like a conventional VR pickup: the object keeps its grab-start position and
-/// rotation relative to the controller, so it moves and rotates rigidly with the hand.
-/// Beyond reachDistance, only controller movement toward/away from the held point is amplified
-/// (it lengthens or shortens the hold distance); lateral movement and rotation stay 1:1.
+/// Right grip moves the selected CAD object using CADGrabSession.
+/// Both grips scale it around its visible center; releasing the left grip resumes movement.
+/// Trigger press-and-drag remains owned by CADPointerInteraction and takes priority.
+/// All transform changes go through the manipulation service.
 /// </summary>
 [DisallowMultipleComponent]
 [RequireComponent(typeof(CADVisionManipulationService))]
@@ -42,6 +35,7 @@ public class CADXRGrab : MonoBehaviour
     [Tooltip("Largest size relative to the size when both grips were pressed.")]
     [SerializeField, Min(1f)] private float maximumScaleRatio = 10f;
 
+    private CADObject scaleTarget;
     private bool scaling;
     private float initialHandDistance;
     private Vector3 initialScale;
@@ -92,11 +86,10 @@ public class CADXRGrab : MonoBehaviour
         if (controllerAnchor == null)
             return;
 
-        if (session.IsActive)
         if (UpdateTwoHandScale())
             return;
 
-        if (grabbedId != null)
+        if (session.GrabbedId != null)
         {
             session.ReachDistance = reachDistance;
             session.MaxExtraGain = maxExtraGain;
@@ -147,24 +140,24 @@ public class CADXRGrab : MonoBehaviour
         if (!scaling)
         {
             if (distance < Mathf.Max(0.01f, minimumScaleSeparation)) return true;
-            if (grabbedId == null || !IsStillGrabbable())
+            if (session.GrabbedId == null || !IsStillGrabbable())
             {
                 Release("starting two-hand scaling");
                 TryGrab();
             }
-            if (grabbedId == null) return true;
+            if (session.GrabbedId == null) return true;
 
             initialHandDistance = distance;
-            initialScale = grabbedTransform.localScale;
-            scalePivotWorld = VisualCenter(grabbedTransform.GetComponent<CADObject>());
-            scalePivotLocal = grabbedTransform.InverseTransformPoint(scalePivotWorld);
+            initialScale = scaleTarget.transform.localScale;
+            scalePivotWorld = CADGrabSession.VisualCenter(scaleTarget);
+            scalePivotLocal = scaleTarget.transform.InverseTransformPoint(scalePivotWorld);
             scaling = true;
         }
 
         float ratio = Mathf.Clamp(distance / initialHandDistance,
             Mathf.Clamp(minimumScaleRatio, 0.01f, 1f), Mathf.Max(1f, maximumScaleRatio));
         manipulationService.SetObjectScaleAroundPoint(
-            grabbedId, initialScale * ratio, scalePivotLocal, scalePivotWorld);
+            session.GrabbedId, initialScale * ratio, scalePivotLocal, scalePivotWorld);
         return true;
     }
 
@@ -210,9 +203,17 @@ public class CADXRGrab : MonoBehaviour
         session.ReachDistance = reachDistance;
         session.MaxExtraGain = maxExtraGain;
         session.DecayRate = decayRate;
+        scaleTarget = selected;
         string info = session.Begin(manipulationService, selected,
             new Pose(controllerAnchor.position, controllerAnchor.rotation));
         Debug.Log($"[CADXRGrab] Grab started: '{selected.id}' ({selected.name}); {info}.");
+    }
+
+    private bool IsStillGrabbable()
+    {
+        return session.IsActive && scaleTarget != null &&
+            scaleTarget.gameObject.activeInHierarchy &&
+            manipulationService.GetSelectedObjects().Any(o => o == scaleTarget);
     }
 
     private void Release(string reason)
@@ -222,7 +223,6 @@ public class CADXRGrab : MonoBehaviour
 
         session.End();
         scaling = false;
-        grabbedId = null;
-        grabbedTransform = null;
+        scaleTarget = null;
     }
 }
