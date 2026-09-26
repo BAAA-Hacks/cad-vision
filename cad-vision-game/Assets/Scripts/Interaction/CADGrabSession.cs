@@ -43,6 +43,11 @@ public sealed class CADGrabSession
     // First (anchor) member; all members for groups.
     public string GrabbedId => members.Count > 0 ? members[0].Id : null;
     public IEnumerable<string> GrabbedIds => members.Select(m => m.Id);
+    // Held CAD objects (empty for a model grab); two-pointer scaling scales exactly these.
+    public IEnumerable<CADObject> HeldObjects => members
+        .Where(m => !m.IsModel && m.Transform != null)
+        .Select(m => m.Transform.GetComponent<CADObject>())
+        .Where(o => o != null);
     public int Count => members.Count;
     public bool IsActive => members.Count > 0;
     public bool IsModel => members.Count == 1 && members[0].IsModel;

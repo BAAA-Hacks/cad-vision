@@ -38,17 +38,10 @@ public class CADXRGrab : MonoBehaviour
     [Tooltip("Largest size relative to the size when both grips were pressed.")]
     [SerializeField, Min(1f)] private float maximumScaleRatio = 10f;
 
-    private bool scaling;
-    private float initialHandDistance;
-    private Vector3 initialScale;
-    private Vector3 scalePivotLocal;
-    private Vector3 scalePivotWorld;
+    // Shared two-hand scale math (also used by two-pointer pinch scaling).
+    private readonly CADScaleGesture partScale = new CADScaleGesture();
+    private readonly CADScaleGesture modelScale = new CADScaleGesture(); // Model manipulation mode.
     private bool scaleCancelledUntilRelease;
-
-    // Whole-model two-hand scaling (model manipulation mode).
-    private bool modelScaling;
-    private Transform modelScaleRoot;
-    private float initialModelScaleRatio;
 
     private CADVisionManipulationService manipulationService;
     private CADPointerInteraction pointerInteraction;
@@ -57,7 +50,7 @@ public class CADXRGrab : MonoBehaviour
     private CADObject grabbedObject;
 
     public bool IsGrabbing => session.IsActive;
-    public bool IsScalingModel => modelScaling;
+    public bool IsScalingModel => modelScale.IsActive;
 
     // TEMP grab diagnostics: last logged grip state, so only transitions are logged.
     private bool loggedGripHeld;
@@ -100,8 +93,11 @@ public class CADXRGrab : MonoBehaviour
         if (controllerAnchor == null)
             return;
 
+        ApplyScaleSettings(partScale);
+        ApplyScaleSettings(modelScale);
+
         // Model mode: the grips only scale the whole model; part grabs are released.
-        if (manipulationService.IsModelManipulationActive || modelScaling)
+        if (manipulationService.IsModelManipulationActive || modelScale.IsActive)
         {
             if (session.IsActive)
                 Release("model manipulation active");
@@ -146,7 +142,7 @@ public class CADXRGrab : MonoBehaviour
 
         if (!bothHeld) scaleCancelledUntilRelease = false;
 
-        if (scaling && (!bothHeld || !tracked || !IsStillGrabbable()))
+        if (partScale.IsActive && (!bothHeld || !tracked || !IsStillGrabbable()))
         {
             bool resumeGrab = rightHeld && tracked && IsStillGrabbable();
             Release("two-hand scaling ended");
@@ -160,7 +156,7 @@ public class CADXRGrab : MonoBehaviour
         if (scaleCancelledUntilRelease || !tracked) return true;
 
         float distance = Vector3.Distance(leftControllerAnchor.position, controllerAnchor.position);
-        if (!scaling)
+        if (!partScale.IsActive)
         {
             if (distance < Mathf.Max(0.01f, minimumScaleSeparation)) return true;
             if (!IsStillGrabbable())
@@ -170,25 +166,22 @@ public class CADXRGrab : MonoBehaviour
             }
             if (!IsStillGrabbable()) return true;
 
-            Transform grabbedTransform = grabbedObject.transform;
-            initialHandDistance = distance;
-            initialScale = grabbedTransform.localScale;
-            scalePivotWorld = CADGrabSession.VisualCenter(grabbedObject);
-            scalePivotLocal = grabbedTransform.InverseTransformPoint(scalePivotWorld);
-            scaling = true;
+            partScale.TryBeginObjects(manipulationService, new[] { grabbedObject }, distance,
+                CADGrabSession.VisualCenter(grabbedObject));
+            if (!partScale.IsActive) return true;
         }
 
-        manipulationService.SetObjectScaleAroundPoint(
-            grabbedObject.id, initialScale * HandScaleRatio(distance), scalePivotLocal, scalePivotWorld);
+        if (!partScale.Update(distance))
+            Release("scaled object gone");
         return true;
     }
 
-    // Shared two-hand math: hand separation relative to the separation at scale start,
-    // clamped per gesture. Scaling only starts at minimumScaleSeparation, so the divisor is
-    // never near zero; the service clamps the absolute model scale as well.
-    private float HandScaleRatio(float distance) =>
-        Mathf.Clamp(distance / Mathf.Max(initialHandDistance, 0.01f),
-            Mathf.Clamp(minimumScaleRatio, 0.01f, 1f), Mathf.Max(1f, maximumScaleRatio));
+    private void ApplyScaleSettings(CADScaleGesture gesture)
+    {
+        gesture.MinimumSeparation = minimumScaleSeparation;
+        gesture.MinimumRatio = minimumScaleRatio;
+        gesture.MaximumRatio = maximumScaleRatio;
+    }
 
     // Both grips scale the model root uniformly around a fixed pivot on the visible model:
     // the point held by an active one-hand model drag, else the visible bounds center (never
@@ -205,9 +198,9 @@ public class CADXRGrab : MonoBehaviour
         bool canScale = rightHeld && leftHeld && tracked && root != null &&
             manipulationService.IsModelManipulationActive;
 
-        if (modelScaling && (!canScale || root != modelScaleRoot))
+        if (modelScale.IsActive && !canScale)
         {
-            EndModelScale(canScale ? "model replaced" : "grips released or model mode ended");
+            EndModelScale("grips released or model mode ended");
             return;
         }
 
@@ -215,39 +208,30 @@ public class CADXRGrab : MonoBehaviour
             return;
 
         float distance = Vector3.Distance(leftControllerAnchor.position, controllerAnchor.position);
-        if (!modelScaling)
+        if (!modelScale.IsActive)
         {
-            if (distance < Mathf.Max(0.01f, minimumScaleSeparation))
-                return;
-
-            bool fromGrab = pointerInteraction != null && pointerInteraction.TryGetModelGrabPoint(out scalePivotWorld);
+            Vector3 pivot = default;
+            bool fromGrab = pointerInteraction != null && pointerInteraction.TryGetModelGrabPoint(out pivot);
             if (!fromGrab)
-            {
-                scalePivotWorld = manipulationService.TryGetModelBounds(out Bounds bounds)
-                    ? bounds.center : root.position;
-            }
+                pivot = manipulationService.TryGetModelBounds(out Bounds bounds) ? bounds.center : root.position;
 
-            modelScaleRoot = root;
-            initialHandDistance = distance;
-            initialModelScaleRatio = manipulationService.ModelScaleRatio;
-            scalePivotLocal = root.InverseTransformPoint(scalePivotWorld);
-            modelScaling = true;
+            if (!modelScale.TryBeginModel(manipulationService, distance, pivot))
+                return; // Hands too close to start.
             Debug.Log($"[CADXRGrab] Model scaling started around {(fromGrab ? "held point" : "visible center")} " +
-                $"(scale ×{initialModelScaleRatio:F2}).");
+                $"(scale ×{manipulationService.ModelScaleRatio:F2}).");
         }
 
-        manipulationService.SetModelScaleAroundPoint(
-            initialModelScaleRatio * HandScaleRatio(distance), scalePivotLocal, scalePivotWorld);
+        if (!modelScale.Update(distance))
+            EndModelScale("model replaced");
     }
 
     private void EndModelScale(string reason)
     {
-        if (!modelScaling)
+        if (!modelScale.IsActive)
             return;
 
+        modelScale.End();
         Debug.Log($"[CADXRGrab] Model scaling ended ({reason}; scale ×{manipulationService.ModelScaleRatio:F2}).");
-        modelScaling = false;
-        modelScaleRoot = null;
     }
 
     // The grip-held object still exists, is visible and is selected.
@@ -310,7 +294,7 @@ public class CADXRGrab : MonoBehaviour
             Debug.Log($"[CADXRGrab] Grab ended: '{session.GrabbedId}' ({reason}).");
 
         session.End();
-        scaling = false;
+        partScale.End();
         grabbedObject = null;
     }
 }
