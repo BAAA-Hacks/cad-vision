@@ -1389,6 +1389,9 @@ namespace CADVision.SolidWorks
             public string Id, Name, Exclusion;
             public int Parent = -1;
             public double[] World = GlbMapping.IdentityMatrix();
+            public double[] Appearance;
+            public string AppearanceSource = "neutral_fallback";
+            public List<MeshNode> Surfaces = new List<MeshNode>();
             public List<float> Positions = new List<float>(), Normals = new List<float>();
         }
         private static IEnumerable<object> Items(object value) { return value is Array ? ((Array)value).Cast<object>() : Enumerable.Empty<object>(); }
@@ -1434,7 +1437,7 @@ namespace CADVision.SolidWorks
             double meters=metadata.project.documentUnits.lengthToMeters;
             foreach(var o in metadata.objects) {
                 int parent=o.parentId==null?-1:indices[o.parentId];
-                var n=new MeshNode {Id=o.id,Name=o.name,Parent=parent};
+                var n=new MeshNode {Id=o.id,Name=parent<0?Path.GetFileNameWithoutExtension(o.name):o.name,Parent=parent};
                 Component2 component=null;
                 if(parent>=0 && !components.TryGetValue(o.occurrencePath,out component)) throw new InvalidDataException("Missing occurrence: "+o.occurrencePath);
                 if(parent>=0 && nodes[parent].Exclusion!=null) n.Exclusion="excluded_parent";
@@ -1445,6 +1448,11 @@ namespace CADVision.SolidWorks
                 else n.World=parent<0?GlbMapping.IdentityMatrix():nodes[parent].World;
                 if(o.type=="part" && n.Exclusion==null) {
                     if(progress!=null) progress("Custom GLB mesh: "+o.name);
+                    ModelDoc2 appearanceDoc=component==null?model:component.GetModelDoc2() as ModelDoc2;
+                    double[] componentAppearance=ReadAppearance(()=>component==null?null:component.GetMaterialPropertyValues2((int)swInConfigurationOpts_e.swThisConfiguration,null),metadata,o.name);
+                    double[] documentAppearance=null;
+                    if(appearanceDoc!=null && appearanceDoc.ConfigurationManager.ActiveConfiguration.Name==o.configuration)
+                        documentAppearance=ReadAppearance(()=>appearanceDoc.MaterialPropertyValues,metadata,o.name);
                     int bodyCount=0;
                     foreach(int kind in new[]{(int)swBodyType_e.swSolidBody,(int)swBodyType_e.swSheetBody}) {
                         object info;
@@ -1454,15 +1462,21 @@ namespace CADVision.SolidWorks
                             bodyCount++;
                             var faces=Items(body.GetFaces()).Cast<Face2>().ToArray();
                             if(faces.Length==0) throw new InvalidDataException("No faces in visible body: "+o.name);
+                            double[] bodyAppearance=ReadAppearance(()=>body.MaterialPropertyValues2,metadata,o.name);
                             foreach(var face in faces) {
                                 var positions=Floats(face.GetTessTriangles(true));
                                 var normals=Floats(face.GetTessNorms());
                                 // Do not guess a mesh or switch configuration if native tessellation is absent.
-                                AppendFace(n,positions,normals);
+                                double[] faceAppearance=ReadAppearance(()=>face.MaterialPropertyValues,metadata,o.name);
+                                double[] appearance=componentAppearance??faceAppearance??bodyAppearance??documentAppearance;
+                                string source=componentAppearance!=null?"component":faceAppearance!=null?"face":bodyAppearance!=null?"body":documentAppearance!=null?"document":"neutral_fallback";
+                                var surface=n.Surfaces.FirstOrDefault(v=>v.AppearanceSource==source && ((v.Appearance==null && appearance==null) || (v.Appearance!=null && appearance!=null && v.Appearance.SequenceEqual(appearance))));
+                                if(surface==null) {surface=new MeshNode{Appearance=appearance,AppearanceSource=source};n.Surfaces.Add(surface);}
+                                AppendFace(surface,positions,normals);
                             }
                         }
                     }
-                    if(bodyCount==0 || n.Positions.Count==0) throw new InvalidDataException("No visible tessellated bodies for "+o.name+". Resolve/load the component and retry.");
+                    if(bodyCount==0 || n.Surfaces.Sum(v=>v.Positions.Count)==0) throw new InvalidDataException("No visible tessellated bodies for "+o.name+". Resolve/load the component and retry.");
                 }
                 indices.Add(o.id,nodes.Count);nodes.Add(n);
             }
@@ -1473,7 +1487,51 @@ namespace CADVision.SolidWorks
                 status="matched",reason=nodes[i].Exclusion==null?"CAD ID embedded in node extras":"Identity-only node: "+nodes[i].Exclusion});
             metadata.glbMapping=report;metadata.mappingStatus=report.status;
             metadata.warnings.RemoveAll(w=>w.StartsWith("GLB mapping is pending:"));
-            metadata.warnings.Add("Custom GLB: native display tessellation in meters; neutral appearance. Textures, decals, appearance overrides, animations, cameras and lights are not exported. Hidden/suppressed occurrences have identity-only nodes. Live geometry/Unity validation is pending.");
+            metadata.warnings.Add("Custom GLB: native display tessellation in meters; legacy display colors/transparency exported where readable. Color-space and shininess-to-roughness conversions are approximations; metallic defaults to zero. Feature/render-material/display-state overrides, textures, decals, animations, cameras and lights are not exported. Hidden/suppressed occurrences have identity-only nodes. Live geometry/Unity validation is pending.");
+        }
+        private static double[] ReadAppearance(Func<object> read, Metadata metadata, string name)
+        {
+            try {
+                var raw=read() as Array;if(raw==null)return null;
+                var values=raw.Cast<object>().Select(Convert.ToDouble).ToArray();
+                if(values.Length>=9 && values.Take(9).All(v=>v==-1))return null;
+                if(values.Length!=9 || values.Any(v=>!Finite(v) || v<0 || v>1))throw new InvalidDataException("Invalid legacy appearance array.");
+                return values;
+            } catch(Exception ex) {
+                string warning="Appearance fallback for "+name+": "+ex.Message;
+                if(!metadata.warnings.Contains(warning))metadata.warnings.Add(warning);
+                return null;
+            }
+        }
+        public static double LinearColor(double c) {return c<=0.04045?c/12.92:Math.Pow((c+0.055)/1.055,2.4);}
+        public static object Material(MeshNode surface)
+        {
+            var a=surface.Appearance;
+            double[] color=a==null?new[]{0.65,0.65,0.68,1.0}:new[]{LinearColor(a[0]),LinearColor(a[1]),LinearColor(a[2]),1-a[7]};
+            return new { name=a==null?"Neutral fallback":"SolidWorks display appearance",
+                pbrMetallicRoughness=new {baseColorFactor=color,metallicFactor=0.0,roughnessFactor=a==null?0.7:Math.Max(0.04,1-a[6])},
+                alphaMode=color[3]<1?"BLEND":"OPAQUE",
+                extras=new {source=surface.AppearanceSource,nativeLegacyValues=a,conversion="RGB assumed sRGB to linear; roughness=max(0.04,1-shininess); metallic=0; native PBR parity unverified"}};
+        }
+        public sealed class IndexedMesh
+        {
+            public List<float> Positions=new List<float>(),Normals=new List<float>();
+            public List<uint> Indices=new List<uint>();
+        }
+        public static IndexedMesh Index(MeshNode mesh)
+        {
+            var output=new IndexedMesh();
+            var seen=new Dictionary<Tuple<float,float,float,float,float,float>,uint>();
+            for(int i=0;i<mesh.Positions.Count;i+=3) {
+                var p=mesh.Positions;var n=mesh.Normals;
+                var key=Tuple.Create(p[i],p[i+1],p[i+2],n[i],n[i+1],n[i+2]);uint index;
+                if(!seen.TryGetValue(key,out index)) {
+                    index=(uint)(output.Positions.Count/3);seen.Add(key,index);
+                    for(int k=0;k<3;k++){output.Positions.Add(p[i+k]);output.Normals.Add(n[i+k]);}
+                }
+                output.Indices.Add(index);
+            }
+            return output;
         }
         // Native normals determine winding. This avoids depending on undocumented face winding.
         public static void AppendFace(MeshNode node, float[] p, float[] n)
@@ -1495,12 +1553,12 @@ namespace CADVision.SolidWorks
                 }
             }
         }
-        // Dependency-free GLB 2.0 writer. Non-indexed triangles, float32 attributes,
+        // Dependency-free GLB 2.0 writer. Indexed triangles, float32 attributes,
         // aligned embedded buffer; no temporary mesh formats or external assets.
         public static void Write(string path, List<MeshNode> input)
         {
             if(input.Count==0 || input[0].Parent!=-1 || input.Select(n=>n.Id).Distinct().Count()!=input.Count) throw new InvalidDataException("Invalid mesh hierarchy/IDs.");
-            var nodes=new List<Dictionary<string,object>>();var meshes=new List<object>();var views=new List<object>();var accessors=new List<object>();
+            var nodes=new List<Dictionary<string,object>>();var meshes=new List<object>();var views=new List<object>();var accessors=new List<object>();var materials=new List<object>();
             using(var data=new MemoryStream()) using(var bin=new BinaryWriter(data)) {
                 for(int i=0;i<input.Count;i++) {
                     var n=input[i];if(i>0 && (n.Parent<0 || n.Parent>=i)) throw new InvalidDataException("Parent must precede child.");
@@ -1508,11 +1566,15 @@ namespace CADVision.SolidWorks
                     var local=n.Parent<0?n.World:GlbMapping.Multiply(Inverse(input[n.Parent].World),n.World);
                     var node=new Dictionary<string,object>{{"name",n.Name},{"matrix",local},{"extras",new {cadObjectId=n.Id,geometryStatus=n.Exclusion??"included"}}};
                     int[] children=Enumerable.Range(0,input.Count).Where(j=>input[j].Parent==i).ToArray();if(children.Length>0)node["children"]=children;
-                    if(n.Positions.Count>0) {
+                    var primitives=new List<object>();
+                    foreach(var surface in n.Surfaces.Count>0?n.Surfaces:new List<MeshNode>{n}) {
+                        if(surface.Positions.Count==0)continue;
+                        var original=n;n=surface;
                         if(n.Positions.Count%9!=0 || n.Normals.Count!=n.Positions.Count || n.Positions.Concat(n.Normals).Any(v=>!Finite(v))) throw new InvalidDataException("Invalid mesh attributes.");
+                        var indexed=Index(n);
                         var attrs=new Dictionary<string,int>();
                         foreach(string attr in new[]{"POSITION","NORMAL"}) {
-                            var values=attr=="POSITION"?n.Positions:n.Normals;long offset=data.Position;
+                            var values=attr=="POSITION"?indexed.Positions:indexed.Normals;long offset=data.Position;
                             foreach(float v in values)bin.Write(v);
                             views.Add(new {buffer=0,byteOffset=offset,byteLength=data.Position-offset,target=34962});
                             var accessor=new Dictionary<string,object>{{"bufferView",views.Count-1},{"componentType",5126},{"count",values.Count/3},{"type","VEC3"}};
@@ -1522,14 +1584,22 @@ namespace CADVision.SolidWorks
                             }
                             attrs[attr]=accessors.Count;accessors.Add(accessor);
                         }
-                        node["mesh"]=meshes.Count;meshes.Add(new {name=n.Name,primitives=new[]{new {attributes=attrs,mode=4,material=0}}});
+                        long indexOffset=data.Position;
+                        foreach(uint index in indexed.Indices)bin.Write(index);
+                        views.Add(new {buffer=0,byteOffset=indexOffset,byteLength=data.Position-indexOffset,target=34963});
+                        int indexAccessor=accessors.Count;
+                        accessors.Add(new {bufferView=views.Count-1,componentType=5125,count=indexed.Indices.Count,type="SCALAR"});
+                        int materialIndex=materials.Count;materials.Add(Material(surface));
+                        primitives.Add(new {attributes=attrs,indices=indexAccessor,mode=4,material=materialIndex});
+                        n=original;
                     }
+                    if(primitives.Count>0) {node["mesh"]=meshes.Count;meshes.Add(new {name=n.Name,primitives=primitives});}
                     nodes.Add(node);
                 }
                 if(meshes.Count==0) throw new InvalidDataException("No visible geometry to export.");
-                var gltf=new {asset=new {version="2.0",generator="CADVision custom SolidWorks tessellation exporter v1"},scene=0,
+                var gltf=new {asset=new {version="2.0",generator="CADVision custom SolidWorks tessellation exporter v2"},scene=0,
                     scenes=new[]{new {nodes=new[]{0}}},nodes=nodes,meshes=meshes,
-                    materials=new[]{new {name="Neutral visualization",pbrMetallicRoughness=new {baseColorFactor=new[]{0.65,0.65,0.68,1.0},metallicFactor=0.0,roughnessFactor=0.7}}},
+                    materials=materials,
                     buffers=new[]{new {byteLength=data.Length}},bufferViews=views,accessors=accessors};
                 byte[] json=Encoding.UTF8.GetBytes(new JavaScriptSerializer {MaxJsonLength=Int32.MaxValue,RecursionLimit=256}.Serialize(gltf));
                 int padded=checked((json.Length+3)/4*4);long size=28L+padded+data.Length;if(size>UInt32.MaxValue)throw new InvalidDataException("GLB exceeds 4GB.");
