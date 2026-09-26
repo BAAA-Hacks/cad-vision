@@ -1104,6 +1104,9 @@ GameObject:
   - component: {fileID: 191370961}
   - component: {fileID: 191370962}
   - component: {fileID: 191370963}
+  - component: {fileID: 191370964}
+  - component: {fileID: 191370965}
+  - component: {fileID: 191370966}
   m_Layer: 0
   m_Name: ManipulationManager
   m_TagString: Untagged
@@ -1236,6 +1239,62 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::CADXRDeselect
   controller: 2
+--- !u!114 &191370964
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 191370954}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 238c7c1ce9a64f540b289ef6b5f26f04, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::CADPointerInteraction
+  handedness: 1
+  dragDistance: 0.03
+  dragAngle: 6
+  dragDelay: 0.15
+  fastDragFactor: 3
+  clickMaxDuration: 1
+  reachDistance: 0.5
+  maxExtraGain: 4
+  decayRate: 1.5
+--- !u!114 &191370965
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 191370954}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 6a4c15d1f5ef47e4ba7a32aed9058fd4, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::CADContextMenu
+  offsetTowardHead: 0.15
+  verticalOffset: 0.05
+  minHeadDistance: 0.45
+  maxHeadDistance: 1.2
+  refaceHeadMovement: 0.4
+  panelColor: {r: 0.1, g: 0.11, b: 0.14, a: 0.96}
+  borderColor: {r: 0.55, g: 0.85, b: 1, a: 1}
+  buttonColor: {r: 0.3, g: 0.33, b: 0.4, a: 1}
+  textColor: {r: 1, g: 1, b: 1, a: 1}
+--- !u!114 &191370966
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 191370954}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 172c9ab0cccbdb94abb66c8b9db82fda, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::CADSelectionOutline
+  outlineColor: {r: 0, g: 0.9, b: 1, a: 1}
+  outlineWidth: 0.004
 --- !u!1 &212617061
 GameObject:
   m_ObjectHideFlags: 0
