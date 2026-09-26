@@ -64,7 +64,7 @@ public class CADXRSelection : MonoBehaviour
         if (evt.Type == PointerEventType.Select && isActiveAndEnabled &&
             cadObject != null && manipulationService != null)
         {
-            manipulationService.SelectFromHit(cadObject.id);
+            manipulationService.SelectFromHit(cadObject.id, evt.Pose.position);
         }
     }
 }
