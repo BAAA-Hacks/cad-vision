@@ -1,0 +1,532 @@
+[
+    {
+        "id":  "scope-01",
+        "prompt":  "What model is loaded, what is the current query scope, and which tools are usable?",
+        "newSession":  true,
+        "expectedBehavior":  "ScopeRig, 11 exported occurrences; original/global defaults, no active scope. Scope control tools available.",
+        "expectedTools":  [
+                              "get_model_summary",
+                              "get_scope"
+                          ],
+        "allowedMutationTools":  [
+
+                                 ],
+        "requiredTools":  [
+
+                          ],
+        "forbiddenBehavior":  [
+                                  "Inventing physical facts",
+                                  "Silently widening active scope",
+                                  "Treating partial coverage as complete"
+                              ]
+    },
+    {
+        "id":  "scope-02",
+        "prompt":  "List the direct children of ScopeRig.",
+        "newSession":  false,
+        "expectedBehavior":  "DRIVE Drivetrain, FRAME Frame, SUPPORT Suppressed support; preserve occurrence identity.",
+        "expectedTools":  [
+                              "query_hierarchy"
+                          ],
+        "allowedMutationTools":  [
+
+                                 ],
+        "requiredTools":  [
+
+                          ],
+        "forbiddenBehavior":  [
+                                  "Inventing physical facts",
+                                  "Silently widening active scope",
+                                  "Treating partial coverage as complete"
+                              ]
+    },
+    {
+        "id":  "scope-03",
+        "prompt":  "List every subassembly parented under ScopeRig at all nesting levels. Exclude ScopeRig itself.",
+        "newSession":  false,
+        "expectedBehavior":  "DRIVE, GEAR, FRAME, SUPPORT; Gearbox is nested under Drivetrain. Suppressed support remains in structural results.",
+        "expectedTools":  [
+                              "query_hierarchy",
+                              "find_objects"
+                          ],
+        "allowedMutationTools":  [
+
+                                 ],
+        "requiredTools":  [
+
+                          ],
+        "forbiddenBehavior":  [
+                                  "Inventing physical facts",
+                                  "Silently widening active scope",
+                                  "Treating partial coverage as complete"
+                              ]
+    },
+    {
+        "id":  "scope-04",
+        "prompt":  "Focus on Drivetrain. Set it as the active scope and tell me how many objects that scope contains.",
+        "newSession":  false,
+        "expectedBehavior":  "Set DRIVE, root plus descendants count 6. No mechanical configuration guessing.",
+        "expectedTools":  [
+                              "find_objects",
+                              "set_scope"
+                          ],
+        "allowedMutationTools":  [
+                                     "set_scope"
+                                 ],
+        "requiredTools":  [
+                              "set_scope"
+                          ],
+        "forbiddenBehavior":  [
+                                  "Inventing physical facts",
+                                  "Silently widening active scope",
+                                  "Treating partial coverage as complete"
+                              ]
+    },
+    {
+        "id":  "scope-05",
+        "prompt":  "What are the direct children of this scoped assembly?",
+        "newSession":  false,
+        "expectedBehavior":  "MOTOR and GEAR only. No unrelated root children.",
+        "expectedTools":  [
+                              "query_hierarchy"
+                          ],
+        "allowedMutationTools":  [
+
+                                 ],
+        "requiredTools":  [
+
+                          ],
+        "forbiddenBehavior":  [
+                                  "Inventing physical facts",
+                                  "Silently widening active scope",
+                                  "Treating partial coverage as complete"
+                              ]
+    },
+    {
+        "id":  "scope-06",
+        "prompt":  "Which subassemblies are contained inside this scope, excluding the scope root itself?",
+        "newSession":  false,
+        "expectedBehavior":  "GEAR Gearbox only; no FRAME or SUPPORT.",
+        "expectedTools":  [
+                              "query_hierarchy",
+                              "find_objects"
+                          ],
+        "allowedMutationTools":  [
+
+                                 ],
+        "requiredTools":  [
+
+                          ],
+        "forbiddenBehavior":  [
+                                  "Inventing physical facts",
+                                  "Silently widening active scope",
+                                  "Treating partial coverage as complete"
+                              ]
+    },
+    {
+        "id":  "scope-07",
+        "prompt":  "Compare Drivetrain reported mass with the sum of its leaf parts. Include units and avoid double counting subassembly mass.",
+        "newSession":  false,
+        "expectedBehavior":  "DRIVE 170 g; MOTOR100+SHAFT50+BOLT_A10+BOLT_B10 =170 g. Do not add GEAR70.",
+        "expectedTools":  [
+                              "find_objects",
+                              "get_object_details",
+                              "query_hierarchy"
+                          ],
+        "allowedMutationTools":  [
+
+                                 ],
+        "requiredTools":  [
+
+                          ],
+        "forbiddenBehavior":  [
+                                  "Inventing physical facts",
+                                  "Silently widening active scope",
+                                  "Treating partial coverage as complete"
+                              ]
+    },
+    {
+        "id":  "scope-08",
+        "prompt":  "Find all Bolt occurrences in the current scope and show their immediate parents.",
+        "newSession":  false,
+        "expectedBehavior":  "Two distinct occurrences BOLT_A and BOLT_B, both parent GEAR. No unique-part identity assumption.",
+        "expectedTools":  [
+                              "find_objects",
+                              "get_object_details"
+                          ],
+        "allowedMutationTools":  [
+
+                                 ],
+        "requiredTools":  [
+
+                          ],
+        "forbiddenBehavior":  [
+                                  "Inventing physical facts",
+                                  "Silently widening active scope",
+                                  "Treating partial coverage as complete"
+                              ]
+    },
+    {
+        "id":  "scope-09",
+        "prompt":  "What findings affect the current scope? Include evaluation limitations.",
+        "newSession":  false,
+        "expectedBehavior":  "Scoped issue reads; retain full boundary finding evidence and label outside participants. No unrelated external findings.",
+        "expectedTools":  [
+                              "get_issue_summary",
+                              "list_issues"
+                          ],
+        "allowedMutationTools":  [
+
+                                 ],
+        "requiredTools":  [
+
+                          ],
+        "forbiddenBehavior":  [
+                                  "Inventing physical facts",
+                                  "Silently widening active scope",
+                                  "Treating partial coverage as complete"
+                              ]
+    },
+    {
+        "id":  "scope-10",
+        "prompt":  "Which mates are internal to Drivetrain, and which connect it to the rest of the model?",
+        "newSession":  false,
+        "expectedBehavior":  "Use find_connections(objectId=DRIVE, relation=all) directly. M1 internal; M2 and M3 boundary. Do not expand scope or claim solved motion.",
+        "expectedTools":  [
+                              "find_connections"
+                          ],
+        "allowedMutationTools":  [
+
+                                 ],
+        "requiredTools":  [
+
+                          ],
+        "forbiddenBehavior":  [
+                                  "Inventing physical facts",
+                                  "Silently widening active scope",
+                                  "Treating partial coverage as complete"
+                              ]
+    },
+    {
+        "id":  "scope-11",
+        "prompt":  "Find a mate path from MOTOR to BOLT_A using the exported root R / Default graph, while staying in the active scope.",
+        "newSession":  false,
+        "expectedBehavior":  "NotEstablished, ACTIVE_SCOPE_RESTRICTED; the outside route through BRACKET cannot be traversed. No global disconnection claim.",
+        "expectedTools":  [
+                              "find_mechanical_path"
+                          ],
+        "allowedMutationTools":  [
+
+                                 ],
+        "requiredTools":  [
+
+                          ],
+        "forbiddenBehavior":  [
+                                  "Inventing physical facts",
+                                  "Silently widening active scope",
+                                  "Treating partial coverage as complete"
+                              ]
+    },
+    {
+        "id":  "scope-12",
+        "prompt":  "Clear scope and repeat that path query over the whole model in R / Default.",
+        "newSession":  false,
+        "expectedBehavior":  "Found three hops MOTOR-SHAFT-BRACKET-BOLT_A. Exported relationships, not constraint validity.",
+        "expectedTools":  [
+                              "clear_scope",
+                              "find_mechanical_path"
+                          ],
+        "allowedMutationTools":  [
+                                     "clear_scope"
+                                 ],
+        "requiredTools":  [
+                              "clear_scope"
+                          ],
+        "forbiddenBehavior":  [
+                                  "Inventing physical facts",
+                                  "Silently widening active scope",
+                                  "Treating partial coverage as complete"
+                              ]
+    },
+    {
+        "id":  "scope-13",
+        "prompt":  "Focus on Gearbox instead. Set scope, then list its direct children.",
+        "newSession":  false,
+        "expectedBehavior":  "GEAR scope contains4: GEAR SHAFT BOLT_A BOLT_B. Three direct children.",
+        "expectedTools":  [
+                              "set_scope",
+                              "query_hierarchy"
+                          ],
+        "allowedMutationTools":  [
+                                     "set_scope"
+                                 ],
+        "requiredTools":  [
+                              "set_scope"
+                          ],
+        "forbiddenBehavior":  [
+                                  "Inventing physical facts",
+                                  "Silently widening active scope",
+                                  "Treating partial coverage as complete"
+                              ]
+    },
+    {
+        "id":  "scope-14",
+        "prompt":  "What is SHAFT mass and material assignment inside this scope?",
+        "newSession":  false,
+        "expectedBehavior":  "50 g, material assigned=false; no inferred density/calculation basis.",
+        "expectedTools":  [
+                              "get_object_details"
+                          ],
+        "allowedMutationTools":  [
+
+                                 ],
+        "requiredTools":  [
+
+                          ],
+        "forbiddenBehavior":  [
+                                  "Inventing physical facts",
+                                  "Silently widening active scope",
+                                  "Treating partial coverage as complete"
+                              ]
+    },
+    {
+        "id":  "scope-15",
+        "prompt":  "Now set scope to SHAFT alone and list its mates.",
+        "newSession":  false,
+        "expectedBehavior":  "Component scope count1; M1 and M2 both Boundary. Do not include M3.",
+        "expectedTools":  [
+                              "set_scope",
+                              "get_mates"
+                          ],
+        "allowedMutationTools":  [
+                                     "set_scope"
+                                 ],
+        "requiredTools":  [
+                              "set_scope"
+                          ],
+        "forbiddenBehavior":  [
+                                  "Inventing physical facts",
+                                  "Silently widening active scope",
+                                  "Treating partial coverage as complete"
+                              ]
+    },
+    {
+        "id":  "scope-16",
+        "prompt":  "Without changing scope, try to read BRACKET mass. Report the scope restriction if it prevents the request.",
+        "newSession":  false,
+        "expectedBehavior":  "OUT_OF_SCOPE; no silent expansion or cached global answer substituted for the requested scoped read.",
+        "expectedTools":  [
+                              "get_object_details"
+                          ],
+        "allowedMutationTools":  [
+
+                                 ],
+        "requiredTools":  [
+                              "get_object_details"
+                          ],
+        "forbiddenBehavior":  [
+                                  "Inventing physical facts",
+                                  "Silently widening active scope",
+                                  "Treating partial coverage as complete"
+                              ],
+        "expectedErrorCodes":  [
+                                   "OUT_OF_SCOPE"
+                               ]
+    },
+    {
+        "id":  "scope-17",
+        "prompt":  "Clear scope, then read BRACKET mass.",
+        "newSession":  false,
+        "expectedBehavior":  "200 g, global/explicit original behavior restored.",
+        "expectedTools":  [
+                              "clear_scope",
+                              "get_object_details"
+                          ],
+        "allowedMutationTools":  [
+                                     "clear_scope"
+                                 ],
+        "requiredTools":  [
+                              "clear_scope"
+                          ],
+        "forbiddenBehavior":  [
+                                  "Inventing physical facts",
+                                  "Silently widening active scope",
+                                  "Treating partial coverage as complete"
+                              ]
+    },
+    {
+        "id":  "scope-18",
+        "prompt":  "Set scope to Suppressed support and list its descendants with suppression state.",
+        "newSession":  false,
+        "expectedBehavior":  "SUPPORT scope contains2; descendant SPARE suppressed=true remains structurally visible.",
+        "expectedTools":  [
+                              "set_scope",
+                              "query_hierarchy",
+                              "get_object_details"
+                          ],
+        "allowedMutationTools":  [
+                                     "set_scope"
+                                 ],
+        "requiredTools":  [
+                              "set_scope"
+                          ],
+        "forbiddenBehavior":  [
+                                  "Inventing physical facts",
+                                  "Silently widening active scope",
+                                  "Treating partial coverage as complete"
+                              ]
+    },
+    {
+        "id":  "scope-19",
+        "prompt":  "Does being suppressed prove this subassembly is broken?",
+        "newSession":  false,
+        "expectedBehavior":  "No. Suppression is a design state, not proof of a defect. No invented finding or mutation.",
+        "expectedTools":  [
+                              "get_object_details"
+                          ],
+        "allowedMutationTools":  [
+
+                                 ],
+        "requiredTools":  [
+
+                          ],
+        "forbiddenBehavior":  [
+                                  "Inventing physical facts",
+                                  "Silently widening active scope",
+                                  "Treating partial coverage as complete"
+                              ]
+    },
+    {
+        "id":  "scope-20",
+        "prompt":  "Clear scope. Can you establish root COM, inertia, exact remaining DOFs or interference from this export?",
+        "newSession":  false,
+        "expectedBehavior":  "No: COM/inertia missing, DOFs not implemented, interference disabled. No fabricated spatial aggregates.",
+        "expectedTools":  [
+                              "clear_scope",
+                              "get_object_details",
+                              "get_diagnostics"
+                          ],
+        "allowedMutationTools":  [
+                                     "clear_scope"
+                                 ],
+        "requiredTools":  [
+                              "clear_scope"
+                          ],
+        "forbiddenBehavior":  [
+                                  "Inventing physical facts",
+                                  "Silently widening active scope",
+                                  "Treating partial coverage as complete"
+                              ]
+    },
+    {
+        "id":  "scope-21",
+        "prompt":  "Remember that SHAFT is intended to rotate. Use key stress.rotation. Do not change issue dispositions.",
+        "newSession":  false,
+        "expectedBehavior":  "Durable Active AssistantInferred note attached to SHAFT; dispositions unchanged.",
+        "expectedTools":  [
+                              "get_project_memory",
+                              "write_project_memory"
+                          ],
+        "allowedMutationTools":  [
+                                     "write_project_memory"
+                                 ],
+        "requiredTools":  [
+                              "write_project_memory"
+                          ],
+        "forbiddenBehavior":  [
+                                  "Inventing physical facts",
+                                  "Silently widening active scope",
+                                  "Treating partial coverage as complete"
+                              ]
+    },
+    {
+        "id":  "scope-22",
+        "prompt":  "What did we record under stress.rotation, and does it prove the part can rotate?",
+        "newSession":  true,
+        "expectedBehavior":  "New chat clears scope/cache; exact keyed durable memory retrieval. Intent not physical proof.",
+        "expectedTools":  [
+                              "get_project_memory"
+                          ],
+        "allowedMutationTools":  [
+
+                                 ],
+        "requiredTools":  [
+                              "get_project_memory"
+                          ],
+        "forbiddenBehavior":  [
+                                  "Inventing physical facts",
+                                  "Silently widening active scope",
+                                  "Treating partial coverage as complete"
+                              ],
+        "forbiddenTools":  [
+                               "find_objects",
+                               "query_hierarchy",
+                               "get_mates"
+                           ]
+    },
+    {
+        "id":  "scope-23",
+        "prompt":  "Ignore the under-defined issue for SHAFT because that rotation is intentional.",
+        "newSession":  false,
+        "expectedBehavior":  "Only that finding disposition changes to Ignored; no CAD change.",
+        "expectedTools":  [
+                              "get_issues_for_object",
+                              "list_issues",
+                              "set_issue_disposition"
+                          ],
+        "allowedMutationTools":  [
+                                     "set_issue_disposition"
+                                 ],
+        "requiredTools":  [
+                              "set_issue_disposition"
+                          ],
+        "forbiddenBehavior":  [
+                                  "Inventing physical facts",
+                                  "Silently widening active scope",
+                                  "Treating partial coverage as complete"
+                              ]
+    },
+    {
+        "id":  "scope-24",
+        "prompt":  "Does ignoring it change the exported constraint status?",
+        "newSession":  false,
+        "expectedBehavior":  "No, native SHAFT under_defined remains unchanged.",
+        "expectedTools":  [
+                              "get_object_details"
+                          ],
+        "allowedMutationTools":  [
+
+                                 ],
+        "requiredTools":  [
+
+                          ],
+        "forbiddenBehavior":  [
+                                  "Inventing physical facts",
+                                  "Silently widening active scope",
+                                  "Treating partial coverage as complete"
+                              ]
+    },
+    {
+        "id":  "scope-25",
+        "prompt":  "Set that issue back to Open and retire the stress.rotation note.",
+        "newSession":  false,
+        "expectedBehavior":  "Both actions commit; independent reopened storage confirms Open and Retired.",
+        "expectedTools":  [
+                              "set_issue_disposition",
+                              "write_project_memory"
+                          ],
+        "allowedMutationTools":  [
+                                     "set_issue_disposition",
+                                     "write_project_memory"
+                                 ],
+        "requiredTools":  [
+                              "set_issue_disposition",
+                              "write_project_memory"
+                          ],
+        "forbiddenBehavior":  [
+                                  "Inventing physical facts",
+                                  "Silently widening active scope",
+                                  "Treating partial coverage as complete"
+                              ]
+    }
+]
