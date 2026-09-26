@@ -138,6 +138,12 @@ written to `.utmp/receiver-build-status.txt`.
 
 ## Automatic startup loading
 
+Schema 2.1 exports marked `mappingStatus: "not_correlated_to_glb"` can load
+geometry and retain the complete engineering metadata without fabricated CAD
+node links. `HasVerifiedNodeMapping` is false and the object registry is empty;
+metadata remains accessible by CAD ID. Per-part selection requires a completed
+mapping. Explicit per-object `glbNodeIndex` mappings retain the existing validation.
+
 Put exactly one `.glb` and its matching `.json` directly in `Assets/CadFiles`
 (the existing `Assets/cadFiles` spelling also works). Names can differ and may
 change; selection uses case-insensitive extensions and ignores `.meta` files.

@@ -53,7 +53,13 @@ namespace CADVision
                 Encoding.UTF8.GetString(metadata.downloadHandler.data).TrimStart('\uFEFF'));
             while (!load.IsCompleted) yield return null;
             if (load.IsFaulted) Debug.LogException(load.Exception.GetBaseException());
-            else if (!load.IsCanceled) Debug.Log("CAD auto-load: loaded Assets/CadFiles pair.");
+            else if (!load.IsCanceled)
+            {
+                var metadataState = GetComponent<CADVisionRuntime>().Metadata;
+                Debug.Log(metadataState.HasVerifiedNodeMapping
+                    ? "CAD auto-load: loaded Assets/CadFiles pair."
+                    : "CAD auto-load: loaded geometry and metadata; per-part CAD mapping is unavailable.");
+            }
         }
     }
 }

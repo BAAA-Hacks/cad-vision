@@ -7,7 +7,7 @@ using Newtonsoft.Json.Linq;
 
 namespace CADVision
 {
-    /// <summary>Export schema 1.0 with explicit per-pair node mapping; retains unknown engineering fields.</summary>
+    /// <summary>Export schemas 1.0 and 2.1; retains unknown engineering fields.</summary>
     public sealed class CadMetadata
     {
         private readonly JObject document;
@@ -16,6 +16,7 @@ namespace CADVision
         private readonly Dictionary<string, string> parents;
 
         public string RawJson { get; }
+        public bool HasVerifiedNodeMapping { get; }
         public string RootId { get; }
         public IReadOnlyDictionary<string, int> NodeIndices { get; }
         // Return copies so consumers cannot invalidate the validated registry contract.
@@ -40,8 +41,13 @@ namespace CADVision
 
             var version = document["schemaVersion"];
             if (version == null || (version.Type != JTokenType.String && version.Type != JTokenType.Integer)
-                || (version.ToString() != "1" && version.ToString() != "1.0"))
-                throw new InvalidDataException("Unsupported schemaVersion; expected 1 or 1.0.");
+                || (version.ToString() != "1" && version.ToString() != "1.0" && version.ToString() != "2.1"))
+                throw new InvalidDataException("Unsupported schemaVersion; expected 1, 1.0 or 2.1.");
+            bool uncorrelated = version.ToString() == "2.1" &&
+                (string)document["mappingStatus"] == "not_correlated_to_glb";
+            if (uncorrelated && document["glbMapping"] != null && document["glbMapping"].Type != JTokenType.Null)
+                throw new InvalidDataException("Uncorrelated metadata must not claim a GLB mapping.");
+            HasVerifiedNodeMapping = !uncorrelated;
             if (!(document["project"] is JObject)) throw new InvalidDataException("Missing project object.");
             RootId = RequiredString((JObject)document["project"], "rootObjectId");
             if (!(document["objects"] is JArray entries) || entries.Count == 0)
@@ -57,15 +63,23 @@ namespace CADVision
                 string id = RequiredString(obj, "id");
                 if (objects.ContainsKey(id)) throw new InvalidDataException($"Duplicate CAD ID '{id}'.");
                 var node = obj["glbNodeIndex"];
-                if (node?.Type != JTokenType.Integer || !int.TryParse(node.ToString(), out int index) || index < 0)
-                    throw new InvalidDataException($"'{id}' requires a nonnegative glbNodeIndex.");
-                if (!usedNodes.Add(index)) throw new InvalidDataException($"GLB node {index} is mapped more than once.");
+                if (uncorrelated)
+                {
+                    if (node != null && node.Type != JTokenType.Null)
+                        throw new InvalidDataException("Uncorrelated metadata must not claim GLB node indices.");
+                }
+                else
+                {
+                    if (node?.Type != JTokenType.Integer || !int.TryParse(node.ToString(), out int index) || index < 0)
+                        throw new InvalidDataException($"'{id}' requires a nonnegative glbNodeIndex.");
+                    if (!usedNodes.Add(index)) throw new InvalidDataException($"GLB node {index} is mapped more than once.");
+                    nodeIndices.Add(id, index);
+                }
                 var parent = obj["parentId"];
                 if (parent != null && parent.Type != JTokenType.Null &&
                     (parent.Type != JTokenType.String || string.IsNullOrWhiteSpace((string)parent)))
                     throw new InvalidDataException($"'{id}' has an invalid parentId.");
                 objects.Add(id, obj);
-                nodeIndices.Add(id, index);
                 parents.Add(id, (string)parent);
             }
             if (!objects.ContainsKey(RootId)) throw new InvalidDataException("rootObjectId does not exist in objects.");

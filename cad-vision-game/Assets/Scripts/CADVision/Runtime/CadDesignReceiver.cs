@@ -50,7 +50,9 @@ namespace CADVision
                     LastStatus = "Importing received design...";
                     await loader.LoadPackageAsync(glb, json, token);
                     var runtime = GetComponent<CADVisionRuntime>();
-                    LastStatus = $"Loaded {runtime.GetAllObjects().Count} CAD objects.";
+                    LastStatus = runtime.Metadata.HasVerifiedNodeMapping
+                        ? $"Loaded {runtime.GetAllObjects().Count} CAD objects."
+                        : "Loaded geometry and metadata; CAD-to-GLB mapping is unavailable.";
                     result.TrySetResult(new CadReceiveResult { success = true, message = LastStatus,
                         objectCount = runtime.GetAllObjects().Count, revision = runtime.Revision });
                 }
