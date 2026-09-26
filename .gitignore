@@ -115,3 +115,6 @@ model.glb
 model.glb.meta
 metadata.json
 metadata.json.meta
+# Everything in the CadFiles drop folder, any name
+/cad-vision-game/Assets/CadFiles/*
+!/cad-vision-game/Assets/CadFiles/.gitkeep
