@@ -108,3 +108,9 @@ InitTestScene*.unity*
 
 # VS Code
 .env
+
+# Runtime CAD pair (supplied locally per machine, not versioned)
+model.glb
+model.glb.meta
+metadata.json
+metadata.json.meta
