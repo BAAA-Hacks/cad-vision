@@ -108,6 +108,7 @@ InitTestScene*.unity*
 
 # Auto-generated cache in Assets folder
 /[Aa]ssets/[Ss]ceneDependencyCache*
+CLAUDE.md
 
 # Runtime CAD pair (supplied locally per machine, not versioned)
 model.glb
