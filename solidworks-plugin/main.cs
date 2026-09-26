@@ -1,12 +1,12 @@
-// CADVision SolidWorks metadata extractor — single-file edition.
+// CADVision SolidWorks GLB + metadata exporter — single-file edition.
 // Target: Windows x64, .NET Framework 4.8, SolidWorks 2020+.
 // References: System.Core, System.Web.Extensions, System.Xml, System.Xml.Linq,
 // SolidWorks.Interop.sldworks.dll, SolidWorks.Interop.swconst.dll.
 // Compile as a console application. Do not include the separate source files too.
-// Usage: CADVision.Metadata.exe <new-output-directory> [--skip-interferences]
+// Usage: CADVision.Export.exe [new-output-directory] [--skip-interferences] [--shipper CadenShipper.exe]
 // Requires a running SolidWorks instance and a saved active part or assembly.
-// Data flow: attach -> traverse occurrences -> read fields/mates -> interference check -> JSON.
-// No GLB export, shipper, or add-in registration in this metadata-only step.
+// Data flow: attach -> native GLB -> current metadata -> publish pair -> optional shipper.
+// Console runner; add-in button/registration and Quest networking are not implemented here.
 // Read IMPLEMENTATION_STATUS.md for capabilities, limitations, and test evidence.
 // Repeated namespace and partial-class blocks are valid together in one .cs file.
 using System;
@@ -22,6 +22,8 @@ using SolidWorks.Interop.swconst;
 using System.Globalization;
 using System.Xml;
 using System.Xml.Linq;
+using System.Threading;
+using System.Diagnostics;
 namespace CADVision.SolidWorks
 {
     // Names deliberately match the interchange contract, including null-valued fields.
@@ -1262,41 +1264,220 @@ namespace CADVision.SolidWorks
 
 
 
+
 namespace CADVision.SolidWorks
 {
-    // PART 4: CONSOLE RUNNER
-    // Main attaches to an existing SolidWorks instance, extracts metadata, and writes it.
-    // It does not launch SolidWorks, register an add-in, export GLB, or invoke the shipper.
-    internal static class Program
+    /// <summary>Native SolidWorks export; call only from the SolidWorks STA thread.</summary>
+    public static class GlbExporter
     {
-        // SolidWorks COM calls run on a single-threaded apartment (STA).
-        // Exit codes: 0 = wrote output (possibly with warnings), 1 = failure, 2 = bad arguments.
-        [STAThread]
-        private static int Main(string[] args)
+        public static int Export(SldWorks app, ModelDoc2 model, string path)
         {
-            if (args.Length < 1 || args.Length > 2 || (args.Length == 2 && args[1] != "--skip-interferences")) { Console.Error.WriteLine("Usage: CADVision.Metadata.exe <new-output-directory> [--skip-interferences]"); return 2; }
+            if (Thread.CurrentThread.GetApartmentState() != ApartmentState.STA)
+                throw new InvalidOperationException("GLB export requires an STA thread.");
+            if (model == null || !Object.Equals(app.ActiveDoc, model))
+                throw new InvalidOperationException("The export document must remain active in SolidWorks.");
+            if (model.GetType() != (int)swDocumentTypes_e.swDocPART && model.GetType() != (int)swDocumentTypes_e.swDocASSEMBLY)
+                throw new InvalidOperationException("GLB export requires a part or assembly.");
+            path = Path.GetFullPath(path);
+            if (!String.Equals(Path.GetExtension(path), ".glb", StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException("Export filename must end in .glb.");
+            if (File.Exists(path)) throw new IOException("Refusing to overwrite " + path);
+            var selection = (SelectionMgr)model.SelectionManager;
+            // Preserve the user's selection while ensuring SaveAs exports the whole model.
+            selection.SuspendSelectionList();
+            int errors = 0, warnings = 0;
             try
             {
-                var folder = Path.GetFullPath(args[0]);
-                var path = Path.Combine(folder, "metadata.json");
-                if (File.Exists(path)) throw new IOException("metadata.json already exists. Choose a new export directory.");
-                var timer = System.Diagnostics.Stopwatch.StartNew();
-                Action<string> progress = message => Console.WriteLine("[{0:F1}s] {1}", timer.Elapsed.TotalSeconds, message);
-                progress("Connecting to SolidWorks");
-                var app = (SldWorks)Marshal.GetActiveObject("SldWorks.Application");
-                var metadata = new Extractor().Extract(app, new ExtractionOptions { RunInterferenceDetection = args.Length == 1, Progress = progress });
-                Directory.CreateDirectory(folder);
-                progress("Writing JSON");
-                metadata.Write(path);
-                progress("Export complete");
-                Console.WriteLine("Wrote " + path + " (" + metadata.objects.Count + " objects, " + metadata.mates.Count + " mates)");
-                foreach (var warning in metadata.warnings) Console.Error.WriteLine("Warning: " + warning);
-                if (metadata.notices.Count > 0) Console.WriteLine("Info: " + metadata.notices.Count + " identity notices recorded in metadata.json; these do not mean values are missing.");
-                return 0;
+                model.ClearSelection2(true);
+                bool saved = model.Extension.SaveAs(path, (int)swSaveAsVersion_e.swSaveAsCurrentVersion,
+                    (int)swSaveAsOptions_e.swSaveAsOptions_Silent, null, ref errors, ref warnings);
+                if (!saved || errors != 0)
+                    throw new IOException("SolidWorks GLB export failed: errors=" + errors + " (" + (swFileSaveError_e)errors +
+                        "), warnings=" + warnings + ". Verify Extended Reality (*.GLB) is available in SolidWorks Save As.");
+                CheckContainer(path);
+                return warnings;
             }
-            catch (Exception e) { Console.Error.WriteLine(e.Message); return 1; }
+            finally { selection.ResumeSelectionList2(false); }
+        }
+
+        // Basic exporter-output check only. Semantic GLB validation/mapping belongs to the shipper.
+        public static void CheckContainer(string path)
+        {
+            using (var stream = File.OpenRead(path))
+            using (var reader = new BinaryReader(stream))
+            {
+                if (stream.Length < 20 || reader.ReadUInt32() != 0x46546C67 || reader.ReadUInt32() != 2 ||
+                    reader.ReadUInt32() != stream.Length)
+                    throw new InvalidDataException("Native exporter did not produce a complete GLB 2.0 container.");
+                bool first = true, seenBinary = false;
+                while (stream.Position < stream.Length)
+                {
+                    if (stream.Length - stream.Position < 8) throw new InvalidDataException("Truncated GLB chunk header.");
+                    uint length = reader.ReadUInt32(), type = reader.ReadUInt32();
+                    if (length % 4 != 0 || length > stream.Length - stream.Position || (first && (type != 0x4E4F534A || length == 0)))
+                        throw new InvalidDataException("Invalid GLB chunk layout.");
+                    if (!first && type == 0x4E4F534A) throw new InvalidDataException("Duplicate GLB JSON chunk.");
+                    if (type == 0x004E4942)
+                    {
+                        if (seenBinary) throw new InvalidDataException("Duplicate GLB binary chunk.");
+                        seenBinary = true;
+                    }
+                    stream.Seek(length, SeekOrigin.Current);
+                    first = false;
+                }
+            }
+        }
+    }
+
+    public static class ExportPipeline
+    {
+        public static Metadata Export(SldWorks app, string directory, ExtractionOptions options, Action<string> progress)
+        {
+            string destination = Path.GetFullPath(directory);
+            if (Directory.Exists(destination) || File.Exists(destination))
+                throw new IOException("Choose a new export directory; existing exports are never overwritten.");
+            var model = app.ActiveDoc as ModelDoc2;
+            if (model == null) throw new InvalidOperationException("Open a saved part or assembly in SolidWorks.");
+            string source = model.GetPathName();
+            if (String.IsNullOrEmpty(source)) throw new InvalidOperationException("Save the active model first to establish its identity.");
+            string configuration = model.ConfigurationManager.ActiveConfiguration.Name;
+            int updateStamp = model.GetUpdateStamp();
+            string stage = destination + ".partial-" + Guid.NewGuid().ToString("N");
+            Directory.CreateDirectory(stage);
+            try
+            {
+                if (progress != null) progress("Exporting native model.glb...");
+                int warnings = GlbExporter.Export(app, model, Path.Combine(stage, "model.glb"));
+                EnsureSameModel(app, model, source, configuration, updateStamp);
+                if (progress != null) progress("Extracting metadata from the same model/configuration...");
+                // Pass detailed metadata progress through the combined runner without
+                // mutating the caller's options or dropping its existing callback.
+                var metadataOptions = new ExtractionOptions {
+                    RunInterferenceDetection = options == null || options.RunInterferenceDetection,
+                    Progress = message => {
+                        if (progress != null) progress(message);
+                        if (options != null && options.Progress != null && options.Progress != progress) options.Progress(message);
+                    }
+                };
+                var metadata = new Extractor().Extract(app, metadataOptions);
+                EnsureSameModel(app, model, source, configuration, updateStamp);
+                var root = metadata.objects.Find(o => o.id == metadata.project.rootObjectId);
+                if (root == null || !String.Equals(root.sourceDocument, source, StringComparison.OrdinalIgnoreCase) || root.configuration != configuration)
+                    throw new InvalidOperationException("Metadata and GLB source identity differ; export was not published.");
+                metadata.extractionStatus["glb"] = "native_export_container_checked_mapping_unverified";
+                // The native GLB is never rescaled to the JSON display units. GLB
+                // specifies meters; its actual geometry/axis mapping awaits pair validation.
+                metadata.extractionStatus["exportPair"] = "same_document_configuration_root_update_stamp_checked";
+                if (warnings != 0) metadata.warnings.Add("Native GLB export warnings=" + warnings + " (" + (swFileSaveWarning_e)warnings + ").");
+                if (progress != null) progress("Writing metadata.json (schema " + metadata.schemaVersion + ")...");
+                metadata.Write(Path.Combine(stage, "metadata.json"));
+                // Publish both files together, only after both exporters have succeeded.
+                Directory.Move(stage, destination);
+                if (progress != null) progress("Published model.glb + metadata.json.");
+                return metadata;
+            }
+            catch (Exception ex)
+            {
+                // Preserve partial output for diagnosis; never label it a completed export.
+                throw new IOException("Export failed. Unpublished diagnostic files: " + stage + ". " + ex.Message, ex);
+            }
+        }
+
+        private static void EnsureSameModel(SldWorks app, ModelDoc2 model, string source, string configuration, int updateStamp)
+        {
+            if (!Object.Equals(app.ActiveDoc, model) || model.GetPathName() != source || model.ConfigurationManager.ActiveConfiguration.Name != configuration || model.GetUpdateStamp() != updateStamp)
+                throw new InvalidOperationException("Active model, configuration, or root update stamp changed during export. Retry without changing the model.");
         }
     }
 }
 
-
+namespace CADVision.SolidWorks
+{
+    internal static class ExportProgram
+    {
+        [STAThread]
+        private static int Main(string[] args)
+        {
+            ExportCommand command;
+            try { command = ExportCommand.Parse(args); }
+            catch (ArgumentException ex)
+            {
+                Console.Error.WriteLine(ex.Message);
+                Console.Error.WriteLine("Usage: CADVision.Export.exe [new-output-directory] [--skip-interferences] [--shipper CadenShipper.exe]");
+                return 2;
+            }
+            try
+            {
+                string folder = command.Directory ?? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "export-" + DateTime.Now.ToString("yyyyMMdd-HHmmss-fff"));
+                // Check requested handoff configuration before an expensive CAD export.
+                if (command.Shipper != null && !File.Exists(command.Shipper)) throw new FileNotFoundException("Requested shipper executable not found.", command.Shipper);
+                var clock = Stopwatch.StartNew();
+                Action<string> progress = message => Console.WriteLine("[{0:F1}s] {1}", clock.Elapsed.TotalSeconds, message);
+                progress("Connecting to SolidWorks");
+                var app = (SldWorks)Marshal.GetActiveObject("SldWorks.Application");
+                Console.WriteLine("Keep the active SolidWorks model unchanged until export completes.");
+                var metadata = ExportPipeline.Export(app, folder,
+                    new ExtractionOptions { RunInterferenceDetection = !command.SkipInterferences }, progress);
+                Console.WriteLine("Exported model.glb + metadata.json to " + Path.GetFullPath(folder));
+                Console.WriteLine(metadata.objects.Count + " objects; " + metadata.mates.Count + " mates; " + clock.Elapsed.TotalSeconds.ToString("F1") + " seconds.");
+                foreach (string warning in metadata.warnings) Console.Error.WriteLine("Warning: " + warning);
+                if (metadata.notices.Count > 0) Console.WriteLine("Info: " + metadata.notices.Count + " identity notices recorded in metadata.json.");
+                if (command.Shipper != null)
+                {
+                    progress("Starting CADEN Shipper with the completed pair");
+                    try
+                    {
+                        using (var process = Process.Start(ShipperHandoff.CreateStartInfo(command.Shipper, folder)))
+                        {
+                            if (process == null) throw new IOException("Shipper process did not start.");
+                            process.WaitForExit();
+                            if (process.ExitCode != 0) throw new IOException("Shipper reported exit code " + process.ExitCode + ".");
+                        }
+                        progress("Shipper completed successfully");
+                    }
+                    catch (Exception ex) { Console.Error.WriteLine("Exported files remain at " + Path.GetFullPath(folder) + ". Handoff failed: " + ex.Message); return 3; }
+                }
+                return 0;
+            }
+            catch (Exception ex) { Console.Error.WriteLine(ex.Message); return 1; }
+        }
+    }
+    // CLI parsing has no SolidWorks dependency. No model/source-file path is required.
+    public sealed class ExportCommand
+    {
+        public string Directory, Shipper;
+        public bool SkipInterferences;
+        public static ExportCommand Parse(string[] args)
+        {
+            var result = new ExportCommand();
+            for (int i = 0; i < args.Length; i++)
+            {
+                if (args[i] == "--skip-interferences" && !result.SkipInterferences) result.SkipInterferences = true;
+                else if (args[i] == "--shipper" && result.Shipper == null && i+1 < args.Length && !args[i+1].StartsWith("--"))
+                    result.Shipper = Path.GetFullPath(args[++i]);
+                else if (!args[i].StartsWith("--") && result.Directory == null) result.Directory = Path.GetFullPath(args[i]);
+                else throw new ArgumentException("Unknown, duplicate, or incomplete argument: " + args[i]);
+            }
+            return result;
+        }
+    }
+    // Launch only the caller-specified shipper; networking/Quest logic belongs there.
+    public static class ShipperHandoff
+    {
+        public static ProcessStartInfo CreateStartInfo(string executable, string directory)
+        {
+            string glb = Path.GetFullPath(Path.Combine(directory, "model.glb"));
+            string metadata = Path.GetFullPath(Path.Combine(directory, "metadata.json"));
+            if (!File.Exists(glb) || !File.Exists(metadata)) throw new IOException("Both completed export files are required for shipper handoff.");
+            return new ProcessStartInfo { FileName = Path.GetFullPath(executable),
+                Arguments = "--glb " + QuoteFile(glb) + " --metadata " + QuoteFile(metadata),
+                WorkingDirectory = Path.GetDirectoryName(Path.GetFullPath(executable)), UseShellExecute = false };
+        }
+        // These are Windows file paths ending in filenames, not shell commands.
+        private static string QuoteFile(string path)
+        {
+            if (path.IndexOf('"') >= 0 || path.EndsWith("\\")) throw new ArgumentException("Invalid handoff filename.");
+            return "\"" + path + "\"";
+        }
+    }
+}
