@@ -2007,6 +2007,7 @@ namespace CADVision.SolidWorks
             {
                 Console.Error.WriteLine(ex.Message);
                 Console.Error.WriteLine("Usage: CADVision.Export.exe [new-output-directory] [--custom-glb | --glb existing.glb] [--skip-interferences] [--shipper CadenShipper.exe]");
+                Console.Error.WriteLine("Publish: --custom-glb --publish-cadfiles, or --publish-pair existing-pair-directory");
                 Console.Error.WriteLine("Offline: CADVision.Export.exe [new-output-directory] --map-pair existing-pair-directory");
                 Console.Error.WriteLine("Default: metadata only. Automatic GLB export and native diagnostics are paused.");
                 return 2;
@@ -2014,6 +2015,12 @@ namespace CADVision.SolidWorks
             try
             {
                 string folder = command.Directory ?? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "export-" + DateTime.Now.ToString("yyyyMMdd-HHmmss-fff"));
+                if (command.PublishPair != null)
+                {
+                    CadFilesPublisher.Publish(command.PublishPair);
+                    Console.WriteLine("Published model.glb + metadata.json to " + CadFilesPublisher.Destination);
+                    return 0;
+                }
                 if (command.MapPair != null)
                 {
                     var mapped = GlbMapping.ProcessPair(command.MapPair, folder);
@@ -2034,6 +2041,10 @@ namespace CADVision.SolidWorks
                 var metadata = command.Glb == null && !command.CustomGlb
                     ? ExportPipeline.ExportMetadataOnly(app, folder, options)
                     : ExportPipeline.Export(app, folder, new ExtractionOptions { RunInterferenceDetection = !command.SkipInterferences }, progress, command.Glb, null, command.CustomGlb);
+                if (command.PublishCadFiles) {
+                    CadFilesPublisher.Publish(folder);
+                    progress("Replaced CadFiles contents: " + CadFilesPublisher.Destination);
+                }
                 Console.WriteLine((command.Glb == null && !command.CustomGlb ? "Exported metadata.json to " : "Exported model.glb + metadata.json to ") + Path.GetFullPath(folder));
                 Console.WriteLine(metadata.objects.Count + " objects; " + metadata.mates.Count + " mates; " + clock.Elapsed.TotalSeconds.ToString("F1") + " seconds.");
                 PrintMapping(metadata);
@@ -2082,14 +2093,16 @@ namespace CADVision.SolidWorks
     // CLI parsing has no SolidWorks dependency. No model/source-file path is required.
     public sealed class ExportCommand
     {
-        public string Directory, Shipper, Glb, MapPair, NativeGlbPath;
-        public bool SkipInterferences, ProbeNativeGlb, CustomGlb;
+        public string Directory, Shipper, Glb, MapPair, NativeGlbPath, PublishPair;
+        public bool SkipInterferences, ProbeNativeGlb, CustomGlb, PublishCadFiles;
         public static ExportCommand Parse(string[] args)
         {
             var result = new ExportCommand();
             for (int i = 0; i < args.Length; i++)
             {
                 if (args[i] == "--skip-interferences" && !result.SkipInterferences) result.SkipInterferences = true;
+                else if (args[i] == "--publish-cadfiles" && !result.PublishCadFiles) result.PublishCadFiles = true;
+                else if (args[i] == "--publish-pair" && result.PublishPair == null && i+1 < args.Length && !args[i+1].StartsWith("--")) result.PublishPair = Path.GetFullPath(args[++i]);
                 else if (args[i] == "--custom-glb" && !result.CustomGlb) result.CustomGlb = true;
                 else if (args[i] == "--probe-native-glb" && !result.ProbeNativeGlb) result.ProbeNativeGlb = true;
                 else if (args[i] == "--map-pair" && result.MapPair == null && i+1 < args.Length && !args[i+1].StartsWith("--"))
@@ -2110,9 +2123,67 @@ namespace CADVision.SolidWorks
                 throw new ArgumentException("--native-glb-path is only for native paired export.");
             if (result.ProbeNativeGlb || result.NativeGlbPath != null) throw new ArgumentException("Automatic GLB export is paused. Omit native GLB flags to export metadata only.");
             if (result.CustomGlb && (result.Glb != null || result.MapPair != null)) throw new ArgumentException("--custom-glb cannot be combined with supplied GLB or offline mapping.");
+            if (result.PublishCadFiles && (!result.CustomGlb && result.Glb == null || result.MapPair != null))
+                throw new ArgumentException("--publish-cadfiles requires --custom-glb or --glb.");
+            if (result.PublishPair != null && (result.Directory != null || result.CustomGlb || result.Glb != null || result.MapPair != null || result.SkipInterferences || result.Shipper != null || result.PublishCadFiles))
+                throw new ArgumentException("--publish-pair is an offline-only publishing mode.");
             return result;
         }
     }
+    public static class CadFilesPublisher
+    {
+        public const string Destination = @"C:\Users\aiden\OneDrive\Desktop\EXPORT\Assets\CadFiles";
+        public static void Publish(string source)
+        {
+            source = Path.GetFullPath(source);
+            string glb = Path.Combine(source, "model.glb"), json = Path.Combine(source, "metadata.json");
+            // Validate before replacing any existing destination contents.
+            GlbExporter.CheckContainer(glb);
+            var serializer = new System.Web.Script.Serialization.JavaScriptSerializer { MaxJsonLength = Int32.MaxValue, RecursionLimit = 256 };
+            var metadata = serializer.Deserialize<Metadata>(File.ReadAllText(json));
+            if (metadata == null) throw new InvalidDataException("Missing metadata.");
+            metadata.Validate();
+            var asset = ExportPipeline.DescribeGlb(glb, null);
+            if (metadata.glbAsset == null || asset.sha256 != metadata.glbAsset.sha256)
+                throw new InvalidDataException("GLB does not match metadata hash; destination unchanged.");
+            string target = Path.GetFullPath(Destination);
+            string assets = Path.GetDirectoryName(target);
+            // Refuse links/junctions so cleanup cannot escape the named folder.
+            for (var dir = new DirectoryInfo(target); dir != null; dir = dir.Parent)
+                if (dir.Exists && (dir.Attributes & FileAttributes.ReparsePoint) != 0)
+                    throw new IOException("Linked destination folders are not supported: " + dir.FullName);
+            if (Directory.Exists(target)) CheckTree(target);
+            Directory.CreateDirectory(assets);
+            string stage = Path.Combine(assets, ".CadFiles-new-" + Guid.NewGuid().ToString("N"));
+            string old = Path.Combine(assets, ".CadFiles-old-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(stage);
+            File.Copy(glb, Path.Combine(stage, "model.glb"));
+            File.Copy(json, Path.Combine(stage, "metadata.json"));
+            if (ExportPipeline.DescribeGlb(Path.Combine(stage,"model.glb"),null).sha256 != asset.sha256 ||
+                ExportPipeline.DescribeGlb(Path.Combine(stage,"metadata.json"),null).sha256 != ExportPipeline.DescribeGlb(json,null).sha256)
+                throw new IOException("Copy verification failed; destination unchanged. Staging: " + stage);
+            bool moved = Directory.Exists(target);
+            if (moved) Directory.Move(target, old);
+            try { Directory.Move(stage, target); }
+            catch { if (moved) Directory.Move(old, target); throw; }
+            if (moved) {
+                // Exact sibling created above by moving only CadFiles; never clean Assets itself.
+                if (Path.GetDirectoryName(Path.GetFullPath(old)) != assets || !Path.GetFileName(old).StartsWith(".CadFiles-old-"))
+                    throw new IOException("Unexpected cleanup path.");
+                CheckTree(old);
+                Directory.Delete(old, true);
+            }
+        }
+        private static void CheckTree(string path)
+        {
+            foreach (string entry in Directory.GetFileSystemEntries(path)) {
+                var attr=File.GetAttributes(entry);
+                if ((attr & FileAttributes.ReparsePoint)!=0) throw new IOException("Refusing linked entry: "+entry);
+                if ((attr & FileAttributes.Directory)!=0) CheckTree(entry);
+            }
+        }
+    }
+
     // Launch only the caller-specified shipper; networking/Quest logic belongs there.
     public static class ShipperHandoff
     {
