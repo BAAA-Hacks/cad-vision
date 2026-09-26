@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using Oculus.Interaction;
 using UnityEngine;
 
@@ -39,6 +40,12 @@ public class CADPointerInteraction : MonoBehaviour
     [Tooltip("Hand rays: index pinch = select.")]
     [SerializeField] private bool useRightHand = true;
     [SerializeField] private bool useLeftHand = true;
+
+    [Header("Hand Ray Visual")]
+    [Tooltip("Show the hand ray whenever the hand is pointing, not only over something interactive (easier aiming).")]
+    [SerializeField] private bool alwaysShowHandRay = true;
+    [Tooltip("Drawn length of the hand ray (m). The rig default is a 0.25 m stub.")]
+    [SerializeField, Min(0.1f)] private float handRayVisualLength = 1.5f;
 
     // Renamed from dragStartDistance/dragStartAngle so existing scene values (1.5 cm / 2.5°,
     // too sensitive to the trigger-squeeze jolt) don't override the new defaults.
@@ -163,7 +170,36 @@ public class CADPointerInteraction : MonoBehaviour
             if (sources.Any(src => src is CADRayPointerSource known && known.Ray == ray))
                 continue;
             if (CADRayPointerSource.TryCreate(ray, out CADRayPointerSource source) && IsWanted(source))
+            {
                 RegisterSource(source);
+                if (source.Kind == CADPointerSourceKind.Hand && alwaysShowHandRay)
+                    ConfigureHandRayVisual(ray);
+            }
+        }
+    }
+
+    // The rig's hand ray visual hides unless it's over an interactable and is only 0.25 m long.
+    // RayInteractorRayVisual exposes no setters for those, so its two serialized fields are
+    // set directly (the SDK still hides the ray whenever the hand isn't in a pointing pose).
+    private void ConfigureHandRayVisual(RayInteractor ray)
+    {
+        const BindingFlags Fields = BindingFlags.Instance | BindingFlags.NonPublic;
+        FieldInfo interactorField = typeof(RayInteractorRayVisual).GetField("_rayInteractor", Fields);
+        FieldInfo hideField = typeof(RayInteractorRayVisual).GetField("_hideWhenNoInteractable", Fields);
+        FieldInfo lengthField = typeof(RayInteractorRayVisual).GetField("_maxRayVisualLength", Fields);
+        if (interactorField == null || hideField == null || lengthField == null)
+        {
+            Debug.LogWarning("[CADPointer] RayInteractorRayVisual fields changed in this SDK version; hand ray visual left as is.");
+            return;
+        }
+
+        foreach (RayInteractorRayVisual visual in FindObjectsByType<RayInteractorRayVisual>(FindObjectsInactive.Include))
+        {
+            if (!ReferenceEquals(interactorField.GetValue(visual), ray))
+                continue;
+            hideField.SetValue(visual, false);
+            lengthField.SetValue(visual, handRayVisualLength);
+            Debug.Log($"[CADPointer] Hand ray visual on '{ray.name}': always shown, {handRayVisualLength:F1} m.");
         }
     }
 
