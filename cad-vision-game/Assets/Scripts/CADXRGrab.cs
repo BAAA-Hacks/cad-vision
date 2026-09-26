@@ -6,6 +6,13 @@ using UnityEngine;
 /// releasing grip drops it. Normal use is trigger press-and-drag via CADPointerInteraction.
 /// Uses the same CADGrabSession math (rigid pickup, depth-only reach assist), driven by the
 /// right controller anchor. All pose changes go through the service.
+/// Right-controller grip grabs the currently selected CAD object; releasing grip drops it.
+/// Holding both controller grips scales around the selected object's visible center.
+/// Selection stays with the trigger/ray flow. All pose changes go through the service.
+/// Behaves like a conventional VR pickup: the object keeps its grab-start position and
+/// rotation relative to the controller, so it moves and rotates rigidly with the hand.
+/// Beyond reachDistance, only controller movement toward/away from the held point is amplified
+/// (it lengthens or shortens the hold distance); lateral movement and rotation stay 1:1.
 /// </summary>
 [DisallowMultipleComponent]
 [RequireComponent(typeof(CADVisionManipulationService))]
@@ -26,6 +33,22 @@ public class CADXRGrab : MonoBehaviour
     [Tooltip("How quickly (per metre beyond reach) gain approaches its maximum.")]
     [SerializeField, Min(0f)] private float decayRate = 1.5f;
 
+    [Header("Two-Hand Scaling")]
+    [SerializeField] private Transform leftControllerAnchor;
+    [Tooltip("Minimum hand separation needed to start scaling, in metres.")]
+    [SerializeField, Min(0.01f)] private float minimumScaleSeparation = 0.08f;
+    [Tooltip("Smallest size relative to the size when both grips were pressed.")]
+    [SerializeField, Range(0.01f, 1f)] private float minimumScaleRatio = 0.1f;
+    [Tooltip("Largest size relative to the size when both grips were pressed.")]
+    [SerializeField, Min(1f)] private float maximumScaleRatio = 10f;
+
+    private bool scaling;
+    private float initialHandDistance;
+    private Vector3 initialScale;
+    private Vector3 scalePivotLocal;
+    private Vector3 scalePivotWorld;
+    private bool scaleCancelledUntilRelease;
+
     private CADVisionManipulationService manipulationService;
     private CADPointerInteraction pointerInteraction;
     private readonly CADGrabSession session = new CADGrabSession();
@@ -42,11 +65,14 @@ public class CADXRGrab : MonoBehaviour
         manipulationService = GetComponent<CADVisionManipulationService>();
         pointerInteraction = GetComponent<CADPointerInteraction>();
 
-        if (controllerAnchor == null)
+        if (controllerAnchor == null || leftControllerAnchor == null)
         {
             OVRCameraRig rig = FindAnyObjectByType<OVRCameraRig>();
             if (rig != null)
-                controllerAnchor = rig.rightControllerAnchor;
+            {
+                if (controllerAnchor == null) controllerAnchor = rig.rightControllerAnchor;
+                if (leftControllerAnchor == null) leftControllerAnchor = rig.leftControllerAnchor;
+            }
         }
 
         if (controllerAnchor == null)
@@ -67,6 +93,10 @@ public class CADXRGrab : MonoBehaviour
             return;
 
         if (session.IsActive)
+        if (UpdateTwoHandScale())
+            return;
+
+        if (grabbedId != null)
         {
             session.ReachDistance = reachDistance;
             session.MaxExtraGain = maxExtraGain;
@@ -86,6 +116,56 @@ public class CADXRGrab : MonoBehaviour
             Debug.Log("[CADXRGrab] Grip GetDown detected; attempting grab.");
             TryGrab();
         }
+    }
+
+    // Returns true while two-hand input owns this frame, preventing grab pose updates.
+    private bool UpdateTwoHandScale()
+    {
+        bool rightHeld = OVRInput.Get(OVRInput.Button.PrimaryHandTrigger, controller);
+        bool leftHeld = OVRInput.Get(OVRInput.Button.PrimaryHandTrigger, OVRInput.Controller.LTouch);
+        bool bothHeld = rightHeld && leftHeld;
+        bool tracked = leftControllerAnchor != null &&
+            OVRInput.GetControllerPositionTracked(OVRInput.Controller.LTouch) &&
+            OVRInput.GetControllerPositionTracked(controller);
+
+        if (!bothHeld) scaleCancelledUntilRelease = false;
+
+        if (scaling && (!bothHeld || !tracked || !IsStillGrabbable()))
+        {
+            bool resumeGrab = rightHeld && tracked && IsStillGrabbable();
+            Release("two-hand scaling ended");
+            scaleCancelledUntilRelease = bothHeld;
+            // Recapture the current pose after scaling so the old grab offset cannot snap back.
+            if (resumeGrab && !bothHeld) TryGrab();
+            return true;
+        }
+
+        if (!bothHeld) return false;
+        if (scaleCancelledUntilRelease || !tracked) return true;
+
+        float distance = Vector3.Distance(leftControllerAnchor.position, controllerAnchor.position);
+        if (!scaling)
+        {
+            if (distance < Mathf.Max(0.01f, minimumScaleSeparation)) return true;
+            if (grabbedId == null || !IsStillGrabbable())
+            {
+                Release("starting two-hand scaling");
+                TryGrab();
+            }
+            if (grabbedId == null) return true;
+
+            initialHandDistance = distance;
+            initialScale = grabbedTransform.localScale;
+            scalePivotWorld = VisualCenter(grabbedTransform.GetComponent<CADObject>());
+            scalePivotLocal = grabbedTransform.InverseTransformPoint(scalePivotWorld);
+            scaling = true;
+        }
+
+        float ratio = Mathf.Clamp(distance / initialHandDistance,
+            Mathf.Clamp(minimumScaleRatio, 0.01f, 1f), Mathf.Max(1f, maximumScaleRatio));
+        manipulationService.SetObjectScaleAroundPoint(
+            grabbedId, initialScale * ratio, scalePivotLocal, scalePivotWorld);
+        return true;
     }
 
     // TEMP: logs grip button/axis changes independently of the anchor and grab state.
@@ -141,5 +221,8 @@ public class CADXRGrab : MonoBehaviour
             Debug.Log($"[CADXRGrab] Grab ended: '{session.GrabbedId}' ({reason}).");
 
         session.End();
+        scaling = false;
+        grabbedId = null;
+        grabbedTransform = null;
     }
 }
