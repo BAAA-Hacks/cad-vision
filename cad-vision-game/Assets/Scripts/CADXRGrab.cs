@@ -2,6 +2,10 @@ using System.Linq;
 using UnityEngine;
 
 /// <summary>
+/// Right grip moves the selected CAD object using CADGrabSession.
+/// Both grips scale it around its visible center; releasing the left grip resumes movement.
+/// Trigger press-and-drag remains owned by CADPointerInteraction and takes priority.
+/// All transform changes go through the manipulation service.
 /// TEMP debug fallback: right-controller grip grabs the currently selected CAD object;
 /// releasing grip drops it. Normal use is trigger press-and-drag via CADPointerInteraction.
 /// Uses the same CADGrabSession math (rigid pickup, depth-only reach assist), driven by the
@@ -38,6 +42,12 @@ public class CADXRGrab : MonoBehaviour
     [Tooltip("Largest size relative to the size when both grips were pressed.")]
     [SerializeField, Min(1f)] private float maximumScaleRatio = 10f;
 
+    private CADObject scaleTarget;
+    private bool scaling;
+    private float initialHandDistance;
+    private Vector3 initialScale;
+    private Vector3 scalePivotLocal;
+    private Vector3 scalePivotWorld;
     // Shared two-hand scale math (also used by two-pointer pinch scaling).
     private readonly CADScaleGesture partScale = new CADScaleGesture();
     private readonly CADScaleGesture modelScale = new CADScaleGesture(); // Model manipulation mode.
@@ -164,6 +174,19 @@ public class CADXRGrab : MonoBehaviour
                 Release("starting two-hand scaling");
                 TryGrab();
             }
+            if (session.GrabbedId == null) return true;
+
+            initialHandDistance = distance;
+            initialScale = scaleTarget.transform.localScale;
+            scalePivotWorld = CADGrabSession.VisualCenter(scaleTarget);
+            scalePivotLocal = scaleTarget.transform.InverseTransformPoint(scalePivotWorld);
+            scaling = true;
+        }
+
+        float ratio = Mathf.Clamp(distance / initialHandDistance,
+            Mathf.Clamp(minimumScaleRatio, 0.01f, 1f), Mathf.Max(1f, maximumScaleRatio));
+        manipulationService.SetObjectScaleAroundPoint(
+            session.GrabbedId, initialScale * ratio, scalePivotLocal, scalePivotWorld);
             if (!IsStillGrabbable()) return true;
 
             partScale.TryBeginObjects(manipulationService, new[] { grabbedObject }, distance,
@@ -282,10 +305,18 @@ public class CADXRGrab : MonoBehaviour
         session.ReachDistance = reachDistance;
         session.MaxExtraGain = maxExtraGain;
         session.DecayRate = decayRate;
+        scaleTarget = selected;
         string info = session.Begin(manipulationService, selected,
             new Pose(controllerAnchor.position, controllerAnchor.rotation));
         grabbedObject = selected;
         Debug.Log($"[CADXRGrab] Grab started: '{selected.id}' ({selected.name}); {info}.");
+    }
+
+    private bool IsStillGrabbable()
+    {
+        return session.IsActive && scaleTarget != null &&
+            scaleTarget.gameObject.activeInHierarchy &&
+            manipulationService.GetSelectedObjects().Any(o => o == scaleTarget);
     }
 
     private void Release(string reason)
@@ -294,6 +325,8 @@ public class CADXRGrab : MonoBehaviour
             Debug.Log($"[CADXRGrab] Grab ended: '{session.GrabbedId}' ({reason}).");
 
         session.End();
+        scaling = false;
+        scaleTarget = null;
         partScale.End();
         grabbedObject = null;
     }
