@@ -103,6 +103,7 @@ namespace Core.Tools.Query
             ["reasonCodes"] = unknown > 0 ? new JArray("PROPERTY_VALUE_UNAVAILABLE") : new JArray() };
         private JObject Summary() => new JObject
         {
+            ["exportContext"] = Store.CopyExportContext(),
             ["mechanicalScopes"] = new JArray(Store.MechanicalScopes.Select(s => new JObject { ["scopeAssemblyId"] = s.ScopeAssemblyId, ["configuration"] = s.Configuration,
                 ["state"] = s.State.ToString(), ["membershipCoverage"] = s.MembershipCoverage.ToString(), ["mateCoverage"] = s.MateCoverage.ToString(), ["source"] = s.Source })),
             ["name"] = Store.Name, ["rootObjectId"] = Store.Capabilities.Hierarchy == CapabilityState.Available ? Store.CopyProjectMetadata()["rootObjectId"] : null,
@@ -140,10 +141,29 @@ namespace Core.Tools.Query
             if (field.StartsWith("material.", StringComparison.Ordinal)) data = data?[field.Substring(9)];
             string state = value.State == AvailabilityState.NotApplicable ? "not_applicable" : value.State.ToString().ToLowerInvariant();
             if (state == "available" && (data == null || data.Type == JTokenType.Null)) state = "missing";
-            return new JObject { ["status"] = state, ["value"] = state == "available" ? data : null,
+            JObject? inertiaLabels = null;
+            if (field == "inertia" && state == "available" && data is JObject tensor)
+            {
+                // SolidWorks calls the center-of-mass/output-axis section L, not origin I or principal P.
+                inertiaLabels = new JObject { ["Lxx"] = "ixx", ["Lxy"] = "ixy", ["Lxz"] = "ixz",
+                    ["Lyx"] = "ixy", ["Lyy"] = "iyy", ["Lyz"] = "iyz", ["Lzx"] = "ixz", ["Lzy"] = "iyz", ["Lzz"] = "izz" };
+                data = new JObject(inertiaLabels.Properties().Select(p => new JProperty(p.Name, tensor[(string)p.Value!]!.DeepClone())));
+            }
+            var response = new JObject { ["status"] = state, ["value"] = state == "available" ? data : null,
                 ["reason"] = state == "missing" && value.State == AvailabilityState.Available ? "Nested field was not reported." : value.Reason,
                 ["unit"] = value.Unit, ["coordinateFrame"] = value.CoordinateFrame, ["sourceField"] = value.Provenance.SourceField + (field.StartsWith("material.", StringComparison.Ordinal) ? "/" + field.Substring(9) : ""),
-                ["expectedFormat"] = value.ExpectedFormat };
+                ["expectedFormat"] = value.ExpectedFormat, ["sourceEvidence"] = value.SourceEvidence,
+                ["reasonCode"] = value.ReasonCode, ["exportedValuePresent"] = value.RawValue != null && value.RawValue.Type != JTokenType.Null,
+                ["spatialReference"] = value.SpatialReference };
+            if (inertiaLabels != null)
+            {
+                response["displayName"] = "Moments of inertia taken at the center of mass and aligned with the output coordinate system";
+                response["expectedFormat"] = "SolidWorks Lxx/Lxy/Lxz, Lyx/Lyy/Lyz, Lzx/Lzy/Lzz components; original exported values preserved";
+                response["componentSourceFields"] = new JObject(inertiaLabels.Properties().Select(p => new JProperty(p.Name, value.Provenance.SourceField + "/" + (string)p.Value!)));
+                response["notation"] = "source_cross_terms_preserved";
+                response["limitations"] = new JArray("NOT_PRINCIPAL_MOMENTS", "NOT_INERTIA_ABOUT_OUTPUT_ORIGIN", "CROSS_TERM_SIGN_CONVENTION_NOT_DECLARED");
+            }
+            return response;
         }
         private JObject Details(JObject args, CancellationToken token)
         {

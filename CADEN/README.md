@@ -67,6 +67,8 @@ supplied FRED synthetic metadata there; the file is ignored by Git. Use **Load m
 to choose another JSON. Successful replacement starts a new chat. A rejected file leaves
 the previous design/conversation intact. New chat reloads the currently selected file.
 No GLB upload or Unity connection is needed for these metadata queries.
+Metadata schemas 1.0 and 2.1 are supported. See the [2.1 importer mapping](Core/primitives/operations/project/SCHEMA_2_1.md)
+for extraction status, units and unknown/not-applicable semantics.
 
 Try “What is loaded?”, “Find objects named R_0805”, “Show the root's direct children”,
 and “What is the root assembly's mass?” The fixture has no engineering mass/material

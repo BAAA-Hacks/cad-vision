@@ -44,10 +44,15 @@ namespace Core.Primitives.DataStructures.Project
         public ValueProvenance Provenance { get; }
         public JToken? Value => value?.DeepClone();
         public JToken? RawValue => rawValue?.DeepClone();
+        private readonly JObject? sourceEvidence;
+        public JObject? SourceEvidence => (JObject?)sourceEvidence?.DeepClone();
+        public string? ReasonCode { get; }
+        private readonly JObject? spatialReference;
+        public JObject? SpatialReference => (JObject?)spatialReference?.DeepClone();
         internal MetadataValue(AvailabilityState state, JToken? value, JToken? raw, bool present, string reason,
-            string format, string? unit, string? frame, ValueProvenance provenance)
+            string format, string? unit, string? frame, ValueProvenance provenance, JObject? sourceEvidence = null, string? reasonCode = null, JObject? spatialReference = null)
         { State = state; this.value = value?.DeepClone(); rawValue = raw?.DeepClone(); WasPresent = present;
-            Reason = reason; ExpectedFormat = format; Unit = unit; CoordinateFrame = frame; Provenance = provenance; }
+            Reason = reason; ReasonCode = reasonCode; ExpectedFormat = format; Unit = unit; CoordinateFrame = frame; Provenance = provenance; this.sourceEvidence = (JObject?)sourceEvidence?.DeepClone(); this.spatialReference = (JObject?)spatialReference?.DeepClone(); }
     }
 
     public sealed class ComponentMetadata
@@ -101,6 +106,11 @@ namespace Core.Primitives.DataStructures.Project
         public IReadOnlyList<Core.Primitives.DataStructures.MechanicalGraph.MechanicalScope> MechanicalScopes { get; }
         public JObject CopyProjectMetadata() => (JObject)document["project"]!.DeepClone();
         public JObject CopyRawExport() => (JObject)document.DeepClone();
+        public string SchemaVersion => (string)document["schemaVersion"]!;
+        public JObject CopyExportContext() => new JObject { ["schemaVersion"] = SchemaVersion,
+            ["extractionStatus"] = document["extractionStatus"]?.DeepClone(), ["coordinateSystemDeclaration"] = document["coordinateSystem"]?.DeepClone(),
+            ["documentUnits"] = document["project"]?["documentUnits"]?.DeepClone(), ["units"] = document["project"]?["units"]?.DeepClone(),
+            ["mappingStatus"] = document["mappingStatus"]?.DeepClone(), ["warnings"] = document["warnings"]?.DeepClone() };
         internal ProjectSnapshot(JObject document, string projectId, string snapshotId, string name, string? revisionId, bool fixture,
             IdentityScope identityScope, ProjectCapabilities capabilities, Dictionary<string, ComponentMetadata> components,
             Dictionary<string, MateMetadata> mates, List<LoadDiagnostic> diagnostics,

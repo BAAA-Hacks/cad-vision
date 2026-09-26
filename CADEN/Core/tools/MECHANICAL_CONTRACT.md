@@ -7,7 +7,7 @@ mechanical membership or complete coverage.
 
 ## Export extension
 
-Schema 1.0 exports may add this top-level section (IDs reference existing records):
+Schema 1.0 and 2.1 exports may add this top-level section (IDs reference existing records):
 
 ```json
 {

@@ -10,6 +10,18 @@ static void Require(bool value, string message)
     if (!value) throw new Exception(message);
 }
 
+if (args.Contains("--metadata"))
+{
+    try
+    {
+        int index = Array.IndexOf(args, "--metadata");
+        if (index + 1 >= args.Length) throw new ArgumentException("--metadata requires a JSON path.");
+        await Schema21Checks.AuditAsync(args[index + 1]);
+    }
+    catch (Exception ex) { Console.Error.WriteLine("METADATA_AUDIT_FAILED: " + ex); Environment.ExitCode = 1; }
+    return;
+}
+
 if (args.Contains("--live-query"))
 {
     try
@@ -134,6 +146,7 @@ await QueryChecks.RunAsync();
 await SemanticQueryChecks.RunAsync();
 await ToolContractChecks.RunAsync();
 await MechanicalQueryChecks.RunAsync();
+await Schema21Checks.RunAsync();
 await DiagnosticChecks.RunAsync();
 MechanicalGraphChecks.Run();
 ProjectLoaderChecks.Run();

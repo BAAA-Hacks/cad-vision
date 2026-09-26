@@ -69,7 +69,8 @@ namespace Core.Primitives.Operations.MechanicalGraph
                 if (!Finite(token) || (double)token! < 0)
                 { Warn(path, "Expected finite non-negative number."); return new GraphQuantity(null, ValueState.Invalid, canonical, "Malformed value."); }
                 var factors = mass ? new Dictionary<string, double> { ["kg"] = 1, ["g"] = 0.001, ["lb"] = 0.45359237 }
-                    : new Dictionary<string, double> { ["m"] = 1, ["cm"] = 0.000001, ["mm"] = 0.000000001, ["in"] = 0.000016387064, ["ft"] = 0.028316846592 };
+                    : new Dictionary<string, double> { ["m"] = 1, ["cm"] = 0.000001, ["mm"] = 0.000000001, ["in"] = 0.000016387064, ["ft"] = 0.028316846592,
+                        ["m^3"] = 1, ["cm^3"] = 1e-6, ["mm^3"] = 1e-9, ["in^3"] = 0.000016387064, ["ft^3"] = 0.028316846592 };
                 if (unit == null) return new GraphQuantity(null, ValueState.Missing, canonical, "Project unit missing; value cannot be aggregated.");
                 if (!factors.TryGetValue(unit, out double factor))
                 { Warn(path, "Unsupported project unit."); return new GraphQuantity(null, ValueState.Invalid, canonical, "Unsupported unit."); }
@@ -81,7 +82,7 @@ namespace Core.Primitives.Operations.MechanicalGraph
             {
                 if (!Enum.IsDefined(typeof(GraphDataState), state)) Error("INVALID_EXPORT_STATE", "", "Unknown export state.");
                 if (state == GraphDataState.Invalid) Error("INVALID_EXPORT_STATE", "/mates", "Caller reports invalid mate export.");
-                if (String(doc["schemaVersion"]) != "1.0") Error("UNSUPPORTED_SCHEMA", "/schemaVersion", "Expected metadata schema 1.0.");
+                if (String(doc["schemaVersion"]) != "1.0" && String(doc["schemaVersion"]) != "2.1") Error("UNSUPPORTED_SCHEMA", "/schemaVersion", "Supported metadata schema versions: 1.0, 2.1.");
                 if (!(doc["project"] is JObject)) Error("INVALID_PROJECT", "/project", "Expected project metadata.");
                 var sample = doc["sampleInfo"] as JObject;
                 if (doc["sampleInfo"] != null && doc["sampleInfo"]!.Type != JTokenType.Null && sample == null)
@@ -108,8 +109,15 @@ namespace Core.Primitives.Operations.MechanicalGraph
                         if (assigned == true) material = OptionalText(mat["name"], path + "/material/name");
                     }
                     else if (!fixture && o["material"] != null && o["material"]!.Type != JTokenType.Null) Warn(path + "/material", "Expected material object; treated as unknown.");
+                    GraphQuantity ReadQuantity(string field)
+                    {
+                        if (String(doc["schemaVersion"]) != "2.1") return Quantity(o[field], field == "mass" ? massUnit : lengthUnit, field == "mass", path + "/" + field);
+                        var value = Project.MetadataPropertyRules.Read(o, doc["project"] as JObject ?? new JObject(), fixture, path + "/" + field, field, "2.1");
+                        if ((string?)value["status"] != "available") return new GraphQuantity(null, (string?)value["status"] == "invalid" ? ValueState.Invalid : ValueState.Missing, field == "mass" ? "kg" : "m^3", (string?)value["reason"]);
+                        return Quantity(value["value"], (string?)value["unit"], field == "mass", path + "/" + field);
+                    }
                     var node = new ComponentNode(id, name, type, OptionalText(o["parentId"], path + "/parentId"),
-                        Quantity(o["mass"], massUnit, true, path + "/mass"), Quantity(o["volume"], lengthUnit, false, path + "/volume"), material,
+                        ReadQuantity("mass"), ReadQuantity("volume"), material,
                         fixture ? null : OptionalText(o["definitionStatus"], path + "/definitionStatus"),
                         fixture ? null : Boolean(o["fixed"], path + "/fixed"), fixture ? null : Boolean(o["suppressed"], path + "/suppressed"), Issues(o["issueIds"], path + "/issueIds"));
                     nodes.Add(id, node);

@@ -53,7 +53,7 @@ namespace Core.Primitives.Operations.MechanicalGraph
                 else if (state == GraphDataState.Available)
                 {
                     var selected = new HashSet<string>(mateIds, StringComparer.Ordinal);
-                    var projection = new JObject { ["schemaVersion"] = "1.0", ["project"] = doc["project"]!.DeepClone(),
+                    var projection = new JObject { ["schemaVersion"] = doc["schemaVersion"]!.DeepClone(), ["project"] = doc["project"]!.DeepClone(),
                         ["objects"] = new JArray(ids.Select(id => objects[id].DeepClone())),
                         ["mates"] = new JArray(((JArray)doc["mates"]!).Where(m => selected.Contains((string)m["id"]!)).Select(m => m.DeepClone())) };
                     var built = BuildMechanicalGraph.BuildParsed(projection, GraphDataState.Available, snapshotId);

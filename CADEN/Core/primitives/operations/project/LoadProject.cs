@@ -38,7 +38,8 @@ namespace Core.Primitives.Operations.Project
                 if (reader.Read()) throw new JsonReaderException("Trailing content.");
             }
             catch (JsonException) { Fatal("INVALID_JSON", "", "Expected one JSON object without duplicate keys or excessive nesting."); return new ProjectLoadResult(null, diagnostics); }
-            if (Text(doc["schemaVersion"]) != "1.0") Fatal("UNSUPPORTED_SCHEMA", "/schemaVersion", "Expected schemaVersion 1.0.");
+            string? schema = Text(doc["schemaVersion"]);
+            if (schema != "1.0" && schema != "2.1") Fatal("UNSUPPORTED_SCHEMA", "/schemaVersion", "Supported metadata schema versions: 1.0, 2.1.");
             var project = doc["project"] as JObject;
             if (project == null || Text(project["id"], 128) == null || Text(project["name"]) == null)
                 Fatal("INVALID_PROJECT_IDENTITY", "/project", "Project requires a non-empty ID and name.");
@@ -71,10 +72,11 @@ namespace Core.Primitives.Operations.Project
                 var values = new Dictionary<string, MetadataValue>(StringComparer.Ordinal);
                 foreach (string field in MetadataPropertyRules.Fields)
                 {
-                    var result = MetadataPropertyRules.Read(o, project, fixture, prefix + field, field);
-                    var state = (string?)result["status"] == "available" ? AvailabilityState.Available : (string?)result["status"] == "invalid" ? AvailabilityState.Invalid : AvailabilityState.Missing;
+                    var result = MetadataPropertyRules.Read(o, project, fixture, prefix + field, field, schema!, doc);
+                    var state = (string?)result["status"] == "available" ? AvailabilityState.Available : (string?)result["status"] == "invalid" ? AvailabilityState.Invalid : (string?)result["status"] == "not_applicable" ? AvailabilityState.NotApplicable : AvailabilityState.Missing;
                     values[field] = new MetadataValue(state, state == AvailabilityState.Available ? result["value"] : null, o[field], o.Property(field) != null,
-                        (string)result["reason"]!, (string)result["expectedFormat"]!, (string?)result["unit"], null, Provenance(prefix + field));
+                        (string)result["reason"]!, (string)result["expectedFormat"]!, (string?)result["unit"], (string?)result["coordinateFrame"], Provenance(prefix + field),
+                        schema == "2.1" ? MetadataPropertyRules.SourceEvidence(o, field) : null, (string?)result["reasonCode"], result["spatialReference"] as JObject);
                     if (state == AvailabilityState.Invalid) diagnostics.Add(new LoadDiagnostic("INVALID_PROPERTY", prefix + field, (string)result["reason"]!, DiagnosticScope.Properties, false));
                 }
                 // Structural identity remains usable even if hierarchy is unavailable or invalid.

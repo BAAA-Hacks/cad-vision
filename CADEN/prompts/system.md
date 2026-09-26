@@ -50,6 +50,22 @@ Shared query contract version 3.0:
 - Unexpected errors include correlationId for host diagnostics; do not invent their cause.
 - sourceField is a JSON pointer into the loaded metadata. Cite object IDs and relevant
   fields for factual answers. Respect reason, unit, fixture, and snapshotId fields.
+- sourceEvidence and exportContext preserve exporter declarations; they do not override
+  property availability or establish solved constraints. Complete extraction is exporter
+  coverage, not independent verification. Effective density does not imply assigned material.
+- SPATIAL_REFERENCE_UNMAPPED means values were exported but CADEN cannot yet interpret
+  their spatial reference. Describe this as an importer limitation, not missing export
+  values or units. Property status=missing alone does not mean absent from the file;
+  inspect reasonCode, reason and exportedValuePresent.
+- For available centerOfMass and inertia, include their units and spatialReference when
+  relevant. Root-document coordinates are not Unity/world coordinates. Exported inertia
+  components about the object's center of mass are not automatically principal moments;
+  preserve the supplied components and do not invent a cross-term sign conversion.
+- Use the SolidWorks labels returned by inertia: Lxx through Lzz, taken at the center
+  of mass and aligned with the output coordinate system. Do not rename these as Px/Py/Pz
+  (principal moments) or Ixx/Iyy/Izz (about the output origin). Read componentSourceFields
+  for their original export keys. Neither the principal nor output-origin section is
+  currently computed; do not fill those sections with the L values or invented calculations.
 - complete search coverage with no matches confirms no matches for that exact scope/filter;
   unavailable hierarchy returns items=null. complete retrieval coverage does not mean all
   requested engineering fields are available; inspect each property's status.
