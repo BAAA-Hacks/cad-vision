@@ -33,6 +33,19 @@ namespace Core
 
     public interface IResettableChatClient { void ResetSession(); }
 
+    public enum ChatStreamEvent { BeginRound, Text, DiscardRound }
+    public sealed class ChatStreamUpdate
+    {
+        public ChatStreamEvent Kind { get; }
+        public string Text { get; }
+        public ChatStreamUpdate(ChatStreamEvent kind, string text = "") { Kind = kind; Text = text; }
+    }
+    public interface IStreamingChatClient : IChatClient
+    {
+        Task<ChatReply> ReplyStreamingAsync(IReadOnlyList<ChatMessage> history, string prompt,
+            Action<ChatStreamUpdate> observer, CancellationToken cancellation);
+    }
+
     public sealed class ChatException : Exception
     {
         public string? DiagnosticId { get; }
@@ -49,13 +62,15 @@ namespace Core
 
         public ChatSession(IChatClient client) { this.client = client; }
 
-        public async Task<string> SendAsync(string prompt, CancellationToken cancellation = default)
+        public async Task<string> SendAsync(string prompt, CancellationToken cancellation = default, Action<ChatStreamUpdate>? observer = null)
         {
             if (string.IsNullOrWhiteSpace(prompt)) throw new ArgumentException("Enter a message.");
             await gate.WaitAsync(cancellation).ConfigureAwait(false);
             try
             {
-                ChatReply answer = await client.ReplyAsync(messages.ToArray(), prompt.Trim(), cancellation).ConfigureAwait(false);
+                ChatReply answer = observer != null && client is IStreamingChatClient streaming
+                    ? await streaming.ReplyStreamingAsync(messages.ToArray(), prompt.Trim(), observer, cancellation).ConfigureAwait(false)
+                    : await client.ReplyAsync(messages.ToArray(), prompt.Trim(), cancellation).ConfigureAwait(false);
                 cancellation.ThrowIfCancellationRequested();
                 if (string.IsNullOrWhiteSpace(answer.Text)) throw new ChatException("Gemini returned no text.");
                 messages.Add(new ChatMessage("user", prompt.Trim()));
