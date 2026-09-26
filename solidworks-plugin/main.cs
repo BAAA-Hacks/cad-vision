@@ -1,4 +1,4 @@
-// CADVision SolidWorks GLB + metadata exporter — single-file edition.
+// CADVision SolidWorks GLB + metadata exporter â€” single-file edition.
 // Target: Windows x64, .NET Framework 4.8, SolidWorks 2020+.
 // References: System.Core, System.Web.Extensions, System.Xml, System.Xml.Linq,
 // SolidWorks.Interop.sldworks.dll, SolidWorks.Interop.swconst.dll.
@@ -1384,6 +1384,70 @@ namespace CADVision.SolidWorks
     /// <summary>Native SolidWorks export; call only from the SolidWorks STA thread.</summary>
     public static class GlbExporter
     {
+        // Isolate translator failures from metadata extraction. Never open dialogs,
+        // overwrite an existing export, or treat a diagnostic file as a completed pair.
+        public static bool Probe(SldWorks app, string directory, Action<string> log)
+        {
+            if (Thread.CurrentThread.GetApartmentState() != ApartmentState.STA)
+                throw new InvalidOperationException("Native export diagnostics require STA.");
+            directory = Path.GetFullPath(directory);
+            if (Directory.Exists(directory) || File.Exists(directory))
+                throw new IOException("Choose a new diagnostic directory.");
+            var model = app.ActiveDoc as ModelDoc2;
+            if (model == null || (model.GetType() != (int)swDocumentTypes_e.swDocPART && model.GetType() != (int)swDocumentTypes_e.swDocASSEMBLY))
+                throw new InvalidOperationException("Open a saved part or assembly first.");
+            string source = model.GetPathName();
+            if (String.IsNullOrEmpty(source)) throw new InvalidOperationException("Save the CAD document first.");
+            string configuration = model.ConfigurationManager.ActiveConfiguration.Name;
+            int stamp = model.GetUpdateStamp();
+            Directory.CreateDirectory(directory);
+            bool glbPassed = false;
+            using (var report = new StreamWriter(Path.Combine(directory, "native-export-diagnostic.txt")))
+            {
+                report.AutoFlush = true;
+                Action<string> record = message => { report.WriteLine(message); if (log != null) log(message); };
+                record("UTC: " + DateTime.UtcNow.ToString("o"));
+                record("SolidWorks: " + app.RevisionNumber());
+                record("Document: " + source + "; configuration: " + configuration);
+                record("API: IModelDocExtension.SaveAs3; options: Silent; no UI automation.");
+                var selection = (SelectionMgr)model.SelectionManager;
+                selection.SuspendSelectionList();
+                try
+                {
+                    model.ClearSelection2(true);
+                    foreach (string extension in new[] { ".glb", ".gltf" })
+                    {
+                        if (!Object.Equals(app.ActiveDoc, model) || model.GetPathName() != source ||
+                            model.ConfigurationManager.ActiveConfiguration.Name != configuration || model.GetUpdateStamp() != stamp)
+                            throw new InvalidOperationException("CAD state changed; diagnostic stopped.");
+                        string path = Path.Combine(directory, "probe" + extension);
+                        int errors = 0, warnings = 0;
+                        record("Attempt: " + path);
+                        try
+                        {
+                            bool saved = model.Extension.SaveAs3(path, (int)swSaveAsVersion_e.swSaveAsCurrentVersion,
+                                (int)swSaveAsOptions_e.swSaveAsOptions_Silent, null, null, ref errors, ref warnings);
+                            bool exists = File.Exists(path);
+                            record("saved=" + saved + "; errors=" + errors + " (" + (swFileSaveError_e)errors +
+                                "); warnings=" + warnings + "; bytes=" + (exists ? new FileInfo(path).Length : 0));
+                            if (saved && errors == 0 && exists)
+                            {
+                                if (extension == ".glb") { CheckContainer(path); glbPassed = true; record("GLB container check passed."); }
+                                else record("GLTF file produced; dependencies and geometry still require validation.");
+                            }
+                        }
+                        catch (Exception ex) { record("Failure: " + ex.GetType().Name + ": " + ex.Message); }
+                        if (!Object.Equals(app.ActiveDoc, model) || model.GetPathName() != source ||
+                            model.ConfigurationManager.ActiveConfiguration.Name != configuration || model.GetUpdateStamp() != stamp)
+                            throw new InvalidOperationException("CAD state changed during native export; diagnostic stopped.");
+                    }
+                }
+                finally { selection.ResumeSelectionList2(false); }
+                record("Diagnostic only: no metadata pair was published. GLB success=" + glbPassed);
+            }
+            return glbPassed;
+        }
+
         public static int Export(SldWorks app, ModelDoc2 model, string path)
         {
             if (Thread.CurrentThread.GetApartmentState() != ApartmentState.STA)
@@ -1717,6 +1781,7 @@ namespace CADVision.SolidWorks
                 Console.Error.WriteLine(ex.Message);
                 Console.Error.WriteLine("Usage: CADVision.Export.exe [new-output-directory] [--glb existing.glb] [--skip-interferences] [--shipper CadenShipper.exe]");
                 Console.Error.WriteLine("Offline: CADVision.Export.exe [new-output-directory] --map-pair existing-pair-directory");
+                Console.Error.WriteLine("Diagnostic: CADVision.Export.exe [new-output-directory] --probe-native-glb");
                 return 2;
             }
             try
@@ -1735,6 +1800,12 @@ namespace CADVision.SolidWorks
                 Action<string> progress = message => Console.WriteLine("[{0:F1}s] {1}", clock.Elapsed.TotalSeconds, message);
                 progress("Connecting to SolidWorks");
                 var app = (SldWorks)Marshal.GetActiveObject("SldWorks.Application");
+                if (command.ProbeNativeGlb)
+                {
+                    bool passed = GlbExporter.Probe(app, folder, progress);
+                    Console.WriteLine("Diagnostic report: " + Path.GetFullPath(Path.Combine(folder, "native-export-diagnostic.txt")));
+                    return passed ? 0 : 1;
+                }
                 progress("SolidWorks revision: " + app.RevisionNumber() + (command.Glb == null ? "; GLB API: IModelDocExtension.SaveAs3" : "; using supplied GLB: " + command.Glb));
                 Console.WriteLine("Keep the active SolidWorks model unchanged until export completes.");
                 var metadata = ExportPipeline.Export(app, folder,
@@ -1788,13 +1859,14 @@ namespace CADVision.SolidWorks
     public sealed class ExportCommand
     {
         public string Directory, Shipper, Glb, MapPair;
-        public bool SkipInterferences;
+        public bool SkipInterferences, ProbeNativeGlb;
         public static ExportCommand Parse(string[] args)
         {
             var result = new ExportCommand();
             for (int i = 0; i < args.Length; i++)
             {
                 if (args[i] == "--skip-interferences" && !result.SkipInterferences) result.SkipInterferences = true;
+                else if (args[i] == "--probe-native-glb" && !result.ProbeNativeGlb) result.ProbeNativeGlb = true;
                 else if (args[i] == "--map-pair" && result.MapPair == null && i+1 < args.Length && !args[i+1].StartsWith("--"))
                     result.MapPair = Path.GetFullPath(args[++i]);
                 else if (args[i] == "--glb" && result.Glb == null && i+1 < args.Length && !args[i+1].StartsWith("--"))
@@ -1805,6 +1877,8 @@ namespace CADVision.SolidWorks
                 else throw new ArgumentException("Unknown, duplicate, or incomplete argument: " + args[i]);
             }
             if (result.MapPair != null && (result.Glb != null || result.Shipper != null || result.SkipInterferences)) throw new ArgumentException("--map-pair is an offline-only mode; do not combine it with CAD export/shipper options.");
+            if (result.ProbeNativeGlb && (result.MapPair != null || result.Glb != null || result.Shipper != null || result.SkipInterferences))
+                throw new ArgumentException("--probe-native-glb cannot be combined with other modes.");
             return result;
         }
     }
