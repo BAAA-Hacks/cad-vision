@@ -122,3 +122,4 @@ metadata.json.meta
 /cad-vision-game/Assets/CadFiles/*
 !/cad-vision-game/Assets/CadFiles/.gitkeep
 CADEN/caden-project.json
+CLAUDE.md
