@@ -92,11 +92,10 @@ public class CADXRGrab : MonoBehaviour
         if (controllerAnchor == null)
             return;
 
-        if (session.IsActive)
         if (UpdateTwoHandScale())
             return;
 
-        if (grabbedId != null)
+        if (session.IsActive)
         {
             session.ReachDistance = reachDistance;
             session.MaxExtraGain = maxExtraGain;
@@ -130,9 +129,9 @@ public class CADXRGrab : MonoBehaviour
 
         if (!bothHeld) scaleCancelledUntilRelease = false;
 
-        if (scaling && (!bothHeld || !tracked || !IsStillGrabbable()))
+        if (scaling && (!bothHeld || !tracked || !session.IsStillGrabbable()))
         {
-            bool resumeGrab = rightHeld && tracked && IsStillGrabbable();
+            bool resumeGrab = rightHeld && tracked && session.IsStillGrabbable();
             Release("two-hand scaling ended");
             scaleCancelledUntilRelease = bothHeld;
             // Recapture the current pose after scaling so the old grab offset cannot snap back.
@@ -147,24 +146,24 @@ public class CADXRGrab : MonoBehaviour
         if (!scaling)
         {
             if (distance < Mathf.Max(0.01f, minimumScaleSeparation)) return true;
-            if (grabbedId == null || !IsStillGrabbable())
+            if (session.GrabbedId == null || !session.IsStillGrabbable())
             {
                 Release("starting two-hand scaling");
                 TryGrab();
             }
-            if (grabbedId == null) return true;
+            if (session.GrabbedId == null) return true;
 
             initialHandDistance = distance;
-            initialScale = grabbedTransform.localScale;
-            scalePivotWorld = VisualCenter(grabbedTransform.GetComponent<CADObject>());
-            scalePivotLocal = grabbedTransform.InverseTransformPoint(scalePivotWorld);
+            initialScale = session.GrabbedTransform.localScale;
+            scalePivotWorld = CADGrabSession.VisualCenter(session.GrabbedTransform.GetComponent<CADObject>());
+            scalePivotLocal = session.GrabbedTransform.InverseTransformPoint(scalePivotWorld);
             scaling = true;
         }
 
         float ratio = Mathf.Clamp(distance / initialHandDistance,
             Mathf.Clamp(minimumScaleRatio, 0.01f, 1f), Mathf.Max(1f, maximumScaleRatio));
         manipulationService.SetObjectScaleAroundPoint(
-            grabbedId, initialScale * ratio, scalePivotLocal, scalePivotWorld);
+            session.GrabbedId, initialScale * ratio, scalePivotLocal, scalePivotWorld);
         return true;
     }
 
@@ -222,7 +221,5 @@ public class CADXRGrab : MonoBehaviour
 
         session.End();
         scaling = false;
-        grabbedId = null;
-        grabbedTransform = null;
     }
 }

@@ -29,6 +29,7 @@ public sealed class CADGrabSession
     }
 
     private CADVisionManipulationService manipulationService;
+    private bool standalone;
     private readonly List<Member> members = new();
     private Vector3 lastPointerPosition;
     private Quaternion lastPointerRotation;
@@ -37,6 +38,7 @@ public sealed class CADGrabSession
     private Vector3 grabPointLocal;
 
     // First (anchor) member; all members for groups.
+    public Transform GrabbedTransform => members.Count > 0 ? members[0].Transform : null;
     public string GrabbedId => members.Count > 0 ? members[0].Id : null;
     public IEnumerable<string> GrabbedIds => members.Select(m => m.Id);
     public int Count => members.Count;
@@ -57,6 +59,7 @@ public sealed class CADGrabSession
     public string Begin(CADVisionManipulationService service, IReadOnlyList<CADObject> targets, Pose pointer,
         Vector3? grabPointWorld = null)
     {
+        standalone = false;
         manipulationService = service;
         members.Clear();
 
@@ -96,6 +99,25 @@ public sealed class CADGrabSession
 
         return $"{(members.Count > 1 ? $"group of {members.Count}; " : "")}holding {(fromHit ? "selection hit point" : "visual center")} at " +
             $"{Vector3.Distance(pointer.position, grabPoint):F2} m";
+    }
+
+    /// <summary>UI uses the identical pickup/reach math without entering the CAD ID registry.</summary>
+    public void BeginStandalone(Transform target, Pose pointer, Vector3 hitPoint)
+    {
+        End();
+        if (target == null) return;
+        standalone = true;
+        manipulationService = null;
+        Quaternion inverse = Quaternion.Inverse(pointer.rotation);
+        members.Add(new Member
+        {
+            Transform = target,
+            HeldPositionOffset = inverse * (target.position - pointer.position),
+            HeldRotationOffset = inverse * target.rotation
+        });
+        grabPointLocal = target.InverseTransformPoint(hitPoint);
+        lastPointerPosition = pointer.position;
+        lastPointerRotation = pointer.rotation;
     }
 
     /// <summary>
@@ -143,9 +165,10 @@ public sealed class CADGrabSession
 
         foreach (Member member in members)
         {
-            manipulationService.SetObjectWorldPose(member.Id,
-                pointerPosition + pointerRotation * member.HeldPositionOffset,
-                pointerRotation * member.HeldRotationOffset);
+            Vector3 position = pointerPosition + pointerRotation * member.HeldPositionOffset;
+            Quaternion rotation = pointerRotation * member.HeldRotationOffset;
+            if (standalone) member.Transform.SetPositionAndRotation(position, rotation);
+            else manipulationService.SetObjectWorldPose(member.Id, position, rotation);
         }
 
         lastPointerPosition = pointerPosition;
@@ -153,7 +176,7 @@ public sealed class CADGrabSession
         return true;
     }
 
-    public void End() => members.Clear();
+    public void End() { members.Clear(); standalone = false; }
 
     // World center of the object's active, enabled renderers; its origin if it has none.
     public static Vector3 VisualCenter(CADObject cadObject)
@@ -193,13 +216,14 @@ public sealed class CADGrabSession
     }
 
     // Every member must still exist, be visible and be selected; otherwise the grab ends.
-    private bool IsStillGrabbable()
+    public bool IsStillGrabbable()
     {
+        if (!IsActive) return false;
         foreach (Member member in members)
         {
             if (member.Transform == null ||
                 !member.Transform.gameObject.activeInHierarchy ||
-                !manipulationService.IsSelected(member.Id))
+                (!standalone && !manipulationService.IsSelected(member.Id)))
             {
                 return false;
             }

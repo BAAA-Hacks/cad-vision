@@ -1,0 +1,4 @@
+<linker>
+  <!-- Newtonsoft contracts and CADEN tools are also accessed through reflection. -->
+  <assembly fullname="CADEN.Core" preserve="all" />
+</linker>
