@@ -30,6 +30,49 @@ public class CadIngestionTests
         Assert.That(metadata.NodeIndices.Count, Is.EqualTo(2));
     }
 
+    [Test]
+    public void Schema21RetainsUncorrelatedMetadataWithoutInventingNodeIds()
+    {
+        var doc = Valid();
+        doc["schemaVersion"] = "2.1";
+        doc["mappingStatus"] = "not_correlated_to_glb";
+        doc["glbMapping"] = JValue.CreateNull();
+        foreach (JObject obj in doc["objects"]) obj.Remove("glbNodeIndex");
+        var metadata = new CadMetadata(doc.ToString());
+        Assert.That(metadata.HasVerifiedNodeMapping, Is.False);
+        Assert.That(metadata.NodeIndices, Is.Empty);
+        Assert.That((string)metadata.GetObject("B")["future"]["evidence"], Is.EqualTo("retained"));
+        doc["objects"][0]["glbNodeIndex"] = 0;
+        Assert.Throws<InvalidDataException>(() => new CadMetadata(doc.ToString()));
+    }
+
+    [UnityTest]
+    public IEnumerator CurrentSchema21PairLoadsGeometryAndRetainsMetadata()
+    {
+        var folder = CadFilesPackage.SourceFolder(Application.dataPath);
+        if (!Directory.Exists(folder) || Directory.GetFiles(folder, "*.glb").Length == 0)
+            Assert.Ignore("Local schema 2.1 fixture is not installed.");
+        var pair = CadFilesPackage.FindPair(folder);
+        if ((string)JObject.Parse(File.ReadAllText(pair.json))["schemaVersion"] != "2.1")
+            Assert.Ignore("Local fixture is not schema 2.1.");
+        var host = new GameObject("Schema21Test", typeof(CadModelLoader));
+        try
+        {
+            var load = host.GetComponent<CadModelLoader>().LoadFilesAsync(pair.glb, pair.json);
+            while (!load.IsCompleted) yield return null;
+            if (load.IsFaulted) throw load.Exception.GetBaseException();
+            var runtime = host.GetComponent<CADVisionRuntime>();
+            Assert.That(runtime.RootGameObject.GetComponentsInChildren<MeshFilter>().Length, Is.GreaterThan(0));
+            Assert.That(runtime.Metadata.RawJson, Is.EqualTo(File.ReadAllText(pair.json)));
+            if (!runtime.Metadata.HasVerifiedNodeMapping) Assert.That(runtime.GetAllObjects(), Is.Empty);
+        }
+        finally
+        {
+            host.GetComponent<CADVisionRuntime>().Clear();
+            UnityEngine.Object.DestroyImmediate(host);
+        }
+    }
+
     [TestCase("version")]
     [TestCase("root")]
     [TestCase("duplicate-id")]
