@@ -426,6 +426,17 @@ namespace CADVision.SolidWorks
         private SldWorks application;
         private ExtractionOptions options;
         private MathUtility nativeMath;
+        private int completedOccurrences, totalOccurrences;
+        private void Completion(double fraction, string stage) { if (options.Completion != null) options.Completion(fraction, stage); }
+        private static int CountOccurrences(Component2 component)
+        {
+            return 1 + (component.IsSuppressed() ? 0 : Items(component.GetChildren()).Cast<Component2>().Sum(c => CountOccurrences(c)));
+        }
+        private void OccurrenceCompleted()
+        {
+            completedOccurrences++;
+            Completion(0.05 + 0.70 * completedOccurrences / Math.Max(1, totalOccurrences), "Reading component metadata");
+        }
         private readonly Dictionary<string, CadObject> occurrences = new Dictionary<string, CadObject>(StringComparer.Ordinal);
         private readonly List<Tuple<Component2, CadObject>> components = new List<Tuple<Component2, CadObject>>();
 
@@ -437,6 +448,8 @@ namespace CADVision.SolidWorks
         {
             application = app;
             options = extractionOptions ?? new ExtractionOptions();
+            completedOccurrences = totalOccurrences = 0;
+            Completion(0, "Preparing metadata");
             materialDatabases.Clear(); nativeMath = null;
             if (System.Threading.Thread.CurrentThread.GetApartmentState() != System.Threading.ApartmentState.STA)
                 throw new InvalidOperationException("SolidWorks API calls require an STA thread.");
@@ -469,9 +482,12 @@ namespace CADVision.SolidWorks
             var rootComponent = config.GetRootComponent3(false);
             if (rootComponent == null) throw new InvalidOperationException("Assembly tree unavailable. Open the assembly in resolved mode.");
             var children = Items(rootComponent.GetChildren()).Cast<Component2>().ToArray();
+            if (options.Completion != null) totalOccurrences = children.Sum(c => CountOccurrences(c));
+            Completion(0.05, "Reading component metadata");
             foreach (var child in children) Visit(child, root);
             Try(root.id, "mass properties", () => ReadMass(root, children.Where(c => !c.IsSuppressed()).Cast<object>().ToArray()));
             Report("Assembly mates");
+            Completion(0.80, "Reading assembly mates");
             ReadMateFeatures(model.FirstFeature() as Feature, root, null);
             foreach (var pair in components.Where(p => p.Item2.type == "assembly" && p.Item2.suppressed == false))
                 Try(pair.Item2.id, "subassembly mates", () => {
@@ -487,7 +503,7 @@ namespace CADVision.SolidWorks
             result.extractionStatus["mates"] = "attempted_requires_live_verification";
             result.extractionStatus["remainingDOF"] = "not_implemented_stretch";
             result.extractionStatus["interferences"] = options.RunInterferenceDetection ? "pending" : "disabled";
-            if (options.RunInterferenceDetection) { Report("Native interference detection"); Try(root.id, "interference detection", ReadInterferences); }
+            if (options.RunInterferenceDetection) { Completion(0.90, "Checking interferences"); Report("Native interference detection"); Try(root.id, "interference detection", ReadInterferences); }
             if (result.extractionStatus["interferences"] == "pending") result.extractionStatus["interferences"] = "unavailable";
             result.warnings.Add("Exact remaining DOF vectors are not implemented. Mate solved/conflicting classifications remain unknown unless supported by explicit native evidence; no solver state is guessed.");
             }
@@ -495,6 +511,7 @@ namespace CADVision.SolidWorks
             MechanicalScopeRules.Populate(result, establishedMechanicalScopes);
             DocumentUnitConversion.Apply(result, outputUnits);
             result.Validate();
+            Completion(1, "Metadata ready");
             return result;
         }
 
@@ -562,7 +579,7 @@ namespace CADVision.SolidWorks
             Try(id, "suppression", () => o.suppressed = component.IsSuppressed());
             Try(id, "fixed state", () => { o.@fixed = component.IsFixed(); o.fixedState = o.@fixed.Value ? "fixed" : "floating"; });
             Try(id, "transform", () => o.transform = component.Transform2 == null ? null : component.Transform2.ArrayData as double[]);
-            if (o.suppressed != false) { result.warnings.Add(id + ": suppressed/unavailable occurrence; descendants and engineering properties not assessed."); return; }
+            if (o.suppressed != false) { result.warnings.Add(id + ": suppressed/unavailable occurrence; descendants and engineering properties not assessed."); OccurrenceCompleted(); return; }
             Try(id, "definition status", () => {
                 int native = component.GetConstrainedStatus();
                 o.nativeConstrainedStatus = MetadataMath.ComponentStatus(native);
@@ -577,6 +594,7 @@ namespace CADVision.SolidWorks
             else result.warnings.Add(id + ": source document is unloaded/lightweight; custom properties and material unavailable.");
             // Explicit occurrence selection uses the referenced configuration in assembly context.
             Try(id, "mass properties", () => ReadMass(o, new object[] { component }));
+            OccurrenceCompleted();
             if (type == "assembly") foreach (var child in Items(component.GetChildren()).Cast<Component2>()) Visit(child, o);
         }
 
@@ -815,11 +833,11 @@ namespace CADVision.SolidWorks
         private void Try(string id, string field, Action read)
         {
             try { read(); }
-            catch (Exception e) { if (!(e is COMException || e is InvalidOperationException || e is IOException || e is System.Xml.XmlException || e is UnauthorizedAccessException)) throw; result.warnings.Add(id + ": " + field + " unavailable: " + e.Message); }
             catch (Exception e) { if (!(e is COMException || e is InvalidOperationException || e is InvalidDataException || e is IOException || e is System.Xml.XmlException || e is UnauthorizedAccessException)) throw; result.warnings.Add(id + ": " + field + " unavailable: " + e.Message); }
         }
     }
 }
+
 
 
 
@@ -832,6 +850,25 @@ namespace CADVision.SolidWorks
         // Native interference calculation can be expensive for large assemblies.
         public bool RunInterferenceDetection = true;
         public Action<string> Progress;
+        // Fraction completed within extraction, kept separate from diagnostic text.
+        public Action<double, string> Completion;
+    }
+
+    // Work-weighted estimate, not a promise: native calls vary with model complexity.
+    public sealed class ExportProgressEstimate
+    {
+        private double fraction;
+        public string Update(double value, double elapsedSeconds)
+        {
+            if (Double.IsNaN(value) || Double.IsInfinity(value)) value = fraction;
+            fraction = Math.Max(fraction, Math.Max(0, Math.Min(1, value)));
+            int percent = fraction >= 1 ? 100 : Math.Min(99, (int)(fraction * 100));
+            if (fraction >= 1) return "100% â€” Local export complete";
+            if (elapsedSeconds < 3 || fraction < 0.02) return percent + "% â€” Estimating time remainingâ€¦";
+            double seconds = Math.Min(864000, Math.Max(1, elapsedSeconds * (1 - fraction) / fraction));
+            return percent + "% â€” About " + (seconds < 60 ? Math.Ceiling(seconds) + " sec" : Math.Ceiling(seconds / 60) + " min") + " remaining (estimate)";
+        }
+        public int Percent { get { return fraction >= 1 ? 100 : Math.Min(99, (int)(fraction * 100)); } }
     }
 
     // Pure conversions are kept separate so unit/coordinate mistakes can be tested
@@ -1500,7 +1537,7 @@ namespace CADVision.SolidWorks
             for(int r=0;r<3;r++) m[12+r]=t[9+r]*meters;
             Inverse(m);return m;
         }
-        public static void Export(ModelDoc2 model, Metadata metadata, string path, Action<string> progress)
+        public static void Export(ModelDoc2 model, Metadata metadata, string path, Action<string> progress, Action<double, string> completion = null)
         {
             var components=new Dictionary<string,Component2>(StringComparer.Ordinal);
             if(model.GetType()==(int)swDocumentTypes_e.swDocASSEMBLY) {
@@ -1556,8 +1593,10 @@ namespace CADVision.SolidWorks
                     if(bodyCount==0 || n.Surfaces.Sum(v=>v.Positions.Count)==0) throw new InvalidDataException("No visible tessellated bodies for "+o.name+". Resolve/load the component and retry.");
                 }
                 indices.Add(o.id,nodes.Count);nodes.Add(n);
+                if (completion != null) completion(0.95 * nodes.Count / Math.Max(1, metadata.objects.Count), "Generating GLB geometry");
             }
             Write(path,nodes);
+            if (completion != null) completion(1, "GLB written");
             var report=new MappingReport { method="cad_ids_assigned_during_custom_glb_generation",status="assigned_by_exporter",
                 verificationScope="CAD IDs assigned directly; live geometry placement and Unity runtime require validation" };
             for(int i=0;i<nodes.Count;i++) report.objects.Add(new NodeMapping {objectId=nodes[i].Id,glbNodeIndex=i,glbNodeName=nodes[i].Name,
@@ -1841,13 +1880,19 @@ namespace CADVision.SolidWorks
             Directory.CreateDirectory(stage);
             try
             {
-                var metadata = new Extractor().Extract(app, options);
+                var extraction = new ExtractionOptions {
+                    RunInterferenceDetection = options == null || options.RunInterferenceDetection,
+                    Progress = options == null ? null : options.Progress,
+                    Completion = options == null || options.Completion == null ? (Action<double, string>)null : (value, message) => options.Completion(value * 0.98, message)
+                };
+                var metadata = new Extractor().Extract(app, extraction);
                 EnsureSameModel(app, model, source, configuration, stamp);
                 metadata.extractionStatus["glb"] = "not_requested";
                 metadata.extractionStatus["exportPair"] = "metadata_only";
                 metadata.extractionStatus["glbMapping"] = "not_applicable";
                 metadata.Write(Path.Combine(stage, "metadata.json"));
                 Directory.Move(stage, destination);
+                if (options != null && options.Completion != null) options.Completion(1, "Local export complete");
                 return metadata;
             }
             catch (Exception ex) { throw new IOException("Metadata export failed. Diagnostic folder: " + stage + ". " + ex.Message, ex); }
@@ -1881,6 +1926,7 @@ namespace CADVision.SolidWorks
                 // Pass detailed metadata progress through the combined runner without
                 // mutating the caller's options or dropping its existing callback.
                 var metadataOptions = new ExtractionOptions {
+                    Completion = options == null || options.Completion == null ? (Action<double, string>)null : (value, message) => options.Completion(value * 0.80, message),
                     RunInterferenceDetection = options == null || options.RunInterferenceDetection,
                     Progress = message => {
                         if (progress != null) progress(message);
@@ -1904,7 +1950,8 @@ namespace CADVision.SolidWorks
                 if (customGlb)
                 {
                     if (progress != null) progress("Metadata ready. Generating custom model.glb from native tessellation...");
-                    CustomGlbExporter.Export(model, metadata, glbPath, progress);
+                    CustomGlbExporter.Export(model, metadata, glbPath, progress,
+                        options == null || options.Completion == null ? (Action<double, string>)null : (value, message) => options.Completion(0.80 + value * 0.17, message));
                 }
                 else if (existingGlb == null)
                 {
@@ -1922,6 +1969,7 @@ namespace CADVision.SolidWorks
                 }
                 EnsureSameModel(app, model, source, configuration, updateStamp);
                 metadata.glbAsset = DescribeGlb(glbPath, existingGlb);
+                if (options != null && options.Completion != null) options.Completion(0.98, "Validating and publishing files");
                 metadata.extractionStatus["glb"] = existingGlb == null ? "native_export_container_checked_mapping_unverified" : "supplied_glb_container_checked_correspondence_unverified";
                 // The native GLB is never rescaled to the JSON display units. GLB
                 // specifies meters; its actual geometry/axis mapping awaits pair validation.
@@ -1944,6 +1992,7 @@ namespace CADVision.SolidWorks
                 File.Replace(finalized, Path.Combine(stage, "metadata.json"), null);
                 // Publish both files together, only after both exporters have succeeded.
                 Directory.Move(stage, destination);
+                if (options != null && options.Completion != null) options.Completion(1, "Local export complete");
                 if (progress != null) progress("Published model.glb + metadata.json.");
                 return metadata;
             }
@@ -2192,14 +2241,18 @@ namespace CADVision.SolidWorks
                 progress("SolidWorks revision: " + app.RevisionNumber() + (command.CustomGlb ? "; custom GLB from SolidWorks tessellation" : command.Glb == null ? "; metadata only (automatic GLB export paused)" : "; supplied GLB copied unchanged"));
                 Console.WriteLine("Keep the active SolidWorks model unchanged until extraction completes.");
                 var options = new ExtractionOptions { RunInterferenceDetection = !command.SkipInterferences, Progress = progress };
+                var estimate = new ExportProgressEstimate();
+                int lastPercent = -1;
+                options.Completion = (fraction, stage) => {
+                    string summary = estimate.Update(fraction, clock.Elapsed.TotalSeconds);
+                    if (estimate.Percent != lastPercent) { lastPercent = estimate.Percent; progress(stage + ": " + summary); }
+                };
                 // SolidWorks documents this flag for faster out-of-process API batches.
                 // Restore the prior state on success or failure, before copying/uploading.
                 var metadata = ExportCommand.RunApiBatch(() => app.CommandInProgress,
-                var metadata = command.Glb == null && !command.CustomGlb
                     value => app.CommandInProgress = value, () => command.Glb == null && !command.CustomGlb
                     ? ExportPipeline.ExportMetadataOnly(app, folder, options)
-                    : ExportPipeline.Export(app, folder, new ExtractionOptions { RunInterferenceDetection = !command.SkipInterferences }, progress, command.Glb, null, command.CustomGlb);
-                    : ExportPipeline.Export(app, folder, new ExtractionOptions { RunInterferenceDetection = !command.SkipInterferences }, progress, command.Glb, null, command.CustomGlb));
+                    : ExportPipeline.Export(app, folder, options, progress, command.Glb, null, command.CustomGlb));
                 if (command.PublishCadFiles) {
                     CadFilesPublisher.Publish(folder);
                     progress("Replaced CadFiles contents: " + CadFilesPublisher.Destination);
