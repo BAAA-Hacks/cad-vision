@@ -1,12 +1,12 @@
-// CADVision SolidWorks GLB + metadata exporter — single-file edition.
+// CADVision SolidWorks GLB + metadata exporter â€” single-file edition.
 // Target: Windows x64, .NET Framework 4.8, SolidWorks 2020+.
-// References: System.Core, System.Web.Extensions, System.Xml, System.Xml.Linq,
+// References: System.Core, System.Web.Extensions, System.Xml, System.Xml.Linq, System.IO.Compression,
 // SolidWorks.Interop.sldworks.dll, SolidWorks.Interop.swconst.dll.
 // Compile as a console application. Do not include the separate source files too.
 // Usage: CADVision.Export.exe [new-output-directory] [--custom-glb | --glb existing.glb] [--skip-interferences]
 // Requires a running SolidWorks instance and a saved active part or assembly.
 // Default: metadata only. --custom-glb: metadata -> native tessellation -> custom GLB -> pair.
-// Console runner; add-in button/registration and Quest networking are not implemented here.
+// Console runner; --custom-glb --quest http://HEADSET-IP:8085/design sends directly to the Unity receiver.
 // Read IMPLEMENTATION_STATUS.md for capabilities, limitations, and test evidence.
 // Repeated namespace and partial-class blocks are valid together in one .cs file.
 using System;
@@ -2154,6 +2154,8 @@ namespace CADVision.SolidWorks
                 Console.Error.WriteLine(ex.Message);
                 Console.Error.WriteLine("Usage: CADVision.Export.exe [new-output-directory] [--custom-glb | --glb existing.glb] [--skip-interferences] [--shipper CadenShipper.exe]");
                 Console.Error.WriteLine("Publish: --custom-glb --publish-cadfiles, or --publish-pair existing-pair-directory");
+                Console.Error.WriteLine("Quest: --custom-glb --quest http://HEADSET-IP:8085/design");
+                Console.Error.WriteLine("Retry existing pair: --send-pair existing-pair-directory --quest http://HEADSET-IP:8085/design");
                 Console.Error.WriteLine("Offline: CADVision.Export.exe [new-output-directory] --map-pair existing-pair-directory");
                 Console.Error.WriteLine("Default: metadata only. Automatic GLB export and native diagnostics are paused.");
                 return 2;
@@ -2161,6 +2163,11 @@ namespace CADVision.SolidWorks
             try
             {
                 string folder = command.Directory ?? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "export-" + DateTime.Now.ToString("yyyyMMdd-HHmmss-fff"));
+                if (command.SendPair != null)
+                {
+                    Console.WriteLine(QuestTransfer.Send(command.SendPair, command.Quest));
+                    return 0;
+                }
                 if (command.PublishPair != null)
                 {
                     CadFilesPublisher.Publish(command.PublishPair);
@@ -2190,6 +2197,12 @@ namespace CADVision.SolidWorks
                 if (command.PublishCadFiles) {
                     CadFilesPublisher.Publish(folder);
                     progress("Replaced CadFiles contents: " + CadFilesPublisher.Destination);
+                }
+                if (command.Quest != null)
+                {
+                    progress("Sending completed pair to CAD Vision receiver");
+                    try { progress(QuestTransfer.Send(folder, command.Quest)); }
+                    catch (Exception ex) { Console.Error.WriteLine("Transfer not confirmed: " + ex.Message + ". Export retained at " + Path.GetFullPath(folder)); return 3; }
                 }
                 Console.WriteLine((command.Glb == null && !command.CustomGlb ? "Exported metadata.json to " : "Exported model.glb + metadata.json to ") + Path.GetFullPath(folder));
                 Console.WriteLine(metadata.objects.Count + " objects; " + metadata.mates.Count + " mates; " + clock.Elapsed.TotalSeconds.ToString("F1") + " seconds.");
@@ -2239,14 +2252,16 @@ namespace CADVision.SolidWorks
     // CLI parsing has no SolidWorks dependency. No model/source-file path is required.
     public sealed class ExportCommand
     {
-        public string Directory, Shipper, Glb, MapPair, NativeGlbPath, PublishPair;
+        public string Directory, Shipper, Glb, MapPair, NativeGlbPath, PublishPair, Quest, SendPair;
         public bool SkipInterferences, ProbeNativeGlb, CustomGlb, PublishCadFiles;
         public static ExportCommand Parse(string[] args)
         {
             var result = new ExportCommand();
             for (int i = 0; i < args.Length; i++)
             {
-                if (args[i] == "--skip-interferences" && !result.SkipInterferences) result.SkipInterferences = true;
+                if (args[i] == "--quest" && result.Quest == null && i+1 < args.Length && !args[i+1].StartsWith("--")) result.Quest = QuestTransfer.Endpoint(args[++i]).AbsoluteUri;
+                else if (args[i] == "--send-pair" && result.SendPair == null && i+1 < args.Length && !args[i+1].StartsWith("--")) result.SendPair = Path.GetFullPath(args[++i]);
+                else if (args[i] == "--skip-interferences" && !result.SkipInterferences) result.SkipInterferences = true;
                 else if (args[i] == "--publish-cadfiles" && !result.PublishCadFiles) result.PublishCadFiles = true;
                 else if (args[i] == "--publish-pair" && result.PublishPair == null && i+1 < args.Length && !args[i+1].StartsWith("--")) result.PublishPair = Path.GetFullPath(args[++i]);
                 else if (args[i] == "--custom-glb" && !result.CustomGlb) result.CustomGlb = true;
@@ -2273,7 +2288,107 @@ namespace CADVision.SolidWorks
                 throw new ArgumentException("--publish-cadfiles requires --custom-glb or --glb.");
             if (result.PublishPair != null && (result.Directory != null || result.CustomGlb || result.Glb != null || result.MapPair != null || result.SkipInterferences || result.Shipper != null || result.PublishCadFiles))
                 throw new ArgumentException("--publish-pair is an offline-only publishing mode.");
+            if (result.Quest != null && (result.PublishCadFiles || result.PublishPair != null || result.MapPair != null || result.Shipper != null))
+                throw new ArgumentException("--quest sends directly; do not combine with folder publishing, mapping or an external shipper.");
+            if (result.SendPair != null && (result.Quest == null || result.Directory != null || result.CustomGlb || result.Glb != null || result.SkipInterferences))
+                throw new ArgumentException("Use --send-pair existing-folder --quest http://HEADSET-IP:8085/design alone.");
+            if (result.Quest != null && result.SendPair == null && !result.CustomGlb && result.Glb == null)
+                throw new ArgumentException("--quest requires --custom-glb or --glb to produce a complete pair.");
             return result;
+        }
+    }
+    // Windows-side shipper for the existing Unity POST /design receiver.
+    // The executable stays on the PC; only the two-file ZIP crosses the network.
+    public static class QuestTransfer
+    {
+        public static Uri Endpoint(string address)
+        {
+            Uri uri;
+            if (!Uri.TryCreate(address, UriKind.Absolute, out uri) ||
+                (uri.Scheme != "http" && uri.Scheme != "https") || uri.AbsolutePath != "/design" ||
+                uri.UserInfo.Length != 0 || uri.Query.Length != 0 || uri.Fragment.Length != 0)
+                throw new ArgumentException("Use the receiver URL, for example http://192.168.1.50:8085/design.");
+            return uri;
+        }
+
+        // Snapshot and validate bytes before packaging: the ZIP contains exactly the checked pair.
+        public static byte[] Package(string folder)
+        {
+            string glbPath = Path.Combine(folder, "model.glb"), jsonPath = Path.Combine(folder, "metadata.json");
+            if (new FileInfo(glbPath).Length > 100L * 1024 * 1024 || new FileInfo(jsonPath).Length > 8L * 1024 * 1024)
+                throw new InvalidDataException("Pair exceeds receiver limits (100 MiB GLB, 8 MiB JSON).");
+            byte[] glb = File.ReadAllBytes(glbPath), json = File.ReadAllBytes(jsonPath);
+            if (glb.Length < 20 || glb.Length > 100 * 1024 * 1024 || json.Length == 0 || json.Length > 8 * 1024 * 1024 ||
+                BitConverter.ToUInt32(glb, 0) != 0x46546C67u || BitConverter.ToUInt32(glb, 4) != 2 || BitConverter.ToUInt32(glb, 8) != glb.Length)
+                throw new InvalidDataException("Invalid or oversized export pair.");
+            var serializer = new System.Web.Script.Serialization.JavaScriptSerializer { MaxJsonLength = 8 * 1024 * 1024, RecursionLimit = 256 };
+            var metadata = serializer.Deserialize<Metadata>(new System.Text.UTF8Encoding(false, true).GetString(json).TrimStart('\uFEFF'));
+            if (metadata == null) throw new InvalidDataException("Missing metadata.");
+            metadata.Validate();
+            string hash;
+            using (var sha = System.Security.Cryptography.SHA256.Create()) hash = BitConverter.ToString(sha.ComputeHash(glb)).Replace("-", "").ToLowerInvariant();
+            if (metadata.glbAsset == null || !String.Equals(hash, metadata.glbAsset.sha256, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("GLB hash does not match metadata; nothing sent.");
+            using (var output = new MemoryStream())
+            {
+                using (var zip = new System.IO.Compression.ZipArchive(output, System.IO.Compression.ZipArchiveMode.Create, true))
+                {
+                    using (var entry = zip.CreateEntry("model.glb").Open()) entry.Write(glb, 0, glb.Length);
+                    using (var entry = zip.CreateEntry("metadata.json").Open()) entry.Write(json, 0, json.Length);
+                }
+                if (output.Length > 108L * 1024 * 1024 + 65536) throw new InvalidDataException("ZIP exceeds receiver upload limit.");
+                return output.ToArray();
+            }
+        }
+
+        public static string Send(string folder, string address)
+        {
+            var endpoint = Endpoint(address);
+            byte[] package = Package(folder);
+            var request = (System.Net.HttpWebRequest)System.Net.WebRequest.Create(endpoint);
+            request.Method = "POST";
+            request.ContentType = "application/zip";
+            request.ContentLength = package.Length;
+            request.SendChunked = false;
+            request.AllowAutoRedirect = false;
+            request.Proxy = null;
+            request.KeepAlive = false;
+            request.ServicePoint.Expect100Continue = false;
+            request.Timeout = 150000;
+            request.ReadWriteTimeout = 150000;
+            // No retries: an interrupted acknowledgement may follow a completed import.
+            try
+            {
+                using (var stream = request.GetRequestStream()) stream.Write(package, 0, package.Length);
+                using (var response = (System.Net.HttpWebResponse)request.GetResponse())
+                {
+                    if (response.StatusCode != System.Net.HttpStatusCode.OK) throw new IOException("Receiver did not confirm import (HTTP " + (int)response.StatusCode + ").");
+                    using (var reader = new StreamReader(response.GetResponseStream()))
+                    {
+                        char[] buffer = new char[65537];
+                        int count = reader.ReadBlock(buffer, 0, buffer.Length);
+                        if (count > 65536) throw new IOException("Receiver acknowledgement is too large.");
+                        return Confirm(new string(buffer, 0, count));
+                    }
+                }
+            }
+            catch (System.Net.WebException ex)
+            {
+                var response = ex.Response as System.Net.HttpWebResponse;
+                string status = response == null ? ex.Status.ToString() : "HTTP " + (int)response.StatusCode;
+                if (response != null) response.Dispose();
+                throw new IOException("Receiver transfer failed (" + status + "). Check that CAD Vision is running at " + endpoint + ". Import is not confirmed", ex);
+            }
+        }
+
+        public static string Confirm(string json)
+        {
+            var serializer = new System.Web.Script.Serialization.JavaScriptSerializer { MaxJsonLength = 65536 };
+            var result = serializer.Deserialize<System.Collections.Generic.Dictionary<string, object>>(json);
+            object success;
+            if (result == null || !result.TryGetValue("success", out success) || !(success is bool) || !(bool)success)
+                throw new IOException("Receiver did not acknowledge a successful import.");
+            return "CAD Vision receiver confirmed successful import.";
         }
     }
     public static class CadFilesPublisher
