@@ -98,7 +98,8 @@ namespace Core
                             if (!(part["functionCall"] is JObject call) || call["name"]?.Type != JTokenType.String)
                                 throw new ChatException("Gemini returned a malformed function call.");
                             string name = (string)call["name"]!;
-                            var result = tools?.Execute(name, call["args"] ?? new JObject()) ?? ToolRegistry.Error("UNKNOWN_TOOL", "Tools are not enabled in this session.");
+                            var result = tools == null ? ToolRegistry.Error("UNKNOWN_TOOL", "Tools are not enabled in this session.")
+                                : await tools.ExecuteAsync(name, call["args"] ?? new JObject(), turnTimeout.Token).ConfigureAwait(false);
                             var response = new JObject { ["name"] = name, ["response"] = result };
                             if (call["id"] != null) response["id"] = call["id"]!.DeepClone();
                             responses.Add(new JObject { ["functionResponse"] = response }); LastToolCallCount++;

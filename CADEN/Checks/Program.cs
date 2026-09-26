@@ -3,6 +3,7 @@ using Core;
 using Desktop.Configuration;
 using Newtonsoft.Json.Linq;
 using Core.Tools.Query;
+using Core.Primitives.Operations.Project;
 
 static void Require(bool value, string message)
 {
@@ -14,11 +15,12 @@ if (args.Contains("--live-query"))
     try
     {
         string directory = LocalConfiguration.FindDirectory();
-        var store = new MetadataStore(File.ReadAllText(Path.Combine(directory, "data", "metadata.json")));
+        var loaded = LoadProject.Load(File.ReadAllText(Path.Combine(directory, "data", "metadata.json")));
+        if (!loaded.Success) throw new ArgumentException("Canonical metadata could not load.");
         using var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
-        var gemini = new GeminiClient(http, LocalConfiguration.Load(directory), QueryTools.Create(store));
+        var gemini = new GeminiClient(http, LocalConfiguration.Load(directory), SemanticQueryTools.Create(loaded.Snapshot));
         var chat = new ChatSession(gemini);
-        string answer = await chat.SendAsync("Use get_model_summary and get_object for the root's mass and material. Report the object count and whether root mass/material data is available, with IDs. Keep it brief.");
+        string answer = await chat.SendAsync("Use get_model_summary, then get_object_details with its snapshotId for the root's mass and material. Report the object count and whether root mass/material data is available, with IDs. Keep it brief.");
         Require(gemini.LastToolCallCount >= 2, "Expected at least two live query calls.");
         Console.WriteLine("PASS: live query loop (" + gemini.LastToolCallCount + " calls).\n" + answer);
     }
@@ -128,6 +130,7 @@ finally
 }
 
 await QueryChecks.RunAsync();
+await SemanticQueryChecks.RunAsync();
 MechanicalGraphChecks.Run();
 ProjectLoaderChecks.Run();
 await IssueStoreChecks.RunAsync();

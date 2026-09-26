@@ -2,6 +2,8 @@ using Core;
 using Desktop.Configuration;
 using Core.Tools;
 using Core.Tools.Query;
+using Core.Primitives.DataStructures.Project;
+using Core.Primitives.Operations.Project;
 
 namespace Desktop;
 
@@ -79,7 +81,7 @@ internal sealed class ChatWindow : Form
             if (picker.ShowDialog(this) == DialogResult.OK)
             {
                 // Validate before replacing the active design or clearing its conversation.
-                try { ReadMetadata(picker.FileName); metadataPath = picker.FileName; Reload(); }
+                try { Reload(picker.FileName); }
                 catch (Exception ex) { error.Text = ex is ToolInputException ? ex.Message : "Could not read metadata (" + ex.GetType().Name + ")."; }
             }
         };
@@ -90,30 +92,33 @@ internal sealed class ChatWindow : Form
         Reload();
     }
 
-    private void Reload()
+    private void Reload(string? replacementPath = null)
     {
-        transcript.Clear(); error.Clear(); input.Clear(); failedPrompt = null; retry.Enabled = false;
-        session = null;
         try
         {
             var settings = LocalConfiguration.Load(directory);
-            var metadata = metadataPath == null ? null : ReadMetadata(metadataPath);
-            gemini = new GeminiClient(http, settings, QueryTools.Create(metadata));
+            string? nextPath = replacementPath ?? metadataPath;
+            var metadata = nextPath == null ? null : ReadMetadata(nextPath);
+            var nextClient = new GeminiClient(http, settings, SemanticQueryTools.Create(metadata));
+            transcript.Clear(); error.Clear(); input.Clear(); failedPrompt = null; retry.Enabled = false;
+            metadataPath = nextPath; gemini = nextClient;
             session = new ChatSession(gemini);
-            design.Text = metadata == null ? "No metadata loaded — use Load metadata." : metadata.Name + " · " + metadata.Count + " objects" + (metadata.IsFixture ? " · synthetic fixture" : " · exported metadata");
+            design.Text = metadata == null ? "No metadata loaded — use Load metadata." : metadata.Name + " · " + metadata.ComponentsById.Count + " objects" + (metadata.IsFixture ? " · synthetic fixture" : " · exported metadata") + " · hierarchy " + metadata.Capabilities.Hierarchy;
             model.Text = settings.Model; status.Text = "Ready"; send.Enabled = true;
         }
         catch (Exception ex)
         {
             error.Text = ex is ArgumentException || ex is ToolInputException ? ex.Message : "Configuration could not be loaded (" + ex.GetType().Name + ").";
-            send.Enabled = false; status.Text = "Configuration needed";
+            send.Enabled = session != null; status.Text = session == null ? "Configuration needed" : "Reload failed; previous chat retained";
         }
     }
 
-    private static MetadataStore ReadMetadata(string path)
+    private static ProjectSnapshot ReadMetadata(string path)
     {
         if (new FileInfo(path).Length > 10000000) throw new ToolInputException("INVALID_METADATA", "Metadata exceeds the 10 MB prototype limit.");
-        return new MetadataStore(File.ReadAllText(path));
+        var loaded = LoadProject.Load(File.ReadAllText(path));
+        if (!loaded.Success) throw new ToolInputException("INVALID_METADATA", string.Join(Environment.NewLine, loaded.Diagnostics.Where(d => d.Fatal).Take(8).Select(d => d.Code + ": " + d.Message)));
+        return loaded.Snapshot!;
     }
 
     private void RenderHistory()

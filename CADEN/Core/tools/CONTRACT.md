@@ -1,5 +1,8 @@
 # CADEN tool contract 1.0
 
+This documents the legacy query API retained for compatibility checks. The desktop now
+uses the [semantic tool contract 2.0](SEMANTIC_CONTRACT.md) and canonical ProjectSnapshot.
+
 All tool infrastructure lives here. `query/` contains the immutable metadata snapshot,
 property contract, and the four initial read-only query handlers. Later tool families
 can register additional ICadenTool handlers without adding operations to the query layer.

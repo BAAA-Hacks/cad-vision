@@ -68,7 +68,7 @@ evidence, so CADEN should explain that it is unavailable. The status line report
 number of queries executed for the last successful turn.
 
 Tools live in `Core/tools`, with query code in `Core/tools/query`.
-See [the shared tool contract](Core/tools/CONTRACT.md) for formats, bounds and errors.
+See [the shared semantic tool contract](Core/tools/SEMANTIC_CONTRACT.md) for formats, bounds and errors.
 The hidden system prompt defines CADEN's role and the same evidence rules.
 
 ## Structure and Unity migration
@@ -76,7 +76,7 @@ The hidden system prompt defines CADEN's role and the same evidence rules.
 - **Core:** .NET Standard 2.1; chat history, Gemini REST client, settings, and IChatClient.
 - **Core/tools:** registry, JSON contract, and the four query handlers plus metadata parsing.
 - **Core/primitives:** internal data structures and operations, including the [mechanical multigraph](Core/primitives/README.md). It is not exposed to Gemini.
-- **Canonical loader foundation:** [ProjectSnapshot and scoped load diagnostics](Core/primitives/operations/project/README.md). Tested independently; the desktop/query path will migrate in the next milestone.
+- **Canonical loader:** [ProjectSnapshot and scoped load diagnostics](Core/primitives/operations/project/README.md). Used by the desktop semantic queries; unusable graph/hierarchy data degrades independently from properties.
 - **Issue store:** [Immutable findings, indexed queries, dispositions and targeted revalidation](Core/primitives/operations/issues/README.md). Persistent memory remains future work.
 - **Issue engine:** [Subject-level scans, candidate presentation and initial checkers](Core/primitives/operations/issues/ENGINE.md). Includes missing material and native constraint-state checks; host/chat integration and export-dependent checks remain deferred.
 - **Desktop:** .NET 10 Windows Forms; temporary chat UI and local configuration loader.
