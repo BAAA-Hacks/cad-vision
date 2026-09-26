@@ -247,6 +247,10 @@ namespace CADVision.SolidWorks
         // Signed offsets from nominal, never absolute minimum/maximum sizes.
         // Null means unknown; zero is a known zero deviation.
         public double? lowerDeviation, upperDeviation;
+        // Independent field states: not_read, read, unavailable, not_applicable, invalid.
+        // Only read carries a finite numeric value; all other states carry null.
+        // A failed bound must not erase a successfully read bound or tolerance type.
+        public string lowerDeviationStatus = "not_read", upperDeviationStatus = "not_read";
         // Preserve a native fit designation such as H7 when numeric bounds are absent.
         public string fitDesignation;
     }
