@@ -2,3 +2,8 @@
 __pycache__/
 .env
 .streamlit/secrets.toml
+.tools/
+**/bin/
+**/obj/
+!*.csproj
+data/metadata.json

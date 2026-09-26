@@ -1,46 +1,115 @@
-# CADEN local chat
+﻿# CADEN — standalone C# chat
 
-A standalone Streamlit chat window backed by Gemini. Includes multi-turn conversation,
-New chat, loading feedback, and safe API errors. CAD metadata, GLB loading, and tools
-are not connected in this milestone.
+The current app is a native Windows chat window backed by a reusable C# core.
+It does not require Python, Streamlit, a browser, or a local web server.
 
-## Setup (PowerShell, Python 3.11+)
+## Run
+
+From PowerShell:
 
 ```powershell
 cd C:\Users\agnco\cad-vision\CADEN
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\run-caden.cmd
 ```
 
-Keep your existing `.env`. Set `GEMINI_API_KEY` there; `.env.example` lists optional
-settings. `GOOGLE_API_KEY` is also accepted. Process environment values override
-the corresponding `.env` values. Never commit the real key.
+Close the window to exit. The launcher uses the local SDK in .tools/dotnet if present,
+otherwise dotnet from PATH. On another machine, install the .NET 10 SDK first.
+The first build needs internet access to restore Newtonsoft.Json.
+
+With dotnet on PATH, the equivalent command is:
 
 ```powershell
-.\.venv\Scripts\python.exe -m streamlit run app.py
+dotnet run --project Desktop/Desktop.csproj
 ```
 
-Open http://127.0.0.1:8501. Stop with Ctrl+C. No virtual-environment activation is required.
-The default model is `gemini-flash-latest`; set `GEMINI_MODEL` to a specific available
-model if you want a pinned model. API usage is charged/limited according to your Google project.
+The old Streamlit server does not conflict with this app, which uses no listening port.
 
-History is held in Streamlit session memory, sent with each follow-up, and never saved
-to disk by this app. New chat clears it. Reloading/disconnecting may also clear it.
-Failed requests do not enter conversation history and can be retried.
+## Configuration
 
-## Structure
+The desktop host reads the existing CADEN/.env and prompts/system.md. It never copies
+the key to build output. See .env.example for settings:
 
-- `app.py`: chat UI and session history
-- `config.py`: local settings
-- `gemini_client.py`: API transport and error handling
-- `prompts/system.md`: basic CADEN behavior
+- GEMINI_API_KEY (or GOOGLE_API_KEY)
+- GEMINI_MODEL (default gemini-flash-latest)
+- GEMINI_TIMEOUT_SECONDS (default 60)
+- GEMINI_MAX_OUTPUT_TOKENS (default 4096)
 
-Tool declarations, metadata retrieval, and dispatch can be added separately later.
+Process environment variables override their corresponding .env values.
+Click **New chat** after editing configuration to reload it and clear history.
+The parser supports NAME=value, optional export, quoted single-line values, and comments.
+Variable expansion and multiline values are not supported.
 
-## Quick check
+For a separate configuration directory:
+`run-caden.cmd --config-dir "C:\path\to\CADEN"`.
 
-Run the offline UI checks with `.\.venv\Scripts\python.exe -m unittest -v`.
+## Behavior
 
-Send “Remember the word copper,” then ask “Which word did I give you?”
-Click New chat and confirm the transcript clears. Ask about the assembly's mass:
-CADEN should explain that no model metadata is connected.
+- Send with the button or Ctrl+Enter; Enter inserts a newline.
+- History stays in memory and is sent with follow-up questions.
+- System instructions remain hidden from the transcript.
+- New chat clears history and reloads configuration.
+- Cancel stops waiting and leaves that turn out of history. Google may already have processed it.
+- Failed turns remain outside history and can be retried manually.
+- Errors include status, Google's explanation, and guidance, with credentials redacted.
+- The transcript displays plain text, including any Markdown syntax returned.
+- Four read-only query tools are connected; automatic retry and visualization remain future work.
+
+## Query metadata
+
+The desktop loads `data/metadata.json` if present. This machine has a local copy of the
+supplied FRED synthetic metadata there; the file is ignored by Git. Use **Load metadata**
+to choose another JSON. Successful replacement starts a new chat. A rejected file leaves
+the previous design/conversation intact. New chat reloads the currently selected file.
+No GLB upload or Unity connection is needed for these metadata queries.
+
+Try “What is loaded?”, “Find objects named R_0805”, “Show the root's direct children”,
+and “What is the root assembly's mass?” The fixture has no engineering mass/material
+evidence, so CADEN should explain that it is unavailable. The status line reports the
+number of queries executed for the last successful turn.
+
+Tools live in `Core/tools`, with query code in `Core/tools/query`.
+See [the shared tool contract](Core/tools/CONTRACT.md) for formats, bounds and errors.
+The hidden system prompt defines CADEN's role and the same evidence rules.
+
+## Structure and Unity migration
+
+- **Core:** .NET Standard 2.1; chat history, Gemini REST client, settings, and IChatClient.
+- **Core/tools:** registry, JSON contract, and the four query handlers plus metadata parsing.
+- **Core/primitives:** internal data structures and operations, including the [mechanical multigraph](Core/primitives/README.md). It is not exposed to Gemini.
+- **Desktop:** .NET 10 Windows Forms; temporary chat UI and local configuration loader.
+- **Checks:** console-based offline checks and an optional live connectivity check.
+
+The core has no desktop filesystem paths, environment-variable loading, WinForms, or Unity
+dependencies. The host supplies settings, prompt text, and HttpClient. There is no Python backend.
+
+Unity 6 supports the core's .NET Standard 2.1 target. Later, replace the desktop UI/config
+loader and supply Newtonsoft.Json through Unity's supported package without duplicate DLLs.
+Do not import the desktop project or .NET 10 runtime into Unity.
+
+This target is not proof of Quest support. Unity/IL2CPP, JSON package compatibility and
+stripping, Android network permissions, TLS, and device lifecycle still require testing.
+IChatClient allows a Unity-specific transport if necessary. A distributed Quest app needs
+a secure credential arrangement rather than an embedded developer key.
+
+## Checks
+
+From CADEN (substitute dotnet if using an installed SDK):
+
+```powershell
+.\.tools\dotnet\dotnet.exe run --project Checks/Checks.csproj
+```
+
+Offline checks use fake HTTP responses and dummy credentials. To explicitly send two
+small requests with your configured key and verify follow-up recall:
+
+```powershell
+.\.tools\dotnet\dotnet.exe run --project Checks/Checks.csproj -- --live
+```
+
+Live requests use your Google project's quota/billing.
+
+To verify a live metadata-to-tool-to-answer turn using `data/metadata.json`:
+
+```powershell
+.\.tools\dotnet\dotnet.exe run --project Checks/Checks.csproj -- --live-query
+```
