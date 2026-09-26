@@ -35,6 +35,7 @@ namespace CADVision.SolidWorks
         public Project project;
         public List<CadObject> objects = new List<CadObject>();
         public List<Mate> mates = new List<Mate>();
+        public List<MechanicalScope> mechanicalScopes = new List<MechanicalScope>();
         public List<InterferenceRecord> interferences = null;
         public Dictionary<string, string> extractionStatus = new Dictionary<string, string>();
         public List<string> warnings = new List<string>();
@@ -76,6 +77,7 @@ namespace CADVision.SolidWorks
                 if (m.componentIds.Any(id => !ids.Contains(id)) || m.references.Any(r => r.componentId != null && !ids.Contains(r.componentId)))
                     throw new InvalidDataException("Mate references an unknown object.");
             }
+            MechanicalScopeRules.Validate(this);
         }
 
         // Validate, then serialize as UTF-8 JSON. Null values mean unavailable/not assessed;
@@ -300,6 +302,7 @@ namespace CADVision.SolidWorks
         public string id, name, type, ownerId, status = "unknown", alignment;
         public int? nativeErrorCode;
         public bool? nativeWarning;
+        public bool? suppressed;
         public NativeStatus nativeStatus;
         public string satisfaction = "unknown";
         public bool? lockRotation;
@@ -308,6 +311,68 @@ namespace CADVision.SolidWorks
         public List<MateReference> references = new List<MateReference>();
         public double[] axis;
         public MateLimits limits;
+    }
+    public sealed class MechanicalScope
+    {
+        public string scopeAssemblyId, configuration, source, reason;
+        public string membershipCoverage = "Unavailable", mateCoverage = "Unavailable";
+        public List<string> occurrenceIds = new List<string>(), mateIds = new List<string>();
+    }
+    public static class MechanicalScopeRules
+    {
+        public static bool? Suppression(object native)
+        {
+            var values=native as Array;
+            return values!=null && values.Length==1 && values.GetValue(0) is bool ? (bool?)values.GetValue(0) : null;
+        }
+        public static void Populate(Metadata data, HashSet<string> established)
+        {
+            data.mechanicalScopes.Clear();
+            var byId=data.objects.ToDictionary(o=>o.id);
+            foreach(var owner in data.objects.Where(o=>o.type=="assembly")) {
+                bool verified=established.Contains(owner.id);
+                var scope=new MechanicalScope {scopeAssemblyId=owner.id,configuration=owner.configuration,
+                    source="SolidWorks IComponent2.GetChildren occurrence tree; owning-document MateGroup features",
+                    reason=verified?"Ownership and active configuration verified. Known descendant occurrences include zero-mate participants; scoped binary mates are listed. Exhaustive membership and mate extraction are not verified.":"Owning assembly/configuration was not available for verified scoped extraction; membership and relationships are not declared."};
+                if(verified) {
+                    scope.membershipCoverage="Partial";scope.mateCoverage="Partial";
+                    Action<string> add=null;add=id=> { foreach(string child in byId[id].childIds) {scope.occurrenceIds.Add(child);add(child);} };add(owner.id);
+                    var members=new HashSet<string>(scope.occurrenceIds);
+                    var owned=data.mates.Where(m=>m.ownerId==owner.id).ToArray();
+                    foreach(var mate in owned)
+                        if(mate.componentIds.Count==2 && mate.componentIds.Distinct().Count()==2 && mate.componentIds.All(members.Contains)) scope.mateIds.Add(mate.id);
+                    if(scope.mateIds.Count!=owned.Length)scope.reason+=" Some global mates were excluded because their endpoints are not exactly two distinct scoped occurrences.";
+                }
+                data.mechanicalScopes.Add(scope);
+                data.extractionStatus["mechanicalMembership:"+owner.id]=scope.membershipCoverage;
+                data.extractionStatus["mechanicalMates:"+owner.id]=scope.mateCoverage;
+            }
+            data.extractionStatus["mechanicalScopes"]=data.mechanicalScopes.Count==0?"not_applicable":"per_scope_coverage_no_exhaustiveness_claim";
+        }
+        public static void Validate(Metadata data)
+        {
+            if(data.mechanicalScopes==null)return; // Older schema 2.1 files remain readable.
+            var objects=data.objects.ToDictionary(o=>o.id);var mates=data.mates.ToDictionary(m=>m.id);
+            var pairs=new HashSet<string>();var allowed=new[]{"Complete","Partial","Unavailable","Invalid"};
+            foreach(var s in data.mechanicalScopes) {
+                CadObject owner;
+                if(!objects.TryGetValue(s.scopeAssemblyId,out owner) || owner.type!="assembly" || owner.configuration!=s.configuration ||
+                    !pairs.Add(s.scopeAssemblyId+"\n"+s.configuration) || String.IsNullOrWhiteSpace(s.source) || String.IsNullOrWhiteSpace(s.reason) ||
+                    !allowed.Contains(s.membershipCoverage) || !allowed.Contains(s.mateCoverage))throw new InvalidDataException("Invalid mechanical scope identity/coverage.");
+                if(s.occurrenceIds.Distinct().Count()!=s.occurrenceIds.Count || s.mateIds.Distinct().Count()!=s.mateIds.Count || s.occurrenceIds.Contains(owner.id))throw new InvalidDataException("Duplicate scope IDs or owner inserted as vertex.");
+                foreach(string id in s.occurrenceIds) {
+                    if(!objects.ContainsKey(id))throw new InvalidDataException("Unknown scoped occurrence.");
+                    var current=objects[id];while(current.parentId!=null && current.parentId!=owner.id)current=objects[current.parentId];
+                    if(current.parentId!=owner.id)throw new InvalidDataException("Occurrence outside owning scope.");
+                }
+                foreach(string id in s.mateIds) {
+                    Mate m;if(!mates.TryGetValue(id,out m) || m.ownerId!=owner.id || m.componentIds.Count!=2 || m.componentIds.Distinct().Count()!=2 || !m.componentIds.All(s.occurrenceIds.Contains))throw new InvalidDataException("Invalid scoped mate endpoints/owner.");
+                }
+                foreach(var item in new[]{new[]{"mechanicalMembership:",s.membershipCoverage},new[]{"mechanicalMates:",s.mateCoverage}}) {
+                    string status;if(!data.extractionStatus.TryGetValue(item[0]+owner.id,out status) || status!=item[1])throw new InvalidDataException("Scope coverage disagrees with extractionStatus.");
+                }
+            }
+        }
     }
     public sealed class MateReference { public string componentId, entityType = "unknown", entityId; }
     public sealed class NativeStatus
@@ -354,6 +419,7 @@ namespace CADVision.SolidWorks
     // Store an occurrence lookup for mate resolution and native component handles for traversal.
     public sealed partial class Extractor
     {
+        private readonly HashSet<string> establishedMechanicalScopes = new HashSet<string>();
         private Metadata result;
         private ModelDoc2 model;
         private string projectId;
@@ -374,7 +440,7 @@ namespace CADVision.SolidWorks
             materialDatabases.Clear(); nativeMath = null;
             if (System.Threading.Thread.CurrentThread.GetApartmentState() != System.Threading.ApartmentState.STA)
                 throw new InvalidOperationException("SolidWorks API calls require an STA thread.");
-            occurrences.Clear(); components.Clear();
+            occurrences.Clear(); components.Clear(); establishedMechanicalScopes.Clear();
             model = app.ActiveDoc as ModelDoc2;
             if (model == null || (model.GetType() != (int)swDocumentTypes_e.swDocASSEMBLY && model.GetType() != (int)swDocumentTypes_e.swDocPART))
                 throw new InvalidOperationException("Open and activate a SolidWorks part or assembly first. Drawings are not supported.");
@@ -426,6 +492,7 @@ namespace CADVision.SolidWorks
             result.warnings.Add("Exact remaining DOF vectors are not implemented. Mate solved/conflicting classifications remain unknown unless supported by explicit native evidence; no solver state is guessed.");
             }
             result.warnings.Add("Custom properties use cached values or raw expressions. Rebuild/configuration changes are not forced. See extractionStatus and warnings for incomplete reads.");
+            MechanicalScopeRules.Populate(result, establishedMechanicalScopes);
             DocumentUnitConversion.Apply(result, outputUnits);
             result.Validate();
             return result;
@@ -632,6 +699,8 @@ namespace CADVision.SolidWorks
         // solver states and nested/flexible assembly behavior still need live verification.
         private void ReadMateFeatures(Feature first, CadObject owner, Component2 ownerComponent)
         {
+            // Caller verified the owning document/configuration; coverage stays Partial.
+            establishedMechanicalScopes.Add(owner.id);
             for (var f = first; f != null; f = f.GetNextFeature() as Feature)
             {
                 if (f.GetTypeName2() != "MateGroup") continue;
@@ -648,13 +717,20 @@ namespace CADVision.SolidWorks
                         // the entire mate from the export.
                         if (result.mates.Any(m => m.id == record.id)) return;
                         result.mates.Add(record);
+                        Try(record.id, "mate suppression", () => {
+                            record.suppressed=MechanicalScopeRules.Suppression(feature.IsSuppressed2((int)swInConfigurationOpts_e.swSpecifyConfiguration, new[]{owner.configuration}));
+                            if(!record.suppressed.HasValue)throw new InvalidDataException("Native suppression response unavailable for scoped configuration.");
+                        });
+                        if(record.suppressed==true)record.status="suppressed";
+                        Try(record.id, "native mate status", () => {
                         bool warning;
                         record.nativeErrorCode = feature.GetErrorCode2(out warning);
                         record.nativeWarning = record.nativeErrorCode == 0 ? (bool?)null : warning;
                         record.nativeStatus = new NativeStatus { source = "IFeature.GetErrorCode2", code = record.nativeErrorCode.Value,
                             name = Enum.GetName(typeof(swFeatureError_e), record.nativeErrorCode.Value), isWarning = record.nativeWarning };
-                        record.status = MetadataMath.MateStatus(feature.IsSuppressed(), record.nativeErrorCode.Value, warning);
+                        record.status = MetadataMath.MateStatus(record.suppressed==true, record.nativeErrorCode.Value, warning);
                         record.satisfaction = MetadataMath.MateSatisfaction(record.status == "suppressed", record.nativeErrorCode.Value, warning);
+                        });
                         Try(record.id, "mate limits", () => record.limits = ReadLimits(feature, mate.Type));
                         if (mate.Type == (int)swMateType_e.swMateCONCENTRIC)
                         {
