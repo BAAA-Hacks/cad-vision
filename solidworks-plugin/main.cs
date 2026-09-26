@@ -816,6 +816,7 @@ namespace CADVision.SolidWorks
         {
             try { read(); }
             catch (Exception e) { if (!(e is COMException || e is InvalidOperationException || e is IOException || e is System.Xml.XmlException || e is UnauthorizedAccessException)) throw; result.warnings.Add(id + ": " + field + " unavailable: " + e.Message); }
+            catch (Exception e) { if (!(e is COMException || e is InvalidOperationException || e is InvalidDataException || e is IOException || e is System.Xml.XmlException || e is UnauthorizedAccessException)) throw; result.warnings.Add(id + ": " + field + " unavailable: " + e.Message); }
         }
     }
 }
@@ -2191,9 +2192,14 @@ namespace CADVision.SolidWorks
                 progress("SolidWorks revision: " + app.RevisionNumber() + (command.CustomGlb ? "; custom GLB from SolidWorks tessellation" : command.Glb == null ? "; metadata only (automatic GLB export paused)" : "; supplied GLB copied unchanged"));
                 Console.WriteLine("Keep the active SolidWorks model unchanged until extraction completes.");
                 var options = new ExtractionOptions { RunInterferenceDetection = !command.SkipInterferences, Progress = progress };
+                // SolidWorks documents this flag for faster out-of-process API batches.
+                // Restore the prior state on success or failure, before copying/uploading.
+                var metadata = ExportCommand.RunApiBatch(() => app.CommandInProgress,
                 var metadata = command.Glb == null && !command.CustomGlb
+                    value => app.CommandInProgress = value, () => command.Glb == null && !command.CustomGlb
                     ? ExportPipeline.ExportMetadataOnly(app, folder, options)
                     : ExportPipeline.Export(app, folder, new ExtractionOptions { RunInterferenceDetection = !command.SkipInterferences }, progress, command.Glb, null, command.CustomGlb);
+                    : ExportPipeline.Export(app, folder, new ExtractionOptions { RunInterferenceDetection = !command.SkipInterferences }, progress, command.Glb, null, command.CustomGlb));
                 if (command.PublishCadFiles) {
                     CadFilesPublisher.Publish(folder);
                     progress("Replaced CadFiles contents: " + CadFilesPublisher.Destination);
@@ -2252,6 +2258,12 @@ namespace CADVision.SolidWorks
     // CLI parsing has no SolidWorks dependency. No model/source-file path is required.
     public sealed class ExportCommand
     {
+        public static T RunApiBatch<T>(Func<bool> getState, Action<bool> setState, Func<T> export)
+        {
+            bool previous = getState();
+            try { if (!previous) setState(true); return export(); }
+            finally { if (!previous) setState(previous); }
+        }
         public string Directory, Shipper, Glb, MapPair, NativeGlbPath, PublishPair, Quest, SendPair;
         public bool SkipInterferences, ProbeNativeGlb, CustomGlb, PublishCadFiles;
         public static ExportCommand Parse(string[] args)
