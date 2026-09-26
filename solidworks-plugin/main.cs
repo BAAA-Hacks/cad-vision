@@ -864,6 +864,7 @@ namespace CADVision.SolidWorks
         public Action<string> Progress;
         // Fraction completed within extraction, kept separate from diagnostic text.
         public Action<double, string> Completion;
+        public bool ForceFreshProcessing;
     }
 
     // Per-export snapshots only. Cache successful reads, copy values into each
@@ -1527,6 +1528,46 @@ namespace CADVision.SolidWorks
     // Engineering values remain exclusively in the existing native metadata extractor.
     public static class CustomGlbExporter
     {
+        private static readonly object cacheLock = new object();
+        private static string cachedInput;
+        private static byte[] cachedGlb;
+        // One bounded, process-local entry. Read all native input again before
+        // matching; never treat document timestamps as proof of unchanged geometry.
+        public static bool WriteCached(string path, List<MeshNode> input, bool forceFresh = false)
+        {
+            string key;
+            using(var sha=System.Security.Cryptography.SHA256.Create())
+            using(var hash=new System.Security.Cryptography.CryptoStream(Stream.Null,sha,System.Security.Cryptography.CryptoStreamMode.Write)) {
+                using(var writer=new BinaryWriter(hash,Encoding.UTF8,true)) {
+                    writer.Write("CADVision-GLB-cache-1");writer.Write(input.Count);
+                    foreach(var node in input) Fingerprint(writer,node);
+                    writer.Flush();
+                }
+                hash.FlushFinalBlock();key=Convert.ToBase64String(sha.Hash);
+            }
+            byte[] hit=null;
+            lock(cacheLock) { if(!forceFresh && key==cachedInput) hit=cachedGlb; }
+            if(hit!=null) {
+                using(var output=new FileStream(path,FileMode.CreateNew,FileAccess.Write)) output.Write(hit,0,hit.Length);
+                GlbExporter.CheckContainer(path);return true;
+            }
+            Write(path,input);
+            // Never keep an unbounded assembly in memory just to accelerate a retry.
+            if(new FileInfo(path).Length<=64L*1024*1024) {
+                var bytes=File.ReadAllBytes(path);
+                lock(cacheLock) { cachedInput=key;cachedGlb=bytes; }
+            } else { lock(cacheLock) {cachedInput=null;cachedGlb=null;} }
+            return false;
+        }
+        private static void Fingerprint(BinaryWriter writer, MeshNode node)
+        {
+            foreach(string value in new[]{node.Id,node.Name,node.Exclusion,node.AppearanceSource}) {writer.Write(value!=null);if(value!=null)writer.Write(value);}
+            writer.Write(node.Parent);
+            foreach(var values in new[]{node.World,node.Appearance}) {writer.Write(values==null?-1:values.Length);if(values!=null)foreach(double value in values)writer.Write(value);}
+            writer.Write(node.Positions.Count);foreach(float value in node.Positions)writer.Write(value);
+            writer.Write(node.Normals.Count);foreach(float value in node.Normals)writer.Write(value);
+            writer.Write(node.Surfaces.Count);foreach(var surface in node.Surfaces)Fingerprint(writer,surface);
+        }
         public sealed class MeshNode
         {
             public string Id, Name, Exclusion;
@@ -1573,7 +1614,7 @@ namespace CADVision.SolidWorks
             for(int r=0;r<3;r++) m[12+r]=t[9+r]*meters;
             Inverse(m);return m;
         }
-        public static void Export(ModelDoc2 model, Metadata metadata, string path, Action<string> progress, Action<double, string> completion = null)
+        public static void Export(ModelDoc2 model, Metadata metadata, string path, Action<string> progress, Action<double, string> completion = null, bool forceFresh = false)
         {
             var components=new Dictionary<string,Component2>(StringComparer.Ordinal);
             if(model.GetType()==(int)swDocumentTypes_e.swDocASSEMBLY) {
@@ -1631,7 +1672,8 @@ namespace CADVision.SolidWorks
                 indices.Add(o.id,nodes.Count);nodes.Add(n);
                 if (completion != null) completion(0.95 * nodes.Count / Math.Max(1, metadata.objects.Count), "Generating GLB geometry");
             }
-            Write(path,nodes);
+            bool reused=WriteCached(path,nodes,forceFresh);
+            if(progress!=null)progress(reused?"GLB processing cache hit: freshly read inputs match exactly.":"GLB processing cache miss: generated fresh output.");
             if (completion != null) completion(1, "GLB written");
             var report=new MappingReport { method="cad_ids_assigned_during_custom_glb_generation",status="assigned_by_exporter",
                 verificationScope="CAD IDs assigned directly; live geometry placement and Unity runtime require validation" };
@@ -2006,7 +2048,7 @@ namespace CADVision.SolidWorks
                 {
                     if (progress != null) progress("Metadata ready. Generating custom model.glb from native tessellation...");
                     CustomGlbExporter.Export(model, metadata, glbPath, progress,
-                        options == null || options.Completion == null ? (Action<double, string>)null : (value, message) => options.Completion(0.80 + value * 0.17, message));
+                        options == null || options.Completion == null ? (Action<double, string>)null : (value, message) => options.Completion(0.80 + value * 0.17, message), options != null && options.ForceFreshProcessing);
                 }
                 else if (existingGlb == null)
                 {
@@ -2295,7 +2337,7 @@ namespace CADVision.SolidWorks
                 var app = (SldWorks)Marshal.GetActiveObject("SldWorks.Application");
                 progress("SolidWorks revision: " + app.RevisionNumber() + (command.CustomGlb ? "; custom GLB from SolidWorks tessellation" : command.Glb == null ? "; metadata only (automatic GLB export paused)" : "; supplied GLB copied unchanged"));
                 Console.WriteLine("Keep the active SolidWorks model unchanged until extraction completes.");
-                var options = new ExtractionOptions { RunInterferenceDetection = !command.SkipInterferences, Progress = progress };
+                var options = new ExtractionOptions { RunInterferenceDetection = !command.SkipInterferences, Progress = progress, ForceFreshProcessing = command.ForceFreshProcessing };
                 var estimate = new ExportProgressEstimate();
                 int lastPercent = -1;
                 options.Completion = (fraction, stage) => {
@@ -2373,12 +2415,13 @@ namespace CADVision.SolidWorks
             finally { if (!previous) setState(previous); }
         }
         public string Directory, Shipper, Glb, MapPair, NativeGlbPath, PublishPair, Quest, SendPair;
-        public bool SkipInterferences, ProbeNativeGlb, CustomGlb, PublishCadFiles;
+        public bool SkipInterferences, ProbeNativeGlb, CustomGlb, PublishCadFiles, ForceFreshProcessing;
         public static ExportCommand Parse(string[] args)
         {
             var result = new ExportCommand();
             for (int i = 0; i < args.Length; i++)
             {
+                if(args[i]=="--fresh" && !result.ForceFreshProcessing) {result.ForceFreshProcessing=true;continue;}
                 if (args[i] == "--quest" && result.Quest == null && i+1 < args.Length && !args[i+1].StartsWith("--")) result.Quest = QuestTransfer.Endpoint(args[++i]).AbsoluteUri;
                 else if (args[i] == "--send-pair" && result.SendPair == null && i+1 < args.Length && !args[i+1].StartsWith("--")) result.SendPair = Path.GetFullPath(args[++i]);
                 else if (args[i] == "--skip-interferences" && !result.SkipInterferences) result.SkipInterferences = true;
