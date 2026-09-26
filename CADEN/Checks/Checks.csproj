@@ -10,6 +10,7 @@
     <None Update="OrchestrationCases*.json" CopyToOutputDirectory="PreserveNewest" />
     <ProjectReference Include="../Core/Core.csproj" />
     <Compile Include="../Desktop/LocalConfiguration.cs" Link="LocalConfiguration.cs" />
+    <Compile Include="../Desktop/StreamingSpeechTurn.cs" Link="StreamingSpeechTurn.cs" />
     <Compile Include="../Desktop/FileDiagnostics.cs" Link="FileDiagnostics.cs" />
     <Compile Include="../Desktop/FileTokenUsage.cs" Link="FileTokenUsage.cs" />
     <Compile Include="../Desktop/ProjectMemoryFile.cs" Link="ProjectMemoryFile.cs" />

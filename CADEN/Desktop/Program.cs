@@ -36,7 +36,7 @@ internal static class Program
     }
 }
 
-internal sealed class ChatWindow : Form
+internal sealed partial class ChatWindow : Form
 {
     private readonly string directory;
     private readonly HttpClient http = new() { Timeout = Timeout.InfiniteTimeSpan };
@@ -76,13 +76,19 @@ internal sealed class ChatWindow : Form
         var header = new FlowLayoutPanel { Dock = DockStyle.Fill };
         header.Controls.Add(new Label { Text = "CADEN", AutoSize = true, Font = new Font("Segoe UI", 19, FontStyle.Bold) });
         header.Controls.Add(model);
+        header.Controls.Add(speakReplies);
+        header.Controls.Add(stopSpeech);
+        header.Controls.Add(replaySpeech);
+        speakReplies.CheckedChanged += (_, _) => { if (!speakReplies.Checked) StopSpeech(); };
+        stopSpeech.Click += (_, _) => StopSpeech();
+        replaySpeech.Click += async (_, _) => await SpeakAsync(lastSpokenAnswer);
         layout.Controls.Add(header, 0, 0);
         layout.Controls.Add(design, 0, 1);
         layout.Controls.Add(transcript, 0, 2); layout.Controls.Add(error, 0, 3); layout.Controls.Add(input, 0, 4);
         var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(0, 5, 0, 0) };
         actions.Controls.AddRange(new Control[] { send, reset, loadMetadata, retry, cancel, status });
         layout.Controls.Add(actions, 0, 5);
-        layout.Controls.Add(new Label { Text = "History stays in memory. Messages are sent to Gemini. System instructions stay hidden.", AutoSize = true, ForeColor = Color.DimGray }, 0, 6);
+        layout.Controls.Add(new Label { Text = "Messages go to Gemini. With Speak enabled, replies also go to ElevenLabs.", AutoSize = true, ForeColor = Color.DimGray }, 0, 6);
         Controls.Add(layout);
         send.Click += async (_, _) => await SendAsync(input.Text);
         retry.Click += async (_, _) => await SendAsync(failedPrompt ?? "");
@@ -99,7 +105,7 @@ internal sealed class ChatWindow : Form
         };
         cancel.Click += (_, _) => request?.Cancel();
         input.KeyDown += async (_, e) => { if (e.Control && e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; if (request == null) await SendAsync(input.Text); } };
-        FormClosing += (_, _) => request?.Cancel();
+        FormClosing += (_, _) => { request?.Cancel(); StopSpeech(); };
         DiagnosticLog.Reported += ShowDiagnostic;
         FormClosed += (_, _) => { DiagnosticLog.Reported -= ShowDiagnostic; http.Dispose(); };
         Shown += async (_, _) => await ReloadAsync();
@@ -120,6 +126,7 @@ internal sealed class ChatWindow : Form
     private async Task ReloadAsync(string? replacementPath = null)
     {
         if (request != null) return;
+        StopSpeech();
         request = new CancellationTokenSource(); var token = request.Token;
         send.Enabled = reset.Enabled = loadMetadata.Enabled = retry.Enabled = false; cancel.Enabled = true;
         error.Clear(); status.Text = "Loading metadata and scanning issues…";
@@ -154,6 +161,7 @@ internal sealed class ChatWindow : Form
             transcript.Clear(); input.Clear(); failedPrompt = null; retry.Enabled = false;
             metadataPath = nextPath; gemini = nextClient; currentSnapshot = metadata;
             session = new ChatSession(gemini);
+            ConfigureSpeech();
             design.Text = metadata == null ? "No metadata loaded — use Load metadata." : metadata.Name + " · " + metadata.ComponentsById.Count + " objects" + (metadata.IsFixture ? " · synthetic fixture" : " · exported metadata") + " · hierarchy " + metadata.Capabilities.Hierarchy;
             model.Text = settings.Model; status.Text = issues == null ? "Ready · issue scan unavailable" : "Ready · " + issues.InitialFindingCount + " issues · scan " + issues.InitialScanStatus; send.Enabled = true;
             if (metadata != null && metadata.LoadDiagnostics.Any(d => d.IsError))
@@ -201,18 +209,25 @@ internal sealed class ChatWindow : Form
     private async Task SendAsync(string prompt)
     {
         if (session == null || request != null || string.IsNullOrWhiteSpace(prompt)) return;
+        StopSpeech();
+        replaySpeech.Enabled = false;
         request = new CancellationTokenSource();
         send.Enabled = reset.Enabled = loadMetadata.Enabled = retry.Enabled = input.Enabled = false; cancel.Enabled = true;
         error.Clear(); status.Text = "CADEN is thinking…";
         RenderHistory(); transcript.AppendText("YOU\n" + prompt.Trim() + "\n\n");
+        var voiceTurn = StartStreamingSpeech(request.Token);
         try
         {
-            await session.SendAsync(prompt, request.Token);
+            string answer = await session.SendAsync(prompt, request.Token, voiceTurn == null ? null : voiceTurn.Receive);
             if (IsDisposed) return;
             failedPrompt = null; input.Clear(); RenderHistory(); status.Text = "Ready · " + (gemini?.LastToolCallCount ?? 0) + " queries";
+            lastSpokenAnswer = answer;
+            if (voiceTurn != null) voiceTurn.Complete(answer);
+            else if (speakReplies.Checked) _ = SpeakAsync(answer);
         }
         catch (Exception ex)
         {
+            voiceTurn?.Cancel();
             if (IsDisposed) return;
             failedPrompt = prompt; RenderHistory(); input.Text = prompt;
             error.Text = ex is OperationCanceledException ? "Request cancelled. This turn was not added to history."
@@ -227,6 +242,7 @@ internal sealed class ChatWindow : Form
             {
                 send.Enabled = reset.Enabled = loadMetadata.Enabled = input.Enabled = true; retry.Enabled = failedPrompt != null;
                 cancel.Enabled = false; input.Focus();
+                replaySpeech.Enabled = speechClient != null && lastSpokenAnswer.Length > 0 && speechRequest == null && streamingSpeech == null;
             }
         }
     }

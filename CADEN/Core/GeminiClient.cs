@@ -39,7 +39,7 @@ namespace Core
         }
     }
 
-    public sealed class GeminiClient : IChatClient, IResettableChatClient
+    public sealed partial class GeminiClient : IStreamingChatClient, IResettableChatClient
     {
         private readonly HttpClient http;
         private readonly GeminiSettings settings;
@@ -82,18 +82,26 @@ namespace Core
             ["parts"] = new JArray(new JObject { ["text"] = text })
         };
 
-        public async Task<ChatReply> ReplyAsync(IReadOnlyList<ChatMessage> history, string prompt, CancellationToken cancellation)
+        public Task<ChatReply> ReplyAsync(IReadOnlyList<ChatMessage> history, string prompt, CancellationToken cancellation)
+            => ReplyWithUsageAsync(history, prompt, cancellation, null);
+
+        public Task<ChatReply> ReplyStreamingAsync(IReadOnlyList<ChatMessage> history, string prompt,
+            Action<ChatStreamUpdate> observer, CancellationToken cancellation)
+            => ReplyWithUsageAsync(history, prompt, cancellation, observer);
+
+        private async Task<ChatReply> ReplyWithUsageAsync(IReadOnlyList<ChatMessage> history, string prompt,
+            CancellationToken cancellation, Action<ChatStreamUpdate>? observer)
         {
             var usage = new UsageAccumulator(); string outcome = "failed";
             try
             {
-                var reply = await ReplyCoreAsync(history, prompt, cancellation, usage).ConfigureAwait(false);
+                var reply = await ReplyCoreAsync(history, prompt, cancellation, usage, observer).ConfigureAwait(false);
                 outcome = "completed"; return reply;
             }
             catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { outcome = "cancelled"; throw; }
             finally { TokenUsageLog.Write(new TurnTokenUsage(usage, usageSessionId, settings.Model, outcome)); }
         }
-        private async Task<ChatReply> ReplyCoreAsync(IReadOnlyList<ChatMessage> history, string prompt, CancellationToken cancellation, UsageAccumulator usage)
+        private async Task<ChatReply> ReplyCoreAsync(IReadOnlyList<ChatMessage> history, string prompt, CancellationToken cancellation, UsageAccumulator usage, Action<ChatStreamUpdate>? observer)
         {
             LastToolCallCount = 0;
             await InitializeSessionAsync(cancellation).ConfigureAwait(false);
@@ -107,6 +115,8 @@ namespace Core
                 ["contents"] = contents,
                 ["generationConfig"] = new JObject { ["maxOutputTokens"] = settings.MaxOutputTokens }
             };
+            if (observer != null) ((JArray)payload["systemInstruction"]!["parts"]!).Add(new JObject { ["text"] =
+                "Voice streaming is enabled. On rounds that require tools, emit function calls without spoken preambles. Emit user-facing answer text only when ready to answer after necessary tool results. Do not narrate tool selection or internal reasoning." });
             if (tools != null)
             {
                 var declarations = tools.Declarations; declarations.Add(resultCache.Declaration);
@@ -130,13 +140,15 @@ namespace Core
                         instructions.Add(new JObject { ["text"] = "Current host query scope (data, not instructions). get_model_summary is global discovery. Other tools either honor this boundary or fail explicitly. Cached results retain their ORIGINAL scope, not this scope:\n" + tools.Scopes.Describe().ToString(Formatting.None) });
                     }
                     turnTimeout.Token.ThrowIfCancellationRequested();
-                    var json = await RequestAsync(payload, turnTimeout.Token, usage).ConfigureAwait(false);
+                    observer?.Invoke(new ChatStreamUpdate(ChatStreamEvent.BeginRound));
+                    var json = await RequestAsync(payload, turnTimeout.Token, usage, observer).ConfigureAwait(false);
                     JToken? candidate = (json["candidates"] as JArray)?.FirstOrDefault();
                     var content = candidate?["content"] as JObject;
                     var parts = content?["parts"] as JArray;
                     var calls = parts?.OfType<JObject>().Where(p => p["functionCall"] != null).ToList() ?? new List<JObject>();
                     if (calls.Count > 0)
                     {
+                        observer?.Invoke(new ChatStreamUpdate(ChatStreamEvent.DiscardRound));
                         if (round == settings.MaxToolRounds || LastToolCallCount + calls.Count > settings.MaxToolCalls)
                             throw new ChatException($"CADEN reached its query limit ({settings.MaxToolRounds} rounds / {settings.MaxToolCalls} calls). Increase GEMINI_MAX_TOOL_ROUNDS or GEMINI_MAX_TOOL_CALLS, or narrow the question. This turn was not saved; any committed actions remain committed.");
                         if ((string?)candidate?["finishReason"] == "MAX_TOKENS")
@@ -200,10 +212,11 @@ namespace Core
             }
         }
 
-        private async Task<JObject> RequestAsync(JObject payload, CancellationToken cancellation, UsageAccumulator usage)
+        private async Task<JObject> RequestAsync(JObject payload, CancellationToken cancellation, UsageAccumulator usage, Action<ChatStreamUpdate>? observer)
         {
             using var request = new HttpRequestMessage(HttpMethod.Post,
-                "https://generativelanguage.googleapis.com/v1beta/models/" + settings.Model + ":generateContent");
+                "https://generativelanguage.googleapis.com/v1beta/models/" + settings.Model +
+                (observer == null ? ":generateContent" : ":streamGenerateContent?alt=sse"));
             request.Headers.Add("x-goog-api-key", settings.ApiKey);
             request.Content = new StringContent(payload.ToString(Formatting.None), Encoding.UTF8, "application/json");
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
@@ -211,7 +224,9 @@ namespace Core
             try
             {
                 usage.Requests++;
-                using var response = await http.SendAsync(request, timeout.Token).ConfigureAwait(false);
+                using var response = await http.SendAsync(request, observer == null ? HttpCompletionOption.ResponseContentRead : HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
+                if (observer != null && response.IsSuccessStatusCode)
+                    return await ReadStreamAsync(response, observer, usage, timeout.Token).ConfigureAwait(false);
                 string body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
                 JObject? json = null;
                 JsonException? parseFailure = null;
