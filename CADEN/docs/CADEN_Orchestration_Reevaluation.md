@@ -13,7 +13,7 @@ repeated score-chasing runs occurred during this evaluation.
 | First 20, strict engineering/source accuracy | 14 pass, 5 partial, 1 fail | 19 pass, 1 partial, 0 fail |
 | Last 5, memory/disposition workflow | 4 pass, 1 fail | 5 pass |
 | Five additional adversarial prompts | Not run | 4 pass, 1 partial |
-| Structural completion/tool checks | Not separately scored | 25/25 baseline; 5/5 adversarial |
+| Structural completion/tool checks | Not separately scored | 25/25kv baseline; 5/5 adversarial |
 
 These are manual semantic grades on one run of a small fixture, not a general accuracy
 estimate. A pass means the answer and tool/state evidence satisfy the engineering task;

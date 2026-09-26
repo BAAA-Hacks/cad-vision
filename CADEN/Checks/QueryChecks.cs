@@ -97,13 +97,13 @@ internal static class QueryChecks
         await chat.SendAsync("Inspect model");
         Require(client.LastToolCallCount == 2, "Calls were not dispatched.");
         var wire = JObject.Parse(queued.Requests[1]);
-        Require(((JArray)wire["tools"]![0]!["functionDeclarations"]!).Count == 4, "Missing function declarations.");
+        Require(((JArray)wire["tools"]![0]!["functionDeclarations"]!).Count == 5, "Missing query or session recall declarations.");
         Require((string?)wire["contents"]![1]!["parts"]![0]!["thoughtSignature"] == "opaque-signature", "Thought signature lost.");
         Require((string?)wire["contents"]![2]!["parts"]![0]!["functionResponse"]!["id"] == "call-1", "Call/result ID association lost.");
         Require((string?)wire["contents"]![2]!["parts"]![1]!["functionResponse"]!["response"]!["error"]!["code"] == "OBJECT_NOT_FOUND", "Tool error did not reach Gemini.");
         Require(chat.Messages.Count(m => m.Text.Length > 0) == 2, "Tool exchanges leaked into visible transcript.");
         queued.Responses.Enqueue(FakeHandler.Success); await chat.SendAsync("Follow-up");
-        Require(queued.Requests.Last().Contains("opaque-signature") && queued.Requests.Last().Contains("functionResponse"), "Follow-up lost tool history.");
+        Require(!queued.Requests.Last().Contains("opaque-signature") && !queued.Requests.Last().Contains("functionResponse") && queued.Requests.Last().Contains("result_"), "Follow-up did not replace old raw exchanges with cache references.");
         chat.Clear(); queued.Responses.Enqueue(FakeHandler.Success); await chat.SendAsync("Fresh");
         Require(!queued.Requests.Last().Contains("opaque-signature"), "Reset retained old tool state.");
         chat.Clear(); for (int i = 0; i < 7; i++) queued.Responses.Enqueue(calls);

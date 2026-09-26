@@ -177,6 +177,7 @@ await IssueAccessChecks.RunAsync();
 await MemoryToolChecks.RunAsync();
 await CapabilityChecks.RunAsync();
 await OrchestrationChecks.RunAsync();
+await ContextCacheChecks.RunAsync();
 await MechanicalQueryChecks.RunAsync();
 await Schema21Checks.RunAsync();
 await DiagnosticChecks.RunAsync();

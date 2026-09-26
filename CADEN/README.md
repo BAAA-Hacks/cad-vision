@@ -142,6 +142,10 @@ recall and export/load diagnostic reads. See [orchestration testing](docs/CADEN_
 for the isolated 25-prompt and adversarial suites, and the
 [reevaluation report](docs/CADEN_Orchestration_Reevaluation.md) for results and remaining limits.
 
+The chat host additionally provides session-local `recall_result` and
+[bounded outgoing context](docs/CADEN_Session_Context.md). Old raw tool responses stay
+local; subsequent requests send recent conversation and a small result directory.
+
 To verify a live metadata-to-tool-to-answer turn using `data/metadata.json`:
 
 ```powershell

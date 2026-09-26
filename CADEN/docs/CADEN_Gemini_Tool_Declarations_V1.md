@@ -18,6 +18,10 @@ Defaults described in prose are applied by handlers, not necessarily emitted as 
 `default` keywords. The emitted schemas use the current `nullable` convention and do not
 claim to be standalone, exhaustive JSON Schema validation documents.
 
+The Gemini chat host additionally advertises session-only `recall_result`, documented in
+[Session context](CADEN_Session_Context.md). It is separate from the 20 semantic registry
+declarations below; a fully enabled chat therefore exposes 21 functions.
+
 ## Implemented surface
 
 | Group | Tools |

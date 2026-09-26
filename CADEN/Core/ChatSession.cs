@@ -31,6 +31,8 @@ namespace Core
         Task<ChatReply> ReplyAsync(IReadOnlyList<ChatMessage> history, string prompt, CancellationToken cancellation);
     }
 
+    public interface IResettableChatClient { void ResetSession(); }
+
     public sealed class ChatException : Exception
     {
         public string? DiagnosticId { get; }
@@ -66,7 +68,7 @@ namespace Core
         public void Clear()
         {
             if (!gate.Wait(0)) throw new InvalidOperationException("Cancel or finish the current request before resetting.");
-            try { messages.Clear(); }
+            try { messages.Clear(); if (client is IResettableChatClient resettable) resettable.ResetSession(); }
             finally { gate.Release(); }
         }
     }
