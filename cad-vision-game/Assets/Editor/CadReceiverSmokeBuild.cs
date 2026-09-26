@@ -63,12 +63,12 @@ public static class CadReceiverSmokeBuild
             var host = new GameObject("CADVisionRuntime", typeof(CadDesignReceiver));
             SceneManager.MoveGameObjectToScene(host, scene);
             host.GetComponent<CadModelLoader>().ReviewOrigin = camera.transform;
-            // Save actual TestASM material references so runtime-only glTF shader variants
+            // Save current CadFiles material references so runtime-only glTF shader variants
             // survive player build stripping. These are test assets, not imported CAD meshes.
             sample = new GameObject("Temporary shader collector", typeof(CadModelLoader));
             SceneManager.MoveGameObjectToScene(sample, scene);
-            await sample.GetComponent<CadModelLoader>().LoadFilesAsync(
-                Path.Combine(Repo, "TestASM.glb"), Path.Combine(Repo, "TestASM_metadata_sample.json"));
+            var pair = CadFilesPackage.FindPair(CadFilesPackage.SourceFolder(Application.dataPath));
+            await sample.GetComponent<CadModelLoader>().LoadFilesAsync(pair.glb, pair.json);
             var root = sample.GetComponent<CADVisionRuntime>().RootGameObject;
             var materials = root.GetComponentsInChildren<Renderer>().SelectMany(r => r.sharedMaterials).Where(m => m != null).Distinct().ToArray();
             for (int i = 0; i < materials.Length; i++)
