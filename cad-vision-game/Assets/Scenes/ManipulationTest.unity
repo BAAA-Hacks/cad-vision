@@ -1099,7 +1099,6 @@ GameObject:
   - component: {fileID: 191370956}
   - component: {fileID: 191370957}
   - component: {fileID: 191370958}
-  - component: {fileID: 191370959}
   - component: {fileID: 191370960}
   - component: {fileID: 191370961}
   - component: {fileID: 191370962}
@@ -1174,27 +1173,6 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 68621793229e4d138ceccfae8f6545d4, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::CADXRRaySetup
---- !u!114 &191370959
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 191370954}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: e258212a01ec19445a7c5df91c074e9a, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::CADXRGrab
-  controllerAnchor: {fileID: 1746405929}
-  controller: 2
-  reachDistance: 0.5
-  maxExtraGain: 4
-  decayRate: 1.5
-  leftControllerAnchor: {fileID: 0}
-  minimumScaleSeparation: 0.08
-  minimumScaleRatio: 0.1
-  maximumScaleRatio: 10
 --- !u!114 &191370960
 MonoBehaviour:
   m_ObjectHideFlags: 0

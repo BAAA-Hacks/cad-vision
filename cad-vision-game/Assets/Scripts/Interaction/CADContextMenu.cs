@@ -113,7 +113,6 @@ public class CADContextMenu : MonoBehaviour
 
     private CADVisionManipulationService manipulationService;
     private CADPointerInteraction pointerInteraction;
-    private CADXRGrab gripFallback;
     private CADMainMenu mainMenu;
 
     private CADMenuPanel panel;
@@ -140,7 +139,6 @@ public class CADContextMenu : MonoBehaviour
     {
         manipulationService = GetComponent<CADVisionManipulationService>();
         pointerInteraction = GetComponent<CADPointerInteraction>();
-        gripFallback = GetComponent<CADXRGrab>();
         mainMenu = GetComponent<CADMainMenu>();
 
         BuildPanel();
@@ -240,9 +238,7 @@ public class CADContextMenu : MonoBehaviour
         return string.Join("|", ids);
     }
 
-    private bool IsMoving() =>
-        (pointerInteraction != null && pointerInteraction.IsManipulating) ||
-        (gripFallback != null && (gripFallback.IsGrabbing || gripFallback.IsScalingModel));
+    private bool IsMoving() => pointerInteraction != null && pointerInteraction.IsManipulating;
 
     private void OpenModel()
     {
@@ -380,8 +376,7 @@ public class CADContextMenu : MonoBehaviour
 
         // Moving the object leaves the panel floating at the old spot and its buttons in the
         // way of the drag, so any manipulation closes it; re-open with another click.
-        if ((pointerInteraction != null && pointerInteraction.IsManipulating) ||
-            (gripFallback != null && gripFallback.IsGrabbing))
+        if (pointerInteraction != null && pointerInteraction.IsManipulating)
         {
             Hide("object is being moved");
             return;
