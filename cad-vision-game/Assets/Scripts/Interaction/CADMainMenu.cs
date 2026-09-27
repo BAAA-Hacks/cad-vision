@@ -55,6 +55,7 @@ public class CADMainMenu : MonoBehaviour
     private CADPointerInteraction pointerInteraction;
 
     private CADMenuPanel panel;
+    private CADMenuPanel codePanel;
     private GameObject panelRoot; // panel.Root.
     private Text title; // Plain header text; also a grab region of the border drag.
     private Text scopeSection, roomSection, roomStatus, cadenSection, viewSection, modelSection, interfaceSection;
@@ -66,13 +67,16 @@ public class CADMainMenu : MonoBehaviour
     private Button scaleDownButton, scaleUpButton, closeButton;
     private bool resetExpanded;
     private CADMultiplayerCoordinator multiplayer;
-    private TouchScreenKeyboard roomCodeKeyboard;
+    private Text enteredRoomCode;
+    private Button confirmRoomCode;
+    private string roomCode = string.Empty;
 
 
-    public bool IsOpen => panel != null && panel.IsOpen;
-    public bool IsDragging => panel != null && panel.IsDragging;
+    public bool IsOpen => panel != null && panel.IsOpen || codePanel != null && codePanel.IsOpen;
+    public bool IsDragging => panel != null && panel.IsDragging || codePanel != null && codePanel.IsDragging;
     public bool IsResetExpanded => resetExpanded;
-    public Transform PanelTransform => panelRoot != null ? panelRoot.transform : null;
+    public Transform PanelTransform => codePanel != null && codePanel.IsOpen
+        ? codePanel.Root.transform : panelRoot != null ? panelRoot.transform : null;
     /// <summary>The shared panel this menu is built from (same class as the context menu's).</summary>
     public CADMenuPanel Panel => panel;
 
@@ -84,16 +88,30 @@ public class CADMainMenu : MonoBehaviour
         if (multiplayer == null) multiplayer = gameObject.AddComponent<CADMultiplayerCoordinator>();
         pointerInteraction = GetComponent<CADPointerInteraction>();
         BuildPanel();
+        BuildCodePanel();
         panel.Hide();
+        codePanel.Hide();
         if (startVisible)
             ShowMainMenu();
     }
 
-    private void OnEnable() => panel?.EnableBorderDrag(pointerInteraction);
+    private void OnEnable()
+    {
+        panel?.EnableBorderDrag(pointerInteraction);
+        codePanel?.EnableBorderDrag(pointerInteraction);
+    }
 
-    private void OnDisable() => panel?.DisableBorderDrag();
+    private void OnDisable()
+    {
+        panel?.DisableBorderDrag();
+        codePanel?.DisableBorderDrag();
+    }
 
-    private void OnDestroy() => panel?.Destroy();
+    private void OnDestroy()
+    {
+        panel?.Destroy();
+        codePanel?.Destroy();
+    }
 
     // ---------------- Show / hide ----------------
 
@@ -106,6 +124,7 @@ public class CADMainMenu : MonoBehaviour
     /// <summary>Shows the menu in front of the user; if already open, brings it back in front.</summary>
     public void ShowMainMenu()
     {
+        codePanel?.Hide();
         panel.EndDrag();
         resetExpanded = false;
         ApplyLayout();
@@ -121,16 +140,15 @@ public class CADMainMenu : MonoBehaviour
         if (IsOpen)
             Debug.Log("[CADMainMenu] Hidden.");
         panel.Hide();
+        codePanel?.Hide();
     }
 
     private void LateUpdate()
     {
-        if (roomCodeKeyboard != null && roomCodeKeyboard.status != TouchScreenKeyboard.Status.Visible)
+        if (codePanel != null && codePanel.IsOpen)
         {
-            string code = roomCodeKeyboard.status == TouchScreenKeyboard.Status.Done
-                ? roomCodeKeyboard.text : null;
-            roomCodeKeyboard = null;
-            if (!string.IsNullOrWhiteSpace(code)) multiplayer.JoinRoom(code);
+            codePanel.UpdateDrag();
+            return;
         }
         if (!IsOpen)
             return;
@@ -239,11 +257,82 @@ public class CADMainMenu : MonoBehaviour
 
     private void PromptJoinRoom()
     {
-        roomCodeKeyboard = TouchScreenKeyboard.Open(string.Empty,
-            TouchScreenKeyboardType.Default, false, false, false, false,
-            "Enter the code from the host headset");
-        if (roomCodeKeyboard == null)
-            Debug.LogWarning("[CAD room] On-screen keyboard unavailable on this device.");
+        roomCode = string.Empty;
+        RefreshCodePanel();
+        codePanel.Root.transform.SetPositionAndRotation(
+            panelRoot.transform.position, panelRoot.transform.rotation);
+        codePanel.Root.transform.localScale = Vector3.one * settings.UiScale;
+        panel.Hide();
+        codePanel.Show();
+    }
+
+    private void AppendRoomCode(char value)
+    {
+        if (roomCode.Length >= 12) return;
+        roomCode += value;
+        RefreshCodePanel();
+    }
+
+    private void BackspaceRoomCode()
+    {
+        if (roomCode.Length == 0) return;
+        roomCode = roomCode.Substring(0, roomCode.Length - 1);
+        RefreshCodePanel();
+    }
+
+    private void RefreshCodePanel()
+    {
+        SetText(enteredRoomCode, "Code: " + (roomCode.Length == 0 ? "------" : roomCode));
+        CADMenuPanel.SetInteractable(confirmRoomCode, roomCode.Length >= 4);
+    }
+
+    private void SubmitRoomCode()
+    {
+        if (roomCode.Length < 4) return;
+        string code = roomCode;
+        ShowMainMenu();
+        multiplayer.JoinRoom(code);
+    }
+
+    private void BuildCodePanel()
+    {
+        codePanel = new CADMenuPanel("CAD Room Code", PanelWidth, CADMenuStyle.Default);
+        codePanel.CloseRequested = HideMainMenu;
+        Text heading = codePanel.CreateText("Title", "Join shared room",
+            CADMenuPanel.FontSize + 2, FontStyle.Bold);
+        codePanel.AddGrabRegion(heading.rectTransform);
+        enteredRoomCode = codePanel.CreateText("Entered code", "Code: ------",
+            CADMenuPanel.FontSize + 4, FontStyle.Bold);
+        Text hint = codePanel.CreateText("Hint", "Tap the code shown on the host headset");
+        var rows = new List<CADMenuPanel.Row>
+        {
+            new(TitleHeight, heading),
+            new(ButtonHeight, enteredRoomCode),
+            new(TextHeight, SectionSpacing, hint)
+        };
+        const string keys = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        for (int row = 0; row < 6; row++)
+        {
+            var buttons = new Component[6];
+            for (int column = 0; column < 6; column++)
+            {
+                char key = keys[row * 6 + column];
+                buttons[column] = codePanel.CreateButton(key.ToString(),
+                    () => AppendRoomCode(key));
+            }
+            rows.Add(new CADMenuPanel.Row(ButtonHeight, buttons));
+        }
+        Button backspace = codePanel.CreateButton("Delete", BackspaceRoomCode);
+        Button clear = codePanel.CreateButton("Clear", () =>
+        {
+            roomCode = string.Empty;
+            RefreshCodePanel();
+        });
+        confirmRoomCode = codePanel.CreateButton("Join", SubmitRoomCode);
+        Button cancel = codePanel.CreateButton("Cancel", ShowMainMenu);
+        rows.Add(new CADMenuPanel.Row(ButtonHeight, backspace, clear, confirmRoomCode, cancel));
+        codePanel.Stack(rows);
+        RefreshCodePanel();
     }
 
     private void ToggleReset()
@@ -331,7 +420,7 @@ public class CADMainMenu : MonoBehaviour
         hostRoomButton = AddButton("Host", multiplayer.HostRoom,
             "Create a room and show its code to the second headset.");
         joinRoomButton = AddButton("Join", PromptJoinRoom,
-            "Type the code shown on the host headset.");
+            "Tap the code shown on the host headset using the VR keypad.");
         leaveRoomButton = AddButton("Leave", multiplayer.LeaveRoom,
             "Disconnect from the shared room.");
 
