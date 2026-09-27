@@ -5,7 +5,9 @@ using UnityEngine.UI;
 /// <summary>
 /// The application's single global menu: Scope (current scope + one context-aware
 /// Enter/Exit Assembly button), CADEN (placeholder toggle), View (display mode buttons,
-/// outline toggle), Reset (options shown under "Reset ▼"), Interface (UI scale), Close.
+/// outline toggle), Model (Manipulate model / Stop manipulating, and the Reset options shown
+/// under "Reset ▼": object, scale, assembly, model), Interface (UI scale), Close. Buttons carry
+/// hover tooltips (CADMenuPanel).
 ///
 /// Rendering and input are CADMenuPanel, the same construction the object/assembly context
 /// menus use (same canvas, images, texts, buttons, ray surface, show/hide, row stacking); this
@@ -54,11 +56,11 @@ public class CADMainMenu : MonoBehaviour
     private CADMenuPanel panel;
     private GameObject panelRoot; // panel.Root.
     private Button titleBar;
-    private Text scopeSection, cadenSection, viewSection, resetSection, interfaceSection;
+    private Text scopeSection, cadenSection, viewSection, modelSection, interfaceSection;
     private Text scopeText, displayLabel, outlineLabel, scaleLabel, scaleValue;
     private readonly Dictionary<CADDisplayMode, Button> displayButtons = new();
     private Button scopeButton, cadenButton, outlineButton;
-    private Button resetButton, resetObjectButton, resetAssemblyButton, resetModelButton;
+    private Button manipulateButton, resetButton, resetObjectButton, resetScaleButton, resetAssemblyButton, resetModelButton;
     private Button scaleDownButton, scaleUpButton, closeButton;
     private bool resetExpanded;
 
@@ -216,8 +218,16 @@ public class CADMainMenu : MonoBehaviour
         CADMenuPanel.SetLabel(outlineButton, settings.OutlineEnabled ? "On" : "Off");
         panel.SetSelected(outlineButton, settings.OutlineEnabled);
 
+        bool modelMode = manipulationService.IsModelManipulationActive;
+        CADMenuPanel.SetLabel(manipulateButton, modelMode ? "Stop manipulating" : "Manipulate model");
+        CADMenuPanel.SetInteractable(manipulateButton, modelMode || manipulationService.ModelRoot != null);
+        panel.SetSelected(manipulateButton, modelMode);
+
         CADMenuPanel.SetLabel(resetButton, resetExpanded ? "Reset ▲" : "Reset ▼");
         CADMenuPanel.SetInteractable(resetObjectButton, manipulationService.GetSelectedIds().Count > 0);
+        CADMenuPanel.SetInteractable(resetScaleButton, modelMode
+            ? manipulationService.ModelRoot != null
+            : manipulationService.GetSelectedIds().Count > 0);
         CADMenuPanel.SetInteractable(resetAssemblyButton, ResetAssemblyTarget() != null);
         CADMenuPanel.SetInteractable(resetModelButton, manipulationService.ModelRoot != null);
 
@@ -277,6 +287,31 @@ public class CADMainMenu : MonoBehaviour
         CollapseReset();
     }
 
+    // Model mode: the model root's review scale; else the selection's (one object or the
+    // selected transform roots). Position and rotation stay.
+    private void ResetScaleAction()
+    {
+        if (manipulationService.IsModelManipulationActive)
+            manipulationService.ResetModelScale();
+        else
+        {
+            List<string> selected = manipulationService.GetSelectedIds();
+            if (selected.Count == 1)
+                manipulationService.ResetObjectScale(selected[0]);
+            else if (selected.Count > 1)
+                manipulationService.ResetSelectedScale();
+        }
+        CollapseReset();
+    }
+
+    private void ToggleModelManipulation()
+    {
+        if (manipulationService.IsModelManipulationActive)
+            manipulationService.EndModelManipulation();
+        else
+            manipulationService.BeginModelManipulation();
+    }
+
     private void ResetAssemblyAction()
     {
         string assemblyId = ResetAssemblyTarget();
@@ -305,37 +340,51 @@ public class CADMainMenu : MonoBehaviour
         panelRoot = panel.Root;
 
         // Title bar: a normal panel button; pressing and holding it drags the menu (UiPressed).
-        titleBar = AddButton("Main menu  (hold to move)", null);
+        titleBar = AddButton("Main menu  (hold to move)", null, "Hold here and move the pointer to reposition the menu.");
         titleBar.GetComponentInChildren<Text>(true).fontStyle = FontStyle.Bold;
 
         scopeSection = Section("Scope");
         scopeText = panel.CreateText("Scope Value", "Scope: Full model");
-        scopeButton = AddButton("Enter assembly", OnScopeButton);
+        scopeButton = AddButton("Enter assembly", OnScopeButton,
+            "Enter the selected assembly, or go back up one level.");
 
         cadenSection = Section("CADEN");
-        cadenButton = AddButton("CADEN: Off", settings.ToggleCaden);
+        cadenButton = AddButton("CADEN: Off", settings.ToggleCaden, "CADEN design assistant (placeholder toggle).");
 
         viewSection = Section("View");
         displayLabel = panel.CreateText("Display Label", "Display");
         foreach (CADDisplayMode mode in new[] { CADDisplayMode.Shaded, CADDisplayMode.Edges, CADDisplayMode.Wireframe })
         {
             CADDisplayMode captured = mode;
-            displayButtons[mode] = AddButton(mode.ToString(), () => settings.SetDisplayMode(captured));
+            displayButtons[mode] = AddButton(mode.ToString(), () => settings.SetDisplayMode(captured), mode switch
+            {
+                CADDisplayMode.Edges => "Shaded surfaces with dark feature edges.",
+                CADDisplayMode.Wireframe => "See-through faces with visible edges.",
+                _ => "Normal shaded surfaces.",
+            });
         }
         outlineLabel = panel.CreateText("Outline Label", "Outline");
-        outlineButton = AddButton("On", () => settings.SetOutlineEnabled(!settings.OutlineEnabled));
+        outlineButton = AddButton("On", () => settings.SetOutlineEnabled(!settings.OutlineEnabled),
+            "Show or hide the selection outline.");
 
-        resetSection = Section("Reset");
-        resetButton = AddButton("Reset ▼", ToggleReset);
-        resetObjectButton = AddButton("Reset object", ResetObjectAction);
-        resetAssemblyButton = AddButton("Reset assembly", ResetAssemblyAction);
-        resetModelButton = AddButton("Reset model", ResetModelAction);
+        modelSection = Section("Model");
+        manipulateButton = AddButton("Manipulate model", ToggleModelManipulation,
+            "Move, rotate, or scale the entire CAD model.");
+        resetButton = AddButton("Reset ▼", ToggleReset, "Show the reset options.");
+        resetObjectButton = AddButton("Reset object", ResetObjectAction,
+            "Restore the selected object to its original assembly transform.");
+        resetScaleButton = AddButton("Reset scale", ResetScaleAction,
+            "Restore the original scale without changing position or rotation.");
+        resetAssemblyButton = AddButton("Reset assembly", ResetAssemblyAction,
+            "Restore the assembly and its parts to their original transforms.");
+        resetModelButton = AddButton("Reset model", ResetModelAction,
+            "Restore the whole model and every part to the review pose.");
 
         interfaceSection = Section("Interface");
         scaleLabel = panel.CreateText("Scale Label", "UI scale");
-        scaleDownButton = AddButton("-", () => settings.StepUiScale(-1));
+        scaleDownButton = AddButton("-", () => settings.StepUiScale(-1), "Make the main menu smaller.");
         scaleValue = panel.CreateText("Scale Value", "100%", CADMenuPanel.FontSize, FontStyle.Bold);
-        scaleUpButton = AddButton("+", () => settings.StepUiScale(1));
+        scaleUpButton = AddButton("+", () => settings.StepUiScale(1), "Make the main menu larger.");
 
         closeButton = AddButton("Close", HideMainMenu);
 
@@ -345,9 +394,9 @@ public class CADMainMenu : MonoBehaviour
     private Text Section(string title) => panel.CreateText(title, title, CADMenuPanel.FontSize - 2, FontStyle.Bold);
 
     // Every button refreshes the menu after its action (labels, selected and enabled states).
-    private Button AddButton(string label, UnityEngine.Events.UnityAction onClick)
+    private Button AddButton(string label, UnityEngine.Events.UnityAction onClick, string tooltip = null)
     {
-        Button button = panel.CreateButton(label, onClick);
+        Button button = panel.CreateButton(label, onClick, tooltip);
         button.onClick.AddListener(Refresh);
         return button;
     }
@@ -373,12 +422,14 @@ public class CADMainMenu : MonoBehaviour
                 displayButtons[CADDisplayMode.Wireframe]),
             new(ButtonHeight, SectionSpacing, outlineLabel, outlineButton),
 
-            new(SectionHeight, resetSection),
+            new(SectionHeight, modelSection),
+            new(ButtonHeight, manipulateButton),
             new(ButtonHeight, resetExpanded ? CADMenuPanel.RowSpacing : SectionSpacing, resetButton),
         };
         if (resetExpanded)
         {
             rows.Add(new(ButtonHeight, resetObjectButton));
+            rows.Add(new(ButtonHeight, resetScaleButton));
             rows.Add(new(ButtonHeight, resetAssemblyButton));
             rows.Add(new(ButtonHeight, SectionSpacing, resetModelButton));
         }

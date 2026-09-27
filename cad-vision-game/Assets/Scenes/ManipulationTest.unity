@@ -1236,6 +1236,10 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::CADRuntimeBridge
   runtime: {fileID: 737639394}
+  placeInFrontOfUser: 1
+  placementGap: 0.8
+  placementDrop: 0.2
+  headTrackingTimeout: 5
 --- !u!114 &191370963
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -1262,7 +1266,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::CADPointerInteraction
   useRightController: 1
-  useLeftController: 0
+  useLeftController: 1
   useRightHand: 1
   useLeftHand: 1
   alwaysShowHandRay: 1
@@ -1290,10 +1294,6 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 6a4c15d1f5ef47e4ba7a32aed9058fd4, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::CADContextMenu
-  offsetTowardHead: 0.15
-  verticalOffset: 0.05
-  minHeadDistance: 0.45
-  maxHeadDistance: 1.2
   refaceHeadMovement: 0.4
   panelColor: {r: 0.1, g: 0.11, b: 0.14, a: 0.96}
   borderColor: {r: 0.55, g: 0.85, b: 1, a: 1}
@@ -1371,6 +1371,10 @@ MonoBehaviour:
   wireEdgeColor: {r: 0.1, g: 0.16, b: 0.24, a: 1}
   hiddenEdgeColor: {r: 0.1, g: 0.16, b: 0.24, a: 0.25}
   wireSurfaceColor: {r: 0.86, g: 0.89, b: 0.93, a: 1}
+  wireSurfaceOpacity: 0.15
+  ghostSurfaceColor: {r: 0.78, g: 0.82, b: 0.88, a: 1}
+  ghostSurfaceOpacity: 0.08
+  ghostEdgeColor: {r: 0.45, g: 0.5, b: 0.58, a: 0.35}
 --- !u!1 &212617061
 GameObject:
   m_ObjectHideFlags: 0

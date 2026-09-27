@@ -228,6 +228,7 @@ public partial class CADVisionManipulationService : MonoBehaviour
         ClearSelection();
         EndMultiSelect();
         EndModelManipulation();
+        ClearFocus(); // Focus targets are IDs of the outgoing model.
 
         foreach (string id in importedIds)
         {

@@ -46,7 +46,12 @@ public struct CADMenuStyle
 /// - buttons (Image + Button + Text label, same tints), texts, top-down row stacking that
 ///   shows exactly the stacked elements and resizes panel + ray surface around them;
 /// - Show/Hide: the ray interactable is disabled before the root is deactivated, so a hidden
-///   panel never renders, never catches rays and leaves no active collider behind.
+///   panel never renders, never catches rays and leaves no active collider behind;
+/// - hover tooltips (CADMenuTooltip) for buttons created with tooltip text;
+/// - PlaceAboveBounds: the one placement rule for target-relative menus (above the target's
+///   visible bounds, facing the user);
+/// - LogSelectEvents: TEMP diagnostics, logs which interactor (left/right hand/controller
+///   ray) selects or unselects the panel.
 /// </summary>
 public sealed class CADMenuPanel
 {
@@ -54,6 +59,9 @@ public sealed class CADMenuPanel
     public const float Padding = 12f;
     public const float RowSpacing = 8f;
     public const int FontSize = 20;
+
+    /// <summary>TEMP diagnostics: log select / unselect / cancel on every panel with the interactor's name.</summary>
+    public static bool LogSelectEvents = true;
 
     /// <summary>One stacked row: its elements share the width equally, left to right.</summary>
     public readonly struct Row
@@ -80,6 +88,7 @@ public sealed class CADMenuPanel
 
     public GameObject Root { get; }
     public RayInteractable Interactable => interactable;
+    public CADMenuTooltip Tooltip { get; }
     public float Width { get; private set; }
     public float Height { get; private set; }
     public bool IsOpen => Root != null && Root.activeSelf;
@@ -125,6 +134,10 @@ public sealed class CADMenuPanel
         interactable.InjectAllRayInteractable(surface);
         interactable.InjectOptionalSelectSurface(surface);
         interactable.InjectOptionalPointableElement(pointableCanvas);
+        interactable.WhenPointerEventRaised += LogPointerEvent;
+
+        Tooltip = Root.AddComponent<CADMenuTooltip>();
+        Tooltip.Initialize(canvasRect, LegacyFont);
 
         Resize(width, 2 * Padding);
     }
@@ -141,7 +154,22 @@ public sealed class CADMenuPanel
     {
         // Disable the interactable first so a hidden panel can never swallow ray clicks.
         interactable.enabled = false;
+        Tooltip.Hide();
         Root.SetActive(false);
+    }
+
+    private void LogPointerEvent(PointerEvent evt)
+    {
+        if (!LogSelectEvents || evt.Type == PointerEventType.Hover || evt.Type == PointerEventType.Move ||
+            evt.Type == PointerEventType.Unhover)
+        {
+            return;
+        }
+
+        string source = evt.Data is Component component
+            ? $"{(component.transform.parent != null ? component.transform.parent.name + "/" : "")}{component.name}"
+            : evt.Data?.ToString() ?? $"pointer {evt.Identifier}";
+        Debug.Log($"[CADMenuPanel] '{Root.name}' {evt.Type} by {source}.");
     }
 
     public void Destroy()
@@ -164,7 +192,8 @@ public sealed class CADMenuPanel
         return text;
     }
 
-    public Button CreateButton(string label, UnityAction onClick)
+    /// <summary>A panel button; with tooltip text it shows that text after a short ray hover.</summary>
+    public Button CreateButton(string label, UnityAction onClick, string tooltip = null)
     {
         Image image = CreateImage(label, style.ButtonColor);
         var button = image.gameObject.AddComponent<Button>();
@@ -186,8 +215,70 @@ public sealed class CADMenuPanel
         Text text = CreateText("Label", (RectTransform)image.transform, label, FontSize, FontStyle.Normal,
             TextAnchor.MiddleCenter);
         Stretch((RectTransform)text.transform, 0f);
+        if (!string.IsNullOrEmpty(tooltip))
+            SetTooltip(button, tooltip);
         elements.Add(button.gameObject);
         return button;
+    }
+
+    /// <summary>Sets or changes a button's tooltip text.</summary>
+    public void SetTooltip(Button button, string tooltip)
+    {
+        if (!button.TryGetComponent(out CADMenuTooltipTrigger trigger))
+            trigger = button.gameObject.AddComponent<CADMenuTooltipTrigger>();
+        trigger.Text = tooltip;
+        trigger.Tooltip = Tooltip;
+    }
+
+    // ---------------- Placement ----------------
+
+    /// <summary>
+    /// Target-relative placement shared by every contextual menu: the panel's bottom edge sits
+    /// clearance above the top of the target's visible world bounds (never a Transform origin),
+    /// nudged headBias toward the user, facing the user. Tiny targets still get minRise above
+    /// their center; if the top is more than maxAboveEye above eye level (huge assemblies), the
+    /// panel comes down to that height at the side of the bounds nearest the user instead.
+    /// Finally clamped to minDistance..maxDistance from the head.
+    /// </summary>
+    public void PlaceAboveBounds(Bounds bounds, Transform head, float clearance = 0.05f, float minRise = 0.1f,
+        float maxAboveEye = 0.25f, float headBias = 0.08f, float minDistance = 0.45f, float maxDistance = 1.4f)
+    {
+        float halfHeight = Height * CanvasScale * Root.transform.lossyScale.y * 0.5f;
+        Vector3 anchor = bounds.center;
+        anchor.y = Mathf.Max(bounds.max.y + clearance, bounds.center.y + minRise);
+
+        if (head == null)
+        {
+            Root.transform.position = anchor + Vector3.up * halfHeight;
+            return;
+        }
+
+        if (anchor.y > head.position.y + maxAboveEye)
+        {
+            Vector3 near = bounds.ClosestPoint(head.position);
+            anchor = new Vector3(near.x, head.position.y + maxAboveEye, near.z);
+        }
+
+        Vector3 toHead = Vector3.ProjectOnPlane(head.position - anchor, Vector3.up);
+        if (toHead.sqrMagnitude > 1e-6f)
+            anchor += toHead.normalized * headBias;
+
+        Vector3 position = anchor + Vector3.up * halfHeight;
+        Vector3 fromHead = position - head.position;
+        float distance = fromHead.magnitude;
+        if (distance > 1e-4f)
+            position = head.position + fromHead / distance * Mathf.Clamp(distance, minDistance, maxDistance);
+
+        Root.transform.position = position;
+        FaceHead(head);
+    }
+
+    /// <summary>Turns the panel to face the head (upright).</summary>
+    public void FaceHead(Transform head)
+    {
+        Vector3 away = Root.transform.position - head.position;
+        if (away.sqrMagnitude > 1e-6f)
+            Root.transform.rotation = Quaternion.LookRotation(away.normalized, Vector3.up);
     }
 
     // ---------------- Button state ----------------
@@ -287,6 +378,8 @@ public sealed class CADMenuPanel
         }
     }
 
+    private static Font LegacyFont => Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+
     private Image CreateImage(string name, Color color)
     {
         var go = new GameObject(name, typeof(RectTransform));
@@ -302,7 +395,7 @@ public sealed class CADMenuPanel
         var go = new GameObject(name, typeof(RectTransform));
         go.transform.SetParent(parent, false);
         var text = go.AddComponent<Text>();
-        text.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        text.font = LegacyFont;
         text.text = value;
         text.fontSize = size;
         text.fontStyle = fontStyle;

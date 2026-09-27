@@ -33,10 +33,12 @@ public class CADPointerInteraction : MonoBehaviour
     /// <summary>True while an enabled instance owns ray selection (legacy adapters defer).</summary>
     public static bool Active { get; private set; }
 
+    // Left and right are symmetric: every source feeds the same state machine, session, scaling
+    // and UI path, and whichever presses first owns the interaction.
     [Header("Pointer Sources")]
     [Tooltip("Controller rays: trigger = select.")]
     [SerializeField] private bool useRightController = true;
-    [SerializeField] private bool useLeftController = false;
+    [SerializeField] private bool useLeftController = true;
     [Tooltip("Hand rays: index pinch = select.")]
     [SerializeField] private bool useRightHand = true;
     [SerializeField] private bool useLeftHand = true;

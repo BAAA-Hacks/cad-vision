@@ -24,6 +24,11 @@ using UnityEngine.Rendering;
 /// replaced model; the controller drops those dead entries and applies the current mode to the
 /// new model (CADVisionManipulationService.ModelReplaced).
 ///
+/// Focus (CADVisionManipulationService.Focus): renderers outside the focus targets become
+/// ghost/reference geometry in every mode (a very faint see-through surface from the Wireframe
+/// surface shader at lower opacity, plus faint edges from the same overlays) while focus
+/// targets render in the current mode. Nothing is hidden, so assembly context stays readable.
+///
 /// Event-driven: nothing runs per frame. Imported materials are never modified; the only
 /// runtime materials are four shared ones owned by this component.
 /// </summary>
@@ -50,6 +55,13 @@ public class CADDisplayModeController : MonoBehaviour
     [Tooltip("Opacity of Wireframe faces (0 = invisible, 1 = solid).")]
     [SerializeField, Range(0f, 1f)] private float wireSurfaceOpacity = 0.15f;
 
+    [Header("Focus ghost")]
+    [SerializeField] private Color ghostSurfaceColor = new Color(0.78f, 0.82f, 0.88f, 1f);
+    [Tooltip("Opacity of ghosted (non-focus) faces.")]
+    [SerializeField, Range(0f, 1f)] private float ghostSurfaceOpacity = 0.08f;
+    [Tooltip("Ghost edges (alpha = strength).")]
+    [SerializeField] private Color ghostEdgeColor = new Color(0.45f, 0.5f, 0.58f, 0.35f);
+
     // Wireframe draw order: surfaces 2980 (shader), outline hull, edges, hidden edges; UI is 3000.
     private const int WireOutlineQueue = (int)RenderQueue.Transparent - 17;
     private const int WireEdgeQueue = (int)RenderQueue.Transparent - 15;
@@ -69,6 +81,7 @@ public class CADDisplayModeController : MonoBehaviour
         public GameObject Overlay;              // Null: no edges (unreadable/empty mesh).
         public MeshRenderer OverlayRenderer;
         public int Segments;                    // Edge line segments in the overlay.
+        public string OwnerId;                  // Nearest CADObject's ID (focus test).
         public Material[] OriginalMaterials;    // Set while the wireframe surface is applied.
     }
 
@@ -76,13 +89,17 @@ public class CADDisplayModeController : MonoBehaviour
     private CADUISettings settings;
     private CADSelectionOutline selectionOutline;
     private Material edgeMaterial, wireEdgeMaterial, hiddenEdgeMaterial, surfaceMaterial;
-    private Material[] edgeMaterials, wireMaterials;
+    private Material ghostSurfaceMaterial, ghostEdgeMaterial;
+    private Material[] edgeMaterials, wireMaterials, ghostEdgeMaterials;
     private readonly Dictionary<MeshRenderer, Entry> entries = new();
     private readonly Dictionary<int, Material[]> surfaceArrays = new();
+    private readonly Dictionary<int, Material[]> ghostArrays = new();
     private CADDisplayMode applied = CADDisplayMode.Shaded;
     private bool ready;
 
     public CADDisplayMode AppliedMode => applied;
+    /// <summary>Renderers currently drawn as focus ghosts.</summary>
+    public int GhostedRendererCount { get; private set; }
     /// <summary>Renderers this controller manages (have or had overlays / surface swaps).</summary>
     public int ManagedRendererCount => entries.Count;
     public int OverlayCount
@@ -123,9 +140,15 @@ public class CADDisplayModeController : MonoBehaviour
         wireEdgeMaterial.renderQueue = WireEdgeQueue;
         hiddenEdgeMaterial.renderQueue = HiddenEdgeQueue;
         surfaceMaterial = new Material(surfaceShader) { name = "CAD Wireframe Surface", enableInstancing = true };
+        ghostSurfaceMaterial = new Material(surfaceShader) { name = "CAD Ghost Surface", enableInstancing = true };
+        ghostEdgeMaterial = new Material(edgeShader) { name = "CAD Ghost Edges", enableInstancing = true };
+        ghostEdgeMaterial.SetFloat(SrcBlendId, (float)BlendMode.SrcAlpha);
+        ghostEdgeMaterial.SetFloat(DstBlendId, (float)BlendMode.OneMinusSrcAlpha);
+        ghostEdgeMaterial.renderQueue = WireEdgeQueue;
         ApplyColors();
 
         edgeMaterials = new[] { edgeMaterial };
+        ghostEdgeMaterials = new[] { ghostEdgeMaterial };
         // A second material on a single-submesh renderer draws the same lines again.
         wireMaterials = new[] { wireEdgeMaterial, hiddenEdgeMaterial };
         ready = true;
@@ -137,6 +160,7 @@ public class CADDisplayModeController : MonoBehaviour
             return;
         settings.DisplayModeChanged += OnDisplayModeChanged;
         manipulationService.ModelReplaced += OnModelReplaced;
+        manipulationService.FocusChanged += OnFocusChanged;
     }
 
     private void OnDisable()
@@ -145,7 +169,8 @@ public class CADDisplayModeController : MonoBehaviour
             return;
         settings.DisplayModeChanged -= OnDisplayModeChanged;
         manipulationService.ModelReplaced -= OnModelReplaced;
-        Apply(CADDisplayMode.Shaded); // Leave the model exactly as imported.
+        manipulationService.FocusChanged -= OnFocusChanged;
+        Apply(CADDisplayMode.Shaded, ignoreFocus: true); // Leave the model exactly as imported.
     }
 
     private void Start()
@@ -157,7 +182,8 @@ public class CADDisplayModeController : MonoBehaviour
     private void OnDestroy()
     {
         RemoveAllOverlays();
-        foreach (Material material in new[] { edgeMaterial, wireEdgeMaterial, hiddenEdgeMaterial, surfaceMaterial })
+        foreach (Material material in new[] { edgeMaterial, wireEdgeMaterial, hiddenEdgeMaterial, surfaceMaterial,
+                     ghostSurfaceMaterial, ghostEdgeMaterial })
         {
             if (material != null)
                 DestroySafe(material);
@@ -171,6 +197,8 @@ public class CADDisplayModeController : MonoBehaviour
     }
 
     private void OnDisplayModeChanged(CADDisplayMode mode) => Apply(mode);
+
+    private void OnFocusChanged() => Apply(settings.DisplayMode);
 
     // The old model's renderers (and their overlays) were destroyed with it; forget them and
     // give the new model the current mode.
@@ -188,31 +216,47 @@ public class CADDisplayModeController : MonoBehaviour
         Color surface = wireSurfaceColor;
         surface.a = wireSurfaceOpacity;
         surfaceMaterial.SetColor(ColorId, surface);
+        Color ghost = ghostSurfaceColor;
+        ghost.a = ghostSurfaceOpacity;
+        ghostSurfaceMaterial.SetColor(ColorId, ghost);
+        ghostEdgeMaterial.SetColor(ColorId, ghostEdgeColor);
     }
 
     // ---------------- Applying a mode ----------------
 
-    /// <summary>Applies a mode to every registered CAD renderer (idempotent).</summary>
-    public void Apply(CADDisplayMode mode)
+    /// <summary>
+    /// Applies a mode (and the service's current focus) to every registered CAD renderer
+    /// (idempotent).
+    /// </summary>
+    public void Apply(CADDisplayMode mode) => Apply(mode, ignoreFocus: false);
+
+    private void Apply(CADDisplayMode mode, bool ignoreFocus)
     {
         if (!ready)
             return;
 
         PruneDead();
-        if (mode != CADDisplayMode.Shaded)
+        bool focus = !ignoreFocus && manipulationService.IsFocusActive;
+        if (mode != CADDisplayMode.Shaded || focus)
             DiscoverRenderers();
 
         int segments = 0;
+        int ghosted = 0;
         foreach (Entry entry in entries.Values)
         {
-            // Surfaces: pale shared material in Wireframe, the exact originals otherwise.
-            if (mode == CADDisplayMode.Wireframe)
+            bool ghost = focus && !manipulationService.IsInFocus(entry.OwnerId);
+            if (ghost)
+                ghosted++;
+
+            // Surfaces: ghost material outside the focus, the see-through surface in Wireframe,
+            // the exact originals otherwise (saved once, restored as they were).
+            Material[] surfaces = ghost ? GhostArray(MaterialCount(entry))
+                : mode == CADDisplayMode.Wireframe ? SurfaceArray(MaterialCount(entry))
+                : null;
+            if (surfaces != null)
             {
-                if (entry.OriginalMaterials == null)
-                {
-                    entry.OriginalMaterials = entry.Renderer.sharedMaterials;
-                    entry.Renderer.sharedMaterials = SurfaceArray(entry.OriginalMaterials.Length);
-                }
+                entry.OriginalMaterials ??= entry.Renderer.sharedMaterials;
+                entry.Renderer.sharedMaterials = surfaces;
             }
             else if (entry.OriginalMaterials != null)
             {
@@ -220,27 +264,46 @@ public class CADDisplayModeController : MonoBehaviour
                 entry.OriginalMaterials = null;
             }
 
-            // Edges: overlay on in Edges / Wireframe, with that mode's materials.
+            // Edges: overlay on for ghosts and in Edges / Wireframe, with the matching materials.
             if (entry.Overlay == null)
                 continue;
-            bool show = mode != CADDisplayMode.Shaded;
+            bool show = ghost || mode != CADDisplayMode.Shaded;
             if (show)
             {
-                entry.OverlayRenderer.sharedMaterials = mode == CADDisplayMode.Wireframe ? wireMaterials : edgeMaterials;
+                entry.OverlayRenderer.sharedMaterials = ghost ? ghostEdgeMaterials
+                    : mode == CADDisplayMode.Wireframe ? wireMaterials : edgeMaterials;
                 entry.OverlayRenderer.enabled = entry.Renderer.enabled;
                 segments += entry.Segments;
             }
             if (entry.Overlay.activeSelf != show)
                 entry.Overlay.SetActive(show);
         }
+        GhostedRendererCount = ghosted;
 
+        // See-through surfaces (Wireframe, ghosts) draw after opaque geometry: the outline hull
+        // must follow them to find their depth.
         if (selectionOutline != null)
-            selectionOutline.RenderQueue = mode == CADDisplayMode.Wireframe ? WireOutlineQueue : -1;
+            selectionOutline.RenderQueue = mode == CADDisplayMode.Wireframe || ghosted > 0 ? WireOutlineQueue : -1;
 
         if (mode != applied || mode != CADDisplayMode.Shaded)
             Debug.Log($"[CADDisplayMode] {mode}: {entries.Count} renderers, {OverlayCount} edge overlays, " +
                 $"{segments} edge segments, {EdgeMeshes.Count} cached edge meshes.");
         applied = mode;
+    }
+
+    private static int MaterialCount(Entry entry) =>
+        entry.OriginalMaterials?.Length ?? entry.Renderer.sharedMaterials.Length;
+
+    private Material[] GhostArray(int length)
+    {
+        if (!ghostArrays.TryGetValue(length, out Material[] array))
+        {
+            array = new Material[length];
+            for (int i = 0; i < length; i++)
+                array[i] = ghostSurfaceMaterial;
+            ghostArrays[length] = array;
+        }
+        return array;
     }
 
     private Material[] SurfaceArray(int length)
@@ -266,7 +329,8 @@ public class CADDisplayModeController : MonoBehaviour
                 if (entries.ContainsKey(renderer) || renderer.TryGetComponent(out CADVisualOverlay _))
                     continue;
 
-                var entry = new Entry { Renderer = renderer };
+                CADObject owner = renderer.GetComponentInParent<CADObject>(true);
+                var entry = new Entry { Renderer = renderer, OwnerId = owner != null ? owner.id : null };
                 if (renderer.TryGetComponent(out MeshFilter filter) && filter.sharedMesh != null)
                 {
                     Mesh edges = GetEdgeMesh(filter.sharedMesh, creaseAngle);

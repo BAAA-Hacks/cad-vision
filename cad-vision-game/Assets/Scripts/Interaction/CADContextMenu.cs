@@ -12,19 +12,25 @@ using UnityEngine.UI;
 ///
 /// The panel is a CADMenuPanel (the shared menu construction, also used by CADMainMenu): a
 /// world-space uGUI canvas driven through the Meta Interaction SDK (RayInteractable →
-/// PointableCanvas → PointableCanvasModule), so any ray + select source works (controller
-/// trigger, hand pinch). It is built in code (no per-object setup) and is never a CAD object;
-/// CADPointerInteraction classifies it as UI, so clicking it never deselects.
+/// PointableCanvas → PointableCanvasModule), so any ray + select source works (either
+/// controller's trigger, either hand's pinch). It is never a CAD object; CADPointerInteraction
+/// classifies it as UI, so clicking it never deselects.
 ///
-/// While the service's multi-select mode is active the same panel is re-laid-out as a
-/// selection menu (Done / Reset Selected / Isolate Selected / Show All / Clear Selection),
-/// anchored at the selected objects' combined visible bounds.
+/// Context-aware: the menu only shows what applies to the target right now.
+/// - Part: Focus / Clear Focus, Detach or Reattach (only when possible), Reset Object,
+///   Multi-Select, Main Menu, Close.
+/// - Assembly: Enter Assembly (unless it is the current scope), Focus / Clear Focus, Detach or
+///   Reattach (subassemblies), Reset Assembly, Multi-Select, Main Menu, Close.
+/// - Selection (clicked a member of a multi-selection): Focus Selection / Clear Focus, Reset
+///   Selected, Edit Selection, Clear Selection, Close.
+/// - Picking (multi-select mode): Done, Focus Selection / Clear Focus, Reset Selected, Clear
+///   Selection.
+/// - Model (whole-model manipulation): Done, Reset Scale, Reset Model.
+/// App-wide actions (display, outline, CADEN, UI scale, Manipulate model, scope exit, model
+/// reset outside model mode) live in the Main Menu. Buttons carry hover tooltips.
 ///
-/// While whole-model manipulation mode is active it shows a minimal model menu (Done / Reset
-/// Model) at the model's visible bounds; it hides while the model is being moved or scaled.
-///
-/// The object and selection menus also offer "Main Menu" (CADMainMenu.ShowMainMenu): the way
-/// to reach the main menu with hands, whose system menu gesture isn't used.
+/// Placement: every variant sits above its target's visible bounds (object, selection or
+/// model; never a Transform origin), via CADMenuPanel.PlaceAboveBounds, facing the user.
 /// </summary>
 [DisallowMultipleComponent]
 [RequireComponent(typeof(CADVisionManipulationService))]
@@ -32,18 +38,12 @@ public class CADContextMenu : MonoBehaviour
 {
     private enum MenuAction
     {
-        EnterAssembly, ExitAssembly, Isolate, ShowAll, DetachOrReattach, ResetObject, ResetAssembly,
-        ResetModel, MultiSelect, Close,
-        Done, ResetSelected, IsolateSelected, ClearSelection, EditSelection,
-        ManipulateModel, ModelDone, MainMenu,
+        EnterAssembly, Focus, DetachOrReattach, ResetObject, ResetAssembly, MultiSelect, MainMenu, Close,
+        Done, FocusSelection, ResetSelected, EditSelection, ClearSelection,
+        ModelDone, ResetScale, ResetModel,
     }
 
     [Header("Placement")]
-    [Tooltip("Pull toward the headset from the anchor so the panel isn't inside the geometry (m).")]
-    [SerializeField, Min(0f)] private float offsetTowardHead = 0.15f;
-    [SerializeField] private float verticalOffset = 0.05f;
-    [SerializeField, Min(0.1f)] private float minHeadDistance = 0.45f;
-    [SerializeField, Min(0.2f)] private float maxHeadDistance = 1.2f;
     [Tooltip("Re-face the headset only after it moves this far while the menu is open (m).")]
     [SerializeField, Min(0.05f)] private float refaceHeadMovement = 0.4f;
 
@@ -58,57 +58,47 @@ public class CADContextMenu : MonoBehaviour
     private const float TitleHeight = 40f;
     private const float ButtonHeight = 44f;
 
-    // Object menu (one selected object).
-    private static readonly MenuAction[] SingleLayout =
-    {
-        MenuAction.EnterAssembly, MenuAction.ExitAssembly, MenuAction.Isolate, MenuAction.ShowAll,
-        MenuAction.DetachOrReattach, MenuAction.ResetObject, MenuAction.ResetAssembly,
-        MenuAction.ResetModel, MenuAction.ManipulateModel, MenuAction.MultiSelect, MenuAction.MainMenu,
-        MenuAction.Close,
-    };
-
-    // Selection menu (multi-select mode).
-    private static readonly MenuAction[] MultiLayout =
-    {
-        MenuAction.Done, MenuAction.ResetSelected, MenuAction.IsolateSelected, MenuAction.ShowAll,
-        MenuAction.ManipulateModel, MenuAction.ClearSelection,
-    };
-
-    // Selection menu outside multi-select (clicked an object that is part of a multi-selection).
-    private static readonly MenuAction[] GroupLayout =
-    {
-        MenuAction.EditSelection, MenuAction.ResetSelected, MenuAction.IsolateSelected,
-        MenuAction.ShowAll, MenuAction.ManipulateModel, MenuAction.ClearSelection, MenuAction.MainMenu,
-        MenuAction.Close,
-    };
-
-    // Model menu (whole-model manipulation mode).
-    private static readonly MenuAction[] ModelLayout =
-    {
-        MenuAction.ModelDone, MenuAction.ResetModel,
-    };
-
     private static readonly Dictionary<MenuAction, string> Labels = new()
     {
         { MenuAction.EnterAssembly, "Enter Assembly" },
-        { MenuAction.ExitAssembly, "Exit Assembly" },
-        { MenuAction.Isolate, "Isolate" },
-        { MenuAction.ShowAll, "Show All" },
+        { MenuAction.Focus, "Focus" },
         { MenuAction.DetachOrReattach, "Detach" },
         { MenuAction.ResetObject, "Reset Object" },
         { MenuAction.ResetAssembly, "Reset Assembly" },
-        { MenuAction.ResetModel, "Reset Model" },
         { MenuAction.MultiSelect, "Multi-Select" },
+        { MenuAction.MainMenu, "Main Menu" },
         { MenuAction.Close, "Close" },
         { MenuAction.Done, "Done" },
+        { MenuAction.FocusSelection, "Focus Selection" },
         { MenuAction.ResetSelected, "Reset Selected" },
-        { MenuAction.IsolateSelected, "Isolate Selected" },
-        { MenuAction.ClearSelection, "Clear Selection" },
         { MenuAction.EditSelection, "Edit Selection" },
-        { MenuAction.ManipulateModel, "Manipulate Model" },
+        { MenuAction.ClearSelection, "Clear Selection" },
         { MenuAction.ModelDone, "Done" },
-        { MenuAction.MainMenu, "Main Menu" },
+        { MenuAction.ResetScale, "Reset Scale" },
+        { MenuAction.ResetModel, "Reset Model" },
     };
+
+    private static readonly Dictionary<MenuAction, string> Tooltips = new()
+    {
+        { MenuAction.EnterAssembly, "Inspect and interact with this assembly's children." },
+        { MenuAction.Focus, "Emphasize this selection and ghost the rest of the model." },
+        { MenuAction.DetachOrReattach, "Move this part independently from its assembly." },
+        { MenuAction.ResetObject, "Restore this object to its original assembly transform." },
+        { MenuAction.ResetAssembly, "Restore this assembly and its parts to their original transforms." },
+        { MenuAction.MultiSelect, "Select multiple parts and move them together." },
+        { MenuAction.MainMenu, "Open the main menu." },
+        { MenuAction.FocusSelection, "Emphasize the selection and ghost the rest of the model." },
+        { MenuAction.ResetSelected, "Restore the selected objects to their original transforms." },
+        { MenuAction.EditSelection, "Add or remove parts from this selection." },
+        { MenuAction.ClearSelection, "Deselect everything." },
+        { MenuAction.Done, "Finish picking; the selection stays." },
+        { MenuAction.ModelDone, "Stop manipulating the whole model." },
+        { MenuAction.ResetScale, "Restore the original scale without changing position or rotation." },
+        { MenuAction.ResetModel, "Restore the whole model and every part to the review pose." },
+    };
+
+    private const string ClearFocusTooltip = "Show the whole model normally again.";
+    private const string ReattachTooltip = "Return this part to its assembly.";
 
     private CADVisionManipulationService manipulationService;
     private CADPointerInteraction pointerInteraction;
@@ -123,12 +113,15 @@ public class CADContextMenu : MonoBehaviour
     private bool modelMode;          // Panel shows the model menu (whole-model manipulation).
     private string multiSignature;   // Selected IDs the selection menu was last placed for.
     private readonly Dictionary<MenuAction, Button> buttons = new();
+    private readonly List<MenuAction> shown = new();
 
     private string targetId;
     private CADObject target;
     private Vector3 headPositionAtFacing;
 
     public bool IsOpen => panelRoot != null && panelRoot.activeSelf;
+    /// <summary>The shared panel (placement and tooltips are CADMenuPanel's).</summary>
+    public CADMenuPanel Panel => panel;
 
     private void Awake()
     {
@@ -181,15 +174,14 @@ public class CADContextMenu : MonoBehaviour
         multiMode = false;
         groupMode = false;
         modelMode = false;
-        ApplyLayout(SingleLayout);
         targetId = request.TargetId;
         target = selected;
         titleText.text = selected.name;
 
-        Place(request);
-        RefreshButtons();
+        Refresh(forceLayout: true);
+        PlaceObject(request);
         panel.Show();
-        Debug.Log($"[CADContextMenu] Opened for '{targetId}'.");
+        Debug.Log($"[CADContextMenu] Opened for '{targetId}' ({string.Join(", ", shown)}).");
     }
 
     private void Hide(string reason)
@@ -215,14 +207,10 @@ public class CADContextMenu : MonoBehaviour
         modelMode = false;
         targetId = request.TargetId;
         target = null;
-        ApplyLayout(GroupLayout);
         multiSignature = SelectionSignature(out int count);
         titleText.text = $"{count} selected";
-        if (request.AnchorIsHitPoint)
-            PlaceAt(request.AnchorPoint);
-        else
-            PlaceMulti(true);
-        RefreshButtons();
+        Refresh(forceLayout: true);
+        PlaceSelection();
         panel.Show();
         Debug.Log($"[CADContextMenu] Opened selection menu ({count} selected).");
     }
@@ -247,10 +235,9 @@ public class CADContextMenu : MonoBehaviour
         multiSignature = null;
         targetId = null;
         target = null;
-        ApplyLayout(ModelLayout);
         titleText.text = "Manipulate Model";
+        Refresh(forceLayout: true);
         PlaceModel();
-        RefreshButtons();
         panel.Show();
         Debug.Log("[CADContextMenu] Opened model menu.");
     }
@@ -263,7 +250,6 @@ public class CADContextMenu : MonoBehaviour
         multiSignature = null;
         targetId = null;
         target = null;
-        ApplyLayout(MultiLayout);
         UpdateMulti(forcePlace: true);
         panel.Show();
         Debug.Log("[CADContextMenu] Opened selection menu (multi-select).");
@@ -276,13 +262,12 @@ public class CADContextMenu : MonoBehaviour
         ids.Sort(StringComparer.Ordinal);
         string signature = string.Join("|", ids);
         titleText.text = $"Multi-Select: {ids.Count} selected";
-        if (forcePlace || signature != multiSignature)
+        bool relaid = Refresh(forceLayout: forcePlace);
+        if (forcePlace || relaid || signature != multiSignature)
         {
-            PlaceMulti(!IsOpen || forcePlace);
+            PlaceSelection();
             multiSignature = signature;
         }
-
-        RefreshButtons();
     }
 
     private void LateUpdate()
@@ -346,8 +331,9 @@ public class CADContextMenu : MonoBehaviour
                 Hide("selection is being moved");
             else
             {
+                if (Refresh())
+                    PlaceSelection();
                 RefaceIfHeadMoved();
-                RefreshButtons();
             }
             return;
         }
@@ -374,8 +360,9 @@ public class CADContextMenu : MonoBehaviour
             return;
         }
 
+        if (Refresh())
+            PlaceObject(null);
         RefaceIfHeadMoved();
-        RefreshButtons();
     }
 
     // Minimal facing: only after the head has moved noticeably, never every frame.
@@ -383,155 +370,121 @@ public class CADContextMenu : MonoBehaviour
     {
         Transform head = Head();
         if (head != null && Vector3.Distance(head.position, headPositionAtFacing) > refaceHeadMovement)
-            Face(head);
-    }
-
-    // ---------------- Placement ----------------
-
-    private void Place(CADContextMenuRequest request)
-    {
-        // Anchor: click hit point, else visible geometry, else (last resort) the origin.
-        Vector3 anchor;
-        if (request.AnchorIsHitPoint)
         {
-            anchor = request.AnchorPoint;
+            panel.FaceHead(head);
+            headPositionAtFacing = head.position;
         }
-        else if (manipulationService.TryGetSelectionPoint(out Vector3 selectionPoint))
-        {
-            anchor = selectionPoint;
-        }
-        else
-        {
-            // VisualCenter falls back to the Transform origin only when there are no renderers.
-            anchor = CADGrabSession.VisualCenter(target);
-        }
-
-        PlaceAt(anchor);
     }
 
-    // Selection menu: the point of the selected objects' combined visible bounds nearest the
-    // headset (never a CAD Transform origin). With nothing selected it stays where it is, or
-    // opens in front of the headset.
-    private void PlaceMulti(bool placeEvenIfEmpty)
+    // ---------------- Context-aware contents ----------------
+
+    // The actions that apply to the current target right now, in display order.
+    private List<MenuAction> CurrentActions()
     {
-        bool hasBounds = false;
-        Bounds bounds = default;
-        foreach (CADObject selected in manipulationService.GetSelectedObjects())
-        {
-            foreach (Renderer renderer in selected.GetComponentsInChildren<Renderer>())
-            {
-                if (!renderer.enabled || renderer.TryGetComponent(out CADVisualOverlay _))
-                    continue;
-                if (hasBounds) bounds.Encapsulate(renderer.bounds);
-                else { bounds = renderer.bounds; hasBounds = true; }
-            }
-        }
-
-        Transform head = Head();
-        if (hasBounds)
-            PlaceAt(head != null ? bounds.ClosestPoint(head.position) : bounds.center);
-        else if (placeEvenIfEmpty && head != null)
-            PlaceAt(head.position + Vector3.ProjectOnPlane(head.forward, Vector3.up).normalized * 0.8f);
-    }
-
-    // Model menu: the point of the model's visible bounds nearest the headset (never the
-    // root's CAD origin); in front of the headset if there is no geometry or it surrounds it.
-    private void PlaceModel()
-    {
-        Transform head = Head();
-        bool hasBounds = manipulationService.TryGetModelBounds(out Bounds bounds);
-        if (hasBounds && (head == null || !bounds.Contains(head.position)))
-            PlaceAt(head != null ? bounds.ClosestPoint(head.position) : bounds.center);
-        else if (head != null)
-            PlaceAt(head.position + Vector3.ProjectOnPlane(head.forward, Vector3.up).normalized * 0.8f);
-    }
-
-    private void PlaceAt(Vector3 anchor)
-    {
-        Transform head = Head();
-        if (head == null)
-        {
-            panelRoot.transform.position = anchor;
-            return;
-        }
-
-        Vector3 toHead = head.position - anchor;
-        Vector3 position = anchor + (toHead.sqrMagnitude > 1e-6f ? toHead.normalized : Vector3.back) * offsetTowardHead
-            + Vector3.up * verticalOffset;
-
-        // Keep it readable: not too close to the face, not far away with a reach-assisted object.
-        Vector3 fromHead = position - head.position;
-        float distance = fromHead.magnitude;
-        if (distance > 1e-4f)
-            position = head.position + fromHead / distance * Mathf.Clamp(distance, minHeadDistance, maxHeadDistance);
-
-        panelRoot.transform.position = position;
-        Face(head);
-    }
-
-    private void Face(Transform head)
-    {
-        Vector3 away = panelRoot.transform.position - head.position;
-        if (away.sqrMagnitude > 1e-6f)
-            panelRoot.transform.rotation = Quaternion.LookRotation(away.normalized, Vector3.up);
-        headPositionAtFacing = head.position;
-    }
-
-    private static Transform Head() => Camera.main != null ? Camera.main.transform : null;
-
-    // ---------------- Actions ----------------
-
-    private void RefreshButtons()
-    {
-        SetInteractable(MenuAction.ManipulateModel, manipulationService.ModelRoot != null);
+        var actions = new List<MenuAction>();
         if (modelMode)
         {
-            SetInteractable(MenuAction.ModelDone, true);
-            SetInteractable(MenuAction.ResetModel, true);
-            return;
+            actions.Add(MenuAction.ModelDone);
+            actions.Add(MenuAction.ResetScale);
+            actions.Add(MenuAction.ResetModel);
+            return actions;
         }
 
-        if (multiMode || groupMode)
+        if (multiMode)
         {
-            bool any = manipulationService.GetSelectedObjects().Any();
-            SetInteractable(MenuAction.EditSelection, true);
-            SetInteractable(MenuAction.Close, true);
-            SetInteractable(MenuAction.Done, true);
-            SetInteractable(MenuAction.ResetSelected, any);
-            SetInteractable(MenuAction.IsolateSelected, any);
-            SetInteractable(MenuAction.ShowAll, true);
-            SetInteractable(MenuAction.ClearSelection, any);
-            SetInteractable(MenuAction.MainMenu, mainMenu != null);
-            return;
+            actions.Add(MenuAction.Done);
+            actions.Add(MenuAction.FocusSelection);
+            actions.Add(MenuAction.ResetSelected);
+            actions.Add(MenuAction.ClearSelection);
+            return actions;
         }
 
-        bool hasChildren = manipulationService.HasCadChildren(targetId);
-        SetInteractable(MenuAction.EnterAssembly, hasChildren);
-        SetInteractable(MenuAction.ExitAssembly, manipulationService.CurrentScopeId != null);
-        SetInteractable(MenuAction.Isolate, true);
-        SetInteractable(MenuAction.ShowAll, true);
-        // One button: "Reattach" while detached, else "Detach" (needs a logical parent assembly).
-        bool detached = manipulationService.IsDetached(targetId);
-        SetLabel(MenuAction.DetachOrReattach, detached ? "Reattach" : "Detach");
-        SetInteractable(MenuAction.DetachOrReattach,
-            detached || manipulationService.GetLogicalParentId(targetId) != null);
-        SetInteractable(MenuAction.ResetObject, true);
-        SetInteractable(MenuAction.ResetAssembly, ResetAssemblyTarget() != null);
-        SetInteractable(MenuAction.ResetModel, true);
-        SetInteractable(MenuAction.MultiSelect, true);
-        SetInteractable(MenuAction.MainMenu, mainMenu != null);
-        SetInteractable(MenuAction.Close, true);
+        if (groupMode)
+        {
+            actions.Add(MenuAction.FocusSelection);
+            actions.Add(MenuAction.ResetSelected);
+            actions.Add(MenuAction.EditSelection);
+            actions.Add(MenuAction.ClearSelection);
+            actions.Add(MenuAction.Close);
+            return actions;
+        }
+
+        if (targetId == null)
+            return actions;
+
+        bool assembly = manipulationService.HasCadChildren(targetId);
+        if (assembly && targetId != manipulationService.CurrentScopeId)
+            actions.Add(MenuAction.EnterAssembly);
+        actions.Add(MenuAction.Focus);
+        if (manipulationService.IsDetached(targetId) || manipulationService.GetLogicalParentId(targetId) != null)
+            actions.Add(MenuAction.DetachOrReattach);
+        actions.Add(assembly ? MenuAction.ResetAssembly : MenuAction.ResetObject);
+        actions.Add(MenuAction.MultiSelect);
+        if (mainMenu != null)
+            actions.Add(MenuAction.MainMenu);
+        actions.Add(MenuAction.Close);
+        return actions;
     }
 
-    // The target itself if it is an assembly, else the assembly that logically contains it.
-    private string ResetAssemblyTarget() =>
-        manipulationService.HasCadChildren(targetId) ? targetId
-            : manipulationService.GetLogicalParentId(targetId);
+    // Labels / tooltips / enabled states for the current state; re-stacks the panel when the set
+    // of actions changed. Returns true if it re-stacked (the caller re-places the panel).
+    private bool Refresh(bool forceLayout = false)
+    {
+        List<MenuAction> actions = CurrentActions();
+        bool relayout = forceLayout || !actions.SequenceEqual(shown);
+        if (relayout)
+        {
+            shown.Clear();
+            shown.AddRange(actions);
+            var rows = new List<CADMenuPanel.Row> { new CADMenuPanel.Row(TitleHeight, 0f, titleText) };
+            foreach (MenuAction action in shown)
+                rows.Add(new CADMenuPanel.Row(ButtonHeight, buttons[action]));
+            panel.Stack(rows);
+        }
+
+        bool focusHere = IsFocusOnTarget();
+        SetLabel(MenuAction.Focus, focusHere ? "Clear Focus" : Labels[MenuAction.Focus]);
+        SetTooltip(MenuAction.Focus, focusHere ? ClearFocusTooltip : Tooltips[MenuAction.Focus]);
+        SetLabel(MenuAction.FocusSelection, focusHere ? "Clear Focus" : Labels[MenuAction.FocusSelection]);
+        SetTooltip(MenuAction.FocusSelection, focusHere ? ClearFocusTooltip : Tooltips[MenuAction.FocusSelection]);
+
+        if (targetId != null && !groupMode)
+        {
+            bool detached = manipulationService.IsDetached(targetId);
+            SetLabel(MenuAction.DetachOrReattach, detached ? "Reattach" : "Detach");
+            SetTooltip(MenuAction.DetachOrReattach, detached ? ReattachTooltip : Tooltips[MenuAction.DetachOrReattach]);
+        }
+
+        bool any = manipulationService.GetSelectedIds().Count > 0;
+        SetInteractable(MenuAction.FocusSelection, any || focusHere);
+        SetInteractable(MenuAction.ResetSelected, any);
+        SetInteractable(MenuAction.ClearSelection, any);
+        return relayout;
+    }
+
+    // Focus is "on" the target when every target object is inside the current focus.
+    private bool IsFocusOnTarget()
+    {
+        if (!manipulationService.IsFocusActive)
+            return false;
+        if (multiMode || groupMode)
+        {
+            List<string> ids = manipulationService.GetSelectedIds();
+            return ids.Count > 0 && ids.All(manipulationService.IsInFocus);
+        }
+        return targetId != null && manipulationService.IsInFocus(targetId);
+    }
 
     private void SetLabel(MenuAction action, string label)
     {
         if (buttons.TryGetValue(action, out Button button))
             CADMenuPanel.SetLabel(button, label);
+    }
+
+    private void SetTooltip(MenuAction action, string text)
+    {
+        if (buttons.TryGetValue(action, out Button button))
+            panel.SetTooltip(button, text);
     }
 
     private void SetInteractable(MenuAction action, bool value)
@@ -540,53 +493,124 @@ public class CADContextMenu : MonoBehaviour
             CADMenuPanel.SetInteractable(button, value);
     }
 
+    // ---------------- Placement (always above the target's visible bounds) ----------------
+
+    private void PlaceObject(CADContextMenuRequest? request)
+    {
+        if (manipulationService.TryGetObjectBounds(targetId, out Bounds bounds))
+            PlaceAbove(bounds);
+        else if (request.HasValue)
+            PlaceAbove(new Bounds(request.Value.AnchorPoint, Vector3.zero)); // No visible geometry.
+        else if (target != null)
+            PlaceAbove(new Bounds(target.transform.position, Vector3.zero));
+    }
+
+    // The selected objects' combined visible bounds; with nothing visible, in front of the head.
+    private void PlaceSelection()
+    {
+        if (manipulationService.TryGetSelectionBounds(out Bounds bounds))
+            PlaceAbove(bounds);
+        else
+            PlaceInFrontOfHead();
+    }
+
+    // The model's visible bounds; in front of the head if there is none or it surrounds the head.
+    private void PlaceModel()
+    {
+        Transform head = Head();
+        if (manipulationService.TryGetModelBounds(out Bounds bounds) && (head == null || !bounds.Contains(head.position)))
+            PlaceAbove(bounds);
+        else
+            PlaceInFrontOfHead();
+    }
+
+    private void PlaceAbove(Bounds bounds)
+    {
+        Transform head = Head();
+        panel.PlaceAboveBounds(bounds, head);
+        if (head != null)
+            headPositionAtFacing = head.position;
+    }
+
+    private void PlaceInFrontOfHead()
+    {
+        Transform head = Head();
+        if (head == null)
+            return;
+        Vector3 forward = Vector3.ProjectOnPlane(head.forward, Vector3.up);
+        if (forward.sqrMagnitude < 1e-6f)
+            forward = Vector3.forward;
+        panelRoot.transform.position = head.position + forward.normalized * 0.8f;
+        panel.FaceHead(head);
+        headPositionAtFacing = head.position;
+    }
+
+    private static Transform Head() => Camera.main != null ? Camera.main.transform : null;
+
+    // ---------------- Actions ----------------
+
+    // The target itself if it is an assembly, else the assembly that logically contains it.
+    private string ResetAssemblyTarget() =>
+        manipulationService.HasCadChildren(targetId) ? targetId
+            : manipulationService.GetLogicalParentId(targetId);
+
     private void OnAction(MenuAction action)
     {
         string id = targetId;
-        string assemblyId = ResetAssemblyTarget();
         bool detached = manipulationService.IsDetached(id);
+        bool focusHere = IsFocusOnTarget();
         Debug.Log($"[CADContextMenu] {action} on '{id}'.");
 
         // Object menu: every action closes it (most change selection, scope or pose anyway).
-        // Selection menu: stays open for Reset/Isolate/Show All; Done and Clear end the mode.
-        bool keepOpen = (multiMode && (action == MenuAction.ResetSelected ||
-            action == MenuAction.IsolateSelected || action == MenuAction.ShowAll)) ||
-            (modelMode && action == MenuAction.ResetModel);
+        // Picking menu: stays open for Focus / Reset; model menu for its resets.
+        bool keepOpen = (multiMode && (action == MenuAction.ResetSelected || action == MenuAction.FocusSelection)) ||
+            (modelMode && (action == MenuAction.ResetModel || action == MenuAction.ResetScale));
         if (!keepOpen)
             Hide($"action {action}");
 
         switch (action)
         {
             case MenuAction.EnterAssembly: manipulationService.EnterScope(id); break;
-            case MenuAction.ExitAssembly: manipulationService.ExitScope(); break;
-            case MenuAction.Isolate: manipulationService.Isolate(id); break;
-            case MenuAction.ShowAll: manipulationService.ShowAll(); break;
+            case MenuAction.Focus:
+                if (focusHere) manipulationService.ClearFocus();
+                else manipulationService.Focus(id);
+                break;
             case MenuAction.DetachOrReattach:
                 if (detached) manipulationService.Reattach(id);
                 else manipulationService.Detach(id);
                 break;
             case MenuAction.ResetObject: manipulationService.ResetObject(id); break;
             case MenuAction.ResetAssembly:
+                string assemblyId = ResetAssemblyTarget();
                 if (assemblyId != null) manipulationService.ResetAssembly(assemblyId);
                 break;
-            case MenuAction.ResetModel: manipulationService.ResetModel(); break;
             case MenuAction.MultiSelect: manipulationService.BeginMultiSelect(); break; // Selection menu opens next frame.
-            case MenuAction.Close: break;
-            case MenuAction.Done: manipulationService.EndMultiSelect(); break;
-            case MenuAction.ResetSelected: manipulationService.ResetSelected(); break;
-            case MenuAction.IsolateSelected: manipulationService.IsolateSelected(); break;
-            case MenuAction.ClearSelection: manipulationService.EndMultiSelect(clearSelection: true); break;
-            case MenuAction.EditSelection: manipulationService.BeginMultiSelect(); break; // Picking menu opens next frame.
-            case MenuAction.ManipulateModel: manipulationService.BeginModelManipulation(); break; // Model menu opens next frame.
-            case MenuAction.ModelDone: manipulationService.EndModelManipulation(); break;
             case MenuAction.MainMenu:
                 if (mainMenu != null) mainMenu.ShowMainMenu();
                 break;
+            case MenuAction.Close: break;
+            case MenuAction.Done: manipulationService.EndMultiSelect(); break;
+            case MenuAction.FocusSelection:
+                if (focusHere) manipulationService.ClearFocus();
+                else manipulationService.FocusSelected();
+                break;
+            case MenuAction.ResetSelected: manipulationService.ResetSelected(); break;
+            case MenuAction.EditSelection: manipulationService.BeginMultiSelect(); break; // Picking menu opens next frame.
+            case MenuAction.ClearSelection: manipulationService.EndMultiSelect(clearSelection: true); break;
+            case MenuAction.ModelDone: manipulationService.EndModelManipulation(); break;
+            case MenuAction.ResetScale: manipulationService.ResetModelScale(); break;
+            case MenuAction.ResetModel: manipulationService.ResetModel(); break;
         }
 
-        // The model is back at its review pose: follow it.
-        if (keepOpen && modelMode && action == MenuAction.ResetModel)
+        if (!keepOpen)
+            return;
+
+        // Still open: labels may have changed, and a reset model moved; follow it.
+        Refresh();
+        if (modelMode)
             PlaceModel();
+        else if (multiMode)
+            PlaceSelection();
     }
 
     // ---------------- Construction ----------------
@@ -609,19 +633,10 @@ public class CADContextMenu : MonoBehaviour
         foreach (KeyValuePair<MenuAction, string> entry in Labels)
         {
             MenuAction action = entry.Key;
-            buttons[action] = panel.CreateButton(entry.Value, () => OnAction(action));
+            Tooltips.TryGetValue(action, out string tooltip);
+            buttons[action] = panel.CreateButton(entry.Value, () => OnAction(action), tooltip);
         }
 
-        ApplyLayout(SingleLayout);
-    }
-
-    // Shows exactly the layout's buttons under the title, stacked top-down; the panel and its
-    // ray surface resize around them.
-    private void ApplyLayout(MenuAction[] layout)
-    {
-        var rows = new List<CADMenuPanel.Row> { new CADMenuPanel.Row(TitleHeight, 0f, titleText) };
-        foreach (MenuAction action in layout)
-            rows.Add(new CADMenuPanel.Row(ButtonHeight, buttons[action]));
-        panel.Stack(rows);
+        Refresh(forceLayout: true);
     }
 }

@@ -204,7 +204,8 @@ public class CADModelManipulationTests
         Assert.That(ShellCount("P1"), Is.EqualTo(1));
 
         OpenObjectMenu("P1");
-        MenuButton("Manipulate Model").onClick.Invoke();
+        Assert.That(ActiveLabels(), Has.No.Member("Manipulate Model"), "global action lives in the Main Menu");
+        svc.BeginModelManipulation(); // Main Menu → Manipulate model.
         Assert.That(svc.IsModelManipulationActive, Is.True);
         DragModel("P2", new Vector3(0.1f, 0.2f, 0f));
         Call(outline, "LateUpdate");
@@ -223,7 +224,7 @@ public class CADModelManipulationTests
         Click("P1");
         Click("P2");
 
-        MenuButton("Manipulate Model").onClick.Invoke();
+        svc.BeginModelManipulation(); // Main Menu → Manipulate model.
         Assert.That(svc.IsModelManipulationActive, Is.True);
         Assert.That(svc.IsMultiSelectActive, Is.False, "picking ends; the set is kept");
 
@@ -295,7 +296,7 @@ public class CADModelManipulationTests
         Click("P1");
         Assert.That(Selected(), Is.EquivalentTo(new[] { "P1", "P2" }));
         Tick();
-        Assert.That(ActiveLabels(), Is.EquivalentTo(new[] { "Done", "Reset Model" }), "only the model menu");
+        Assert.That(ActiveLabels(), Is.EquivalentTo(new[] { "Done", "Reset Scale", "Reset Model" }), "only the model menu");
     }
 
     // 13
