@@ -96,7 +96,7 @@ public static class CadenIntegrationChecks
             await Apply("hide_objects", Ids("A")); Require(!nodes[2].activeInHierarchy, "Assembly hide failed");
             await Apply("show_objects", Ids("P"));
             Require(nodes[2].activeInHierarchy && !nodes[3].activeInHierarchy, "Unhide failed to restore ancestor or exposed sibling");
-            await Apply("clear_isolation");
+            await Apply("show_objects", Ids("R"));
             Vector3 original = nodes[2].transform.position;
             var detachArgs = await Arguments(new JObject { ["objectId"] = "P" });
             var detached = await registry.ExecuteAsync("detach_for_inspection", detachArgs);
@@ -106,10 +106,16 @@ public static class CadenIntegrationChecks
             Require((bool)replay["receipt"]["replayed"] && nodes[2].transform.position == moved, "Replay moved object twice");
             var conflict = (JObject)detachArgs.DeepClone(); conflict["objectId"] = "Q";
             Require(Code(await registry.ExecuteAsync("detach_for_inspection", conflict)) == "IDEMPOTENCY_CONFLICT", "Operation ID accepted different target");
-            await Apply("isolate_objects", Ids("A"));
-            Require(nodes[2].activeInHierarchy && nodes[3].activeInHierarchy && !nodes[4].activeInHierarchy, "Isolation lost detached descendant");
+            await Apply("focus_objects", Ids("A"));
+            Require(service.IsInFocus("P") && !service.IsInFocus("O") && nodes[4].activeInHierarchy, "Focus failed to include detached descendant or changed visibility");
             await Apply("reset_objects", Ids("A"));
-            Require(!service.IsDetached("P") && nodes[2].transform.position == original && !nodes[4].activeInHierarchy, "Scoped reset failed or changed isolation");
+            Require(!service.IsDetached("P") && nodes[2].transform.position == original && service.IsInFocus("P") && nodes[4].activeInHierarchy, "Scoped reset failed or changed focus");
+            var staleFocus = await Arguments(Ids("A")); service.Focus("O");
+            Require(Code(await registry.ExecuteAsync("focus_objects", staleFocus)) == "REVISION_CONFLICT", "Human focus change ignored");
+            await Apply("hide_objects", Ids("O"));
+            await Apply("clear_focus");
+            Require(!service.IsFocusActive && !nodes[4].activeInHierarchy, "Clear focus changed explicit hides");
+            await Apply("focus_objects", Ids("A"));
             var stale = await Arguments(Ids("Q")); service.Select("P");
             Require(Code(await registry.ExecuteAsync("select_objects", stale)) == "REVISION_CONFLICT", "Human selection change ignored");
             service.BeginMultiSelect();

@@ -683,6 +683,10 @@ public class CADPointerInteraction : MonoBehaviour
     }
 
     private void ApplySettings()
+        => ConfigureMovement(machine, session);
+
+    /// <summary>Shares the scene's tuned thresholds and reach assistance with movable UI.</summary>
+    public void ConfigureMovement(CADPointerStateMachine machine, CADGrabSession session)
     {
         machine.DragStartDistance = dragDistance;
         machine.DragStartAngle = dragAngle;
