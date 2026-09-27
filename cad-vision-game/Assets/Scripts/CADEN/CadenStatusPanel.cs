@@ -16,6 +16,7 @@ namespace CADEN.Unity
         private CadenUnityHost host;
         private CADUISettings settings;
         private bool shownByUser; // Left-stick toggle state (kept while CADEN is off).
+        private bool wasCadenOn = true;
         private Canvas canvas;
 
         private CadenVoiceInput voice;
@@ -97,14 +98,16 @@ namespace CADEN.Unity
             if (canvas == null) return;
             bool processing = (host != null && host.IsBusy) || (voice.Busy && !voice.Recording);
             string stage = voice.Busy || !string.IsNullOrEmpty(voice.LastError) ? voice.Status : host == null ? "Waiting for CADEN host" : host.Status;
-            progress.text = "CHAT LOGS — left stick click to close\n" + (processing ? "[" + "|/-\\"[(int)(Time.unscaledTime * 8) % 4] + "] " : "") + stage + "\nY: record / send / cancel";
+            progress.text = "CHAT LOGS — left stick click to close\n" + (processing ? "[" + "|/-\\"[(int)(Time.unscaledTime * 8) % 4] + "] " : "") + stage + "\nHold Y: talk / Tap Y: record, send, cancel";
             if (!positioned) Position();
             if (settings == null) settings = FindAnyObjectByType<CADUISettings>();
             bool cadenOn = settings == null || settings.CadenEnabled;
-            if (cadenOn && OVRInput.GetDown(OVRInput.Button.Two, OVRInput.Controller.LTouch))
-            {
-                if (voice.Busy && !voice.Recording) voice.Cancel(); else voice.Toggle(host);
-            }
+            // Turning CADEN off stops whatever it was doing (recording, transcribing, answering).
+            if (!cadenOn && wasCadenOn && voice.Busy) voice.Cancel();
+            wasCadenOn = cadenOn;
+            // Y: hold to talk (release sends), tap to start / tap again to send, tap while busy cancels.
+            if (cadenOn && OVRInput.GetDown(OVRInput.Button.Two, OVRInput.Controller.LTouch)) voice.Press(host);
+            if (OVRInput.GetUp(OVRInput.Button.Two, OVRInput.Controller.LTouch)) voice.Release();
             if (cadenOn && OVRInput.GetDown(OVRInput.Button.PrimaryThumbstick, OVRInput.Controller.LTouch))
             {
                 shownByUser = !shownByUser;

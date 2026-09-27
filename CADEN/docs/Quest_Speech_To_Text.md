@@ -2,9 +2,9 @@
 
 Build/install the updated Android app, send the CAD export, and wait for CADEN ready.
 
-- Press **left Y** to record. On first use, grant microphone permission and press again.
+- **Hold left Y** to talk and release to send (push-to-talk), or **tap Y** to start recording. On first use, grant microphone permission and press again.
 - Audio streams to ElevenLabs while you speak; partial transcription appears in the optional chat-log viewer's status line.
-- Press **Y again** to stop and commit. Only the final transcript is sent to CADEN. Recording stops at 30 seconds.
+- After a tap, press **Y again** to stop and commit. A press held longer than 0.35 s counts as push-to-talk. Only the final transcript is sent to CADEN. Recording stops at 30 seconds.
 - Press **Y while processing** to cancel. Pausing the app or changing the model/session cancels the operation too.
 - Click the **left thumbstick** to view/hide chat logs. X retains passthrough control. No large status/test panel is shown.
 

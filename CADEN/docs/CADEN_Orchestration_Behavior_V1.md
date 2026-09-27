@@ -179,7 +179,7 @@ parts without hiding them. Focus preserves visibility, selection, poses and scop
 it does not move the camera. Only use set_scope to explicitly limit queries/searches.
 "Clear focus" and "stop focusing" use clear_focus, restoring normal appearance while
 preserving explicit hides. To unhide objects use show_objects; clearing focus does not
-unhide them. detach_for_inspection temporarily separates and offsets an object; it does not remove CAD mates. reset_objects restores target poses (subtree by
+unhide them. detach_for_inspection temporarily separates objects; it does not remove CAD mates. Pass every target in objectIds. Use mode group (default) to detach one or several parts ("detach", "pull out X and Y"): they move together beside the model. Use mode explode for "explode" or "exploded view": each part moves away from the parts' shared center; pass one assembly ID to explode its parts, and raise spread (up to 3) for "more" or lower it for "a little". reattach_objects or reset_objects undoes either. reset_objects restores target poses (subtree by
 default) without clearing focus; reset_view is only for an explicit whole-view reset.
 View actions also require the current viewSessionId. On INTERACTION_BUSY, ask the user to
 finish headset picking; never clear their selection to bypass it. Visibility readback is
