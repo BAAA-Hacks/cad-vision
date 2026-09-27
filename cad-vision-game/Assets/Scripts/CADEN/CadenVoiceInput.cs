@@ -14,7 +14,7 @@ namespace CADEN.Unity
         public event Action<string> Message;
         public bool Recording => clip != null && !stopRequested;
         public bool Busy => pending != null;
-        public string Status { get; private set; } = "Y: record, Y again: send";
+        public string Status { get; private set; } = "Hold Y to talk, or tap Y to start and again to send";
         public string LastError { get; private set; } = "";
         public string Transcript { get; private set; } = "";
         private AudioClip clip;
@@ -25,6 +25,24 @@ namespace CADEN.Unity
         private CancellationTokenSource pending;
         private bool submitted, stopRequested;
         private int stoppedFrames;
+        // Holding Y past this is push-to-talk (release sends); a shorter tap keeps recording until the next press.
+        private const float HoldToTalkSeconds = 0.35f;
+        private float pressedAt = -1;
+
+        /// <summary>Y down: cancels while processing, sends while recording, otherwise starts recording.</summary>
+        public void Press(CadenUnityHost target)
+        {
+            if (Busy && !Recording) { Cancel(); return; }
+            if (Recording) { StopCapture(); return; }
+            Toggle(target);
+            pressedAt = Recording ? Time.unscaledTime : -1;
+        }
+        /// <summary>Y up: releasing a held press sends; releasing a tap leaves the recording running.</summary>
+        public void Release()
+        {
+            if (pressedAt >= 0 && Recording && Time.unscaledTime - pressedAt >= HoldToTalkSeconds) StopCapture();
+            pressedAt = -1;
+        }
 
         public void Toggle(CadenUnityHost target)
         {
@@ -57,7 +75,7 @@ namespace CADEN.Unity
                 if (clip == null) throw new InvalidOperationException("STT_MIC_START_FAILED");
                 started = Time.unscaledTime; stoppedFrames = 0; stopRequested = false;
                 pending = new CancellationTokenSource();
-                Status = "Recording / connecting realtime STT — Y to send"; Notify(Status);
+                Status = "Recording / connecting realtime STT — release or tap Y to send"; Notify(Status);
                 RunAsync(settings, pending);
             }
             catch (Exception ex) { ReleaseMicrophone(); Fail(ex); }
@@ -86,10 +104,10 @@ namespace CADEN.Unity
             {
                 // Microphone is already capturing, so connection setup cannot drop the first words.
                 realtime = await RealtimeTranscription.ConnectAsync(settings, clip.frequency, partial =>
-                    context.Post(_ => { if (this != null && !token.IsCancellationRequested && ReferenceEquals(pending, operation) && !stopRequested) { Transcript = partial; Status = "Listening — Y to send"; } }, null), token);
+                    context.Post(_ => { if (this != null && !token.IsCancellationRequested && ReferenceEquals(pending, operation) && !stopRequested) { Transcript = partial; Status = "Listening — release or tap Y to send"; } }, null), token);
                 token.ThrowIfCancellationRequested();
                 int rate = clip.frequency, channels = clip.channels;
-                if (!stopRequested) { Status = "Recording / streaming to ElevenLabs — Y to send"; Notify(Status); }
+                if (!stopRequested) { Status = "Recording / streaming to ElevenLabs — release or tap Y to send"; Notify(Status); }
                 while (true)
                 {
                     token.ThrowIfCancellationRequested();
@@ -142,14 +160,14 @@ namespace CADEN.Unity
                 realtime?.Dispose(); ReleaseMicrophone(); submitted = false;
                 if (ReferenceEquals(pending, operation)) pending = null;
                 operation.Dispose();
-                if (LastError.Length == 0) Status = "Y: record, Y again: send";
+                if (LastError.Length == 0) Status = "Hold Y to talk, or tap Y to start and again to send";
             }
         }
         public void Cancel()
         {
             pending?.Cancel(); ReleaseMicrophone();
             if (submitted && host != null) host.CancelTurn();
-            if (LastError.Length == 0) Status = "Y: record, Y again: send";
+            if (LastError.Length == 0) Status = "Hold Y to talk, or tap Y to start and again to send";
         }
         private void ReleaseMicrophone()
         {

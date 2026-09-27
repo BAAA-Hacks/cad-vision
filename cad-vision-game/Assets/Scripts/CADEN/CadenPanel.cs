@@ -504,7 +504,7 @@ public sealed class CadenPanel : MonoBehaviour
         circle = Sprite.Create(circleTexture, new Rect(0, 0, size, size), new Vector2(0.5f, 0.5f));
         microphoneFace = Image("Microphone status (use left Y)", parent, 28, 634, 64, 64, Card);
         microphoneFace.sprite = circle; microphoneFace.type = UnityEngine.UI.Image.Type.Simple;
-        // Status indicator only; speech is toggled on left-controller Y button-down.
+        // Status indicator only; left-controller Y is hold-to-talk or tap-to-toggle (CadenVoiceInput.Press/Release).
         microphoneFace.raycastTarget = false;
         Image("Mic capsule", microphoneFace.transform, 25, 13, 14, 25, Color.white).raycastTarget = false;
         Image("Mic left", microphoneFace.transform, 19, 27, 3, 14, Color.white).raycastTarget = false;

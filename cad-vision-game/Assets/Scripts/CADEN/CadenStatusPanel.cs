@@ -93,12 +93,10 @@ namespace CADEN.Unity
             if (canvas == null) return;
             bool processing = (host != null && host.IsBusy) || (voice.Busy && !voice.Recording);
             string stage = voice.Busy || !string.IsNullOrEmpty(voice.LastError) ? voice.Status : host == null ? "Waiting for CADEN host" : host.Status;
-            progress.text = "CHAT LOGS — left stick click to close\n" + (processing ? "[" + "|/-\\"[(int)(Time.unscaledTime * 8) % 4] + "] " : "") + stage + "\nY: record / send / cancel";
+            progress.text = "CHAT LOGS — left stick click to close\n" + (processing ? "[" + "|/-\\"[(int)(Time.unscaledTime * 8) % 4] + "] " : "") + stage + "\nHold Y: talk / Tap Y: record, send, cancel";
             if (!positioned) Position();
-            if (OVRInput.GetDown(OVRInput.Button.Two, OVRInput.Controller.LTouch))
-            {
-                if (voice.Busy && !voice.Recording) voice.Cancel(); else voice.Toggle(host);
-            }
+            if (OVRInput.GetDown(OVRInput.Button.Two, OVRInput.Controller.LTouch)) voice.Press(host);
+            if (OVRInput.GetUp(OVRInput.Button.Two, OVRInput.Controller.LTouch)) voice.Release();
             if (OVRInput.GetDown(OVRInput.Button.PrimaryThumbstick, OVRInput.Controller.LTouch))
             {
                 bool show = !canvas.gameObject.activeSelf;

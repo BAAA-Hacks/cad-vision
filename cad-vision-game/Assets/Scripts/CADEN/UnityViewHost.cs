@@ -105,6 +105,18 @@ namespace CADEN.Unity
             bool usesHierarchy = new[] { "focus_objects", "hide_objects", "show_objects", "detach_for_inspection", "reset_objects", "reset_view" }.Contains(command);
             if (usesHierarchy && snapshot.Capabilities.Hierarchy != CapabilityState.Available)
                 throw new ToolInputException("CAPABILITY_UNAVAILABLE", "A valid metadata hierarchy is required for this view action.");
+            string[] explodeParts = null;
+            if (command == "detach_for_inspection")
+            {
+                foreach (var id in ids) if (snapshot.Indexes.Parent(id) == null)
+                    throw new ToolInputException("INVALID_ARGUMENTS", "The root assembly cannot be detached: " + id);
+                if (mode == "explode")
+                {
+                    // One assembly means "explode this assembly": separate its direct children.
+                    explodeParts = ids.Length == 1 ? snapshot.ComponentsById.Keys.Where(id => snapshot.Indexes.Parent(id) == ids[0] && registry.ContainsKey(id)).ToArray() : ids;
+                    if (explodeParts.Length < 2) throw new ToolInputException("INVALID_ARGUMENTS", "Explode needs at least two parts, or one assembly with several parts.");
+                }
+            }
             cancellation.ThrowIfCancellationRequested(); Guard();
             long previousRevision = revision;
             try
@@ -121,10 +133,11 @@ namespace CADEN.Unity
                     case "hide_objects": service.Hide(Expand(ids)); break;
                     case "show_objects": service.ShowCadenObjects(Expand(ids)); break;
                     case "detach_for_inspection":
-                        if (!service.IsDetached(ids[0]))
+                        if (explodeParts != null) service.ExplodeCaden(explodeParts, (float?)arguments["spread"] ?? 1f);
+                        else if (ids.Any(id => !service.IsDetached(id)))
                         {
                             if (Camera.main == null) throw new ToolInputException("CAPABILITY_UNAVAILABLE", "Headset/view camera is required for inspection placement.");
-                            service.DetachCadenForInspection(ids[0], Camera.main.transform.right);
+                            service.DetachCadenGroup(ids, Camera.main.transform.right);
                         }
                         break;
                     case "reattach_objects": foreach (var id in ids) if (service.IsDetached(id) && !service.Reattach(id)) throw new InvalidOperationException("Reattach failed: " + id); break;

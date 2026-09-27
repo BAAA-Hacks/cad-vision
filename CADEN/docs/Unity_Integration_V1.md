@@ -24,7 +24,7 @@ All tools retain CADEN 3.0 envelopes. Reads require projectId/snapshotId. Action
 | select_objects / clear_selection | Exact IDs; replace/add/remove. Replacing selection is blocked during multi-pick. |
 | focus_objects / clear_focus | Use the menu Focus effect on logical subtrees, including detached members; ghost other parts. Clearing restores normal appearance and preserves explicit hides. |
 | hide_objects / show_objects | Hide/unhide logical subtrees. Unhide restores required physical ancestors but not unrelated hidden branches. |
-| detach_for_inspection | Detach one object and offset toward the headset's right using geometry bounds; no repeated offset when already detached. |
+| detach_for_inspection | Detach `objectIds`. `mode: group` (default) moves them together toward the headset's right, clear of their assemblies, keeping their relative layout. `mode: explode` moves each away from the targets' mean geometry center by `spread` (0.25–3, default 1 doubles the distance); one assembly ID explodes its direct children. Already detached objects are not moved again. |
 | reattach_objects | Original parent and imported local pose; attached objects are no-ops. |
 | reset_objects | Restore object or logical subtree poses/parents; preserve visibility and selection. |
 | reset_view | Explicit global reset of imported poses, model placement, visibility, selection and interaction scope. |

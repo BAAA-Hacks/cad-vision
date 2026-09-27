@@ -1,4 +1,4 @@
-> Current UI: the large runtime/status/test panel has been removed. Only the chat-log viewer remains, hidden initially. Click the left thumbstick to view logs. Y starts/stops recording, or cancels while processing. Older UI instructions below describe the previous diagnostic panel.
+> Current UI: the large runtime/status/test panel has been removed. Only the chat-log viewer remains, hidden initially. Click the left thumbstick to view logs. Hold Y to talk and release to send, or tap Y to start and tap again to send; Y cancels while processing. Older UI instructions below describe the previous diagnostic panel.
 
 # Quest runtime status
 
