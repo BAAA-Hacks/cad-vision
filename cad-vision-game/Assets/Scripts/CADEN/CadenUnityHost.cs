@@ -36,6 +36,7 @@ namespace CADEN.Unity
         public string Status { get; private set; } = "Waiting for model";
         public ToolRegistry Registry { get; private set; }
         public bool Ready => session != null;
+        public ChatSession Session => session;
         public bool IsBusy => turn != null;
         public string ConfigurationPath => ResolveConfigurationDirectory();
         public CADVisionRuntime ModelRuntime => runtime;
