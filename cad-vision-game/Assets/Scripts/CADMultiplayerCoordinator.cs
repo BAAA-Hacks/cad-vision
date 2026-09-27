@@ -24,7 +24,10 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
     private const string MessageName = "cadvision.room.v1";
     private const string SessionType = "cadvision.same-room.v1";
     private const int MaxPacketBytes = 2 * 1024 * 1024;
-    private const float PoseInterval = 0.05f;
+    // Held parts are sent 30 times a second; the receiver glides to each update (SmoothingRate),
+    // so the other person's moves look continuous rather than stepping.
+    private const float PoseInterval = 1f / 30f;
+    private const float SmoothingRate = 18f; // Per second: ~95% of the way in 1/6 s.
     private const float PresenceInterval = 0.1f;
     private const float PresenceTimeout = 3f;
     private const float HeartbeatInterval = 1f;
@@ -81,6 +84,12 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
     private float nextPoseTime;
     private float nextHeartbeatTime;
     private float nextLeaseRetry;
+    // Remote poses still being glided to (part: parent-local; model: room-frame relative).
+    private readonly Dictionary<string, CADRoomPart> gliding = new();
+    // Guest: sequence of its own pose messages; host: newest pose sequence seen per part, so an
+    // older "latest wins" update never overrides the guaranteed final pose sent on release.
+    private long poseSequence;
+    private readonly Dictionary<string, long> lastPoseSequence = new();
     private int operationGeneration;
     private Pose virtualFrame;
     private bool virtualFrameReady;
@@ -364,6 +373,7 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
         if (IsHost)
         {
             leases.ReleaseOwner(clientId);
+            lastPoseSequence.Clear(); // A new guest numbers its poses from the start.
             readyClients.Remove(clientId);
             waitingForAnchor.Remove(clientId);
             Status = "Other headset disconnected";
@@ -486,11 +496,12 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
                         reason = denial }, sender);
                 break;
             case "pose":
+            case "final-pose":
                 if (!readyClients.Contains(sender) ||
                     !ulong.TryParse(message.token, out ulong token) ||
                     !leases.Renew(sender, token, message.id, Time.unscaledTimeAsDouble) ||
                     !ValidPose(message)) return;
-                AcceptPose(message);
+                AcceptPose(message, reliable: message.kind == "final-pose");
                 break;
             case "release":
                 if (ulong.TryParse(message.token, out ulong released)) leases.Release(sender, released);
@@ -646,7 +657,9 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
         finally { importingPackage = false; }
     }
 
-    private bool Send(CADRoomWire message, ulong peer)
+    // reliable: guaranteed and in order (setup, snapshots, final poses). Otherwise "latest wins":
+    // no resends, so one lost packet never holds back newer moves (poses, presence).
+    private bool Send(CADRoomWire message, ulong peer, bool reliable = true)
     {
         if (network == null || !network.IsListening || network.CustomMessagingManager == null) return false;
         message.protocol = CADPackageIdentity.Protocol;
@@ -661,14 +674,14 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
         writer.WriteValueSafe(bytes.Length);
         writer.WriteBytesSafe(bytes);
         network.CustomMessagingManager.SendNamedMessage(MessageName, peer, writer,
-            NetworkDelivery.ReliableFragmentedSequenced);
+            reliable ? NetworkDelivery.ReliableFragmentedSequenced : NetworkDelivery.UnreliableSequenced);
         return true;
     }
 
-    private void Broadcast(CADRoomWire message)
+    private void Broadcast(CADRoomWire message, bool reliable = true)
     {
         foreach (ulong peer in readyClients)
-            Send(message, peer);
+            Send(message, peer, reliable);
     }
 
     // Both headsets load the identical package, so every part starts at the same original pose:
@@ -702,6 +715,7 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
         { SetError("Shared CAD snapshot is invalid"); return; }
         applyingNetworkState = true;
         accepted.Clear();
+        gliding.Clear();
         service.ResetAllObjects(); // The snapshot lists only the parts that differ from the originals.
         ApplyModel(message);
         foreach (CADRoomPart part in message.parts.OrderBy(p => Depth(p.id)))
@@ -735,48 +749,62 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
             receivedRevision = message.revision;
             return;
         }
-        applyingNetworkState = true;
-        if (message.id == CADMultiplayerLeaseTable.ModelId)
-        {
-            ApplyModel(message);
-            acceptedModel = CaptureModel();
-        }
-        else
-        {
-            bool detached = accepted.TryGetValue(message.id, out CADRoomPart old) && old.detached;
-            service.ApplyAcceptedPartState(message.id, detached,
-                message.position, message.rotation, message.scale);
-            accepted[message.id] = CapturePart(message.id);
-        }
+        GlideTo(message);
         receivedRevision = message.revision;
+    }
+
+    // A remote pose becomes the accepted state at once; the local transform glides there over
+    // the next frames (UpdateGliding) instead of jumping.
+    private void GlideTo(CADRoomWire message)
+    {
+        bool model = message.id == CADMultiplayerLeaseTable.ModelId;
+        bool detached = !model && accepted.TryGetValue(message.id, out CADRoomPart old) && old.detached;
+        var target = new CADRoomPart { id = message.id, detached = detached,
+            position = message.position, rotation = message.rotation, scale = message.scale };
+        if (model) acceptedModel = Copy(target);
+        else accepted[message.id] = Copy(target);
+        gliding[message.id] = target;
+    }
+
+    private void UpdateGliding()
+    {
+        if (gliding.Count == 0) return;
+        if (!roomActive || !FrameReady) { gliding.Clear(); return; }
+        float blend = 1f - Mathf.Exp(-SmoothingRate * Time.unscaledDeltaTime);
+        applyingNetworkState = true;
+        foreach (string id in gliding.Keys.ToArray())
+        {
+            CADRoomPart target = gliding[id];
+            bool model = id == CADMultiplayerLeaseTable.ModelId;
+            if (OwnsTarget(id) || (!model && (!byId.TryGetValue(id, out CADObject obj) || obj == null)))
+            { gliding.Remove(id); continue; } // Ours now (we grabbed it), or gone.
+
+            CADRoomPart current = model ? CaptureModel() : CapturePart(id);
+            bool arrived = (current.position - target.position).sqrMagnitude < 0.0005f * 0.0005f &&
+                Quaternion.Angle(current.rotation, target.rotation) < 0.2f &&
+                (current.scale - target.scale).sqrMagnitude < 1e-8f;
+            var step = arrived ? target : new CADRoomPart { id = id, detached = target.detached,
+                position = Vector3.Lerp(current.position, target.position, blend),
+                rotation = Quaternion.Slerp(current.rotation, target.rotation, blend),
+                scale = Vector3.Lerp(current.scale, target.scale, blend) };
+            if (model) ApplyAcceptedModel(step);
+            else service.ApplyAcceptedPartState(id, target.detached, step.position, step.rotation, step.scale);
+            if (arrived) gliding.Remove(id);
+        }
         applyingNetworkState = false;
     }
 
-    private void AcceptPose(CADRoomWire message)
+    // Host: a guest's pose. Older than one already applied (latest-wins and guaranteed messages
+    // can cross)? Dropped. Otherwise accepted, glided to here, and passed on to every guest.
+    private void AcceptPose(CADRoomWire message, bool reliable)
     {
-        applyingNetworkState = true;
-        if (message.id == CADMultiplayerLeaseTable.ModelId)
-        {
-            ApplyModel(message);
-            acceptedModel = CaptureModel();
-            message.position = acceptedModel.position;
-            message.rotation = acceptedModel.rotation;
-            message.scale = acceptedModel.scale;
-        }
-        else if (byId.ContainsKey(message.id))
-        {
-            bool detached = accepted.TryGetValue(message.id, out CADRoomPart old) && old.detached;
-            service.ApplyAcceptedPartState(message.id, detached,
-                message.position, message.rotation, message.scale);
-            accepted[message.id] = CapturePart(message.id);
-            message.position = accepted[message.id].position;
-            message.rotation = accepted[message.id].rotation;
-            message.scale = accepted[message.id].scale;
-        }
-        applyingNetworkState = false;
+        if (message.id != CADMultiplayerLeaseTable.ModelId && !byId.ContainsKey(message.id)) return;
+        if (lastPoseSequence.TryGetValue(message.id, out long seen) && message.revision <= seen) return;
+        lastPoseSequence[message.id] = message.revision;
+        GlideTo(message);
         message.kind = "state";
         message.revision = ++revision;
-        Broadcast(message);
+        Broadcast(message, reliable);
     }
 
     private void ApplyModel(CADRoomWire message)
@@ -869,8 +897,8 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
         var message = new CADRoomWire { kind = "presence", scale = Vector3.one,
             position = Quaternion.Inverse(room.rotation) * (head.position - room.position),
             rotation = Quaternion.Inverse(room.rotation) * head.rotation };
-        if (IsHost) Broadcast(message);
-        else Send(message, NetworkManager.ServerClientId);
+        if (IsHost) Broadcast(message, reliable: false);
+        else Send(message, NetworkManager.ServerClientId, reliable: false);
     }
 
     private void ReceivePresence(CADRoomWire message)
@@ -930,6 +958,7 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
             }
             return;
         }
+        UpdateGliding();
         leases?.Expire(Time.unscaledTimeAsDouble);
         bool sendNow = Time.unscaledTime >= nextPoseTime;
         bool heartbeat = Time.unscaledTime >= nextHeartbeatTime;
@@ -937,11 +966,20 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
         nextPoseTime = Time.unscaledTime + PoseInterval;
         if (heartbeat) nextHeartbeatTime = Time.unscaledTime + HeartbeatInterval;
 
-        CADRoomPart model = CaptureModel();
-        if (Different(model, acceptedModel)) ProcessLocalPose(model, heartbeat);
-        else if (heartbeat && OwnsTarget(CADMultiplayerLeaseTable.ModelId)) ProcessLocalPose(model, true);
-        foreach (string id in byId.Keys.ToArray())
+        // Only what we hold can legitimately change, so only that (and the model) is checked at
+        // the send rate; everything is checked once a second, which still catches and undoes a
+        // stray local change. Parts still gliding to a remote pose are left alone.
+        if (!gliding.ContainsKey(CADMultiplayerLeaseTable.ModelId))
         {
+            CADRoomPart model = CaptureModel();
+            if (Different(model, acceptedModel)) ProcessLocalPose(model, heartbeat);
+            else if (heartbeat && OwnsTarget(CADMultiplayerLeaseTable.ModelId)) ProcessLocalPose(model, true);
+        }
+        IEnumerable<string> toCheck = heartbeat ? byId.Keys.ToArray()
+            : localTargets != null && localToken != 0 ? localTargets : Array.Empty<string>();
+        foreach (string id in toCheck)
+        {
+            if (id == CADMultiplayerLeaseTable.ModelId || gliding.ContainsKey(id)) continue;
             if (!byId.TryGetValue(id, out CADObject obj) || obj == null) continue;
             CADRoomPart current = CapturePart(id);
             accepted.TryGetValue(id, out CADRoomPart previous);
@@ -950,7 +988,9 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
         }
     }
 
-    private void ProcessLocalPose(CADRoomPart part, bool heartbeat)
+    // heartbeat: send even if unchanged (keeps the edit lease alive). final: the pose at release,
+    // sent guaranteed so the last position always arrives.
+    private void ProcessLocalPose(CADRoomPart part, bool heartbeat, bool final = false)
     {
         if (!OwnsTarget(part.id))
         {
@@ -981,14 +1021,15 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
             state.revision = ++revision;
             if (part.id == CADMultiplayerLeaseTable.ModelId) acceptedModel = Copy(part);
             else accepted[part.id] = Copy(part);
-            Broadcast(state);
+            Broadcast(state, reliable: final);
         }
-        else if (heartbeat || !lastSent.TryGetValue(part.id, out CADRoomPart sent) || Different(part, sent))
+        else if (final || heartbeat || !lastSent.TryGetValue(part.id, out CADRoomPart sent) || Different(part, sent))
         {
             var pose = ToPoseMessage(part);
-            pose.kind = "pose";
+            pose.kind = final ? "final-pose" : "pose";
             pose.token = localToken.ToString();
-            Send(pose, NetworkManager.ServerClientId);
+            pose.revision = ++poseSequence;
+            Send(pose, NetworkManager.ServerClientId, reliable: final);
             lastSent[part.id] = Copy(part);
         }
     }
@@ -1080,7 +1121,7 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
             {
                 CADRoomPart p = id == CADMultiplayerLeaseTable.ModelId ? CaptureModel()
                     : byId.ContainsKey(id) ? CapturePart(id) : null;
-                if (p != null) ProcessLocalPose(p, false);
+                if (p != null) ProcessLocalPose(p, heartbeat: true, final: true);
             }
             if (IsHost) leases.Release(network.LocalClientId, localToken);
             else Send(new CADRoomWire { kind = "release", token = localToken.ToString() },
@@ -1126,6 +1167,8 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
                 await Task.Delay(50);
         }
         leases?.Clear();
+        gliding.Clear();
+        lastPoseSequence.Clear();
         readyClients.Clear();
         waitingForAnchor.Clear();
         bufferedUpdates.Clear();
@@ -1152,6 +1195,16 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
         if (IsHost && network != null && network.IsListening)
             foreach (ulong peer in waitingForAnchor.Union(readyClients).ToArray())
                 SendError(peer, "Host: " + reason);
+        // A failed room is left right away, so everything the room disables comes back; the
+        // reason stays in the Main Menu's room status.
+        if (roomActive || session != null) LeaveAfterError(reason);
+    }
+
+    private async void LeaveAfterError(string reason)
+    {
+        await LeaveRoomAsync();
+        State = RoomState.Error;
+        Status = reason;
     }
 
     private async void OnDestroy()

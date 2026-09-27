@@ -2145,6 +2145,24 @@ public class CADInteractionPolishTests
         typeof(CADMultiplayerCoordinator).GetField("roomActive", Any).SetValue(room, false);
     }
 
+    [Test]
+    public void ARoomErrorLeavesTheRoomKeepsTheReasonAndBringsTheButtonsBack()
+    {
+        var room = svc.GetComponent<CADMultiplayerCoordinator>();
+        Call(room, "Awake");
+        typeof(CADMultiplayerCoordinator).GetField("roomActive", Any).SetValue(room, true);
+        svc.EnterScope("A");
+        OpenObjectMenu("P1");
+        Assert.That(ContextLabels(), Does.Not.Contain("Reset part"), "hidden while in a room");
+
+        Call(room, "SetError", "Host left the room");
+        Assert.That(room.IsInRoom, Is.False, "a failed room is left right away");
+        Assert.That(room.State, Is.EqualTo(CADMultiplayerCoordinator.RoomState.Error));
+        Assert.That(room.Status, Is.EqualTo("Host left the room"), "the reason stays visible");
+        OpenObjectMenu("P1");
+        Assert.That(ContextLabels(), Does.Contain("Reset part").And.Contain("Detach"), "the buttons come back");
+    }
+
     // ================= Helpers =================
 
     private void AssertBeside(Bounds bounds, string what) => AssertBesidePanel(menu.Panel, bounds, what);

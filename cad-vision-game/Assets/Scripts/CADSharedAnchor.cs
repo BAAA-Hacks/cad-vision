@@ -29,10 +29,18 @@ public sealed class CADSharedAnchor : MonoBehaviour
         if (!await anchor.WhenCreatedAsync() || current != generation) return Fail("Could not create room anchor");
         if (!await anchor.WhenLocalizedAsync() || current != generation) return Fail("Could not localize room anchor");
         Status = "Sharing room anchor";
-        var saved = await anchor.SaveAnchorAsync();
-        if (current != generation || !saved.Success) return Fail(Explain("save the room anchor", saved.Status));
+        // Group sharing uploads the anchor itself, so try sharing straight away (one server round
+        // trip); only if that fails, save it first and share again.
         var shared = await OVRSpatialAnchor.ShareAsync(new[] { anchor }, GroupId);
-        if (current != generation || !shared.Success) return Fail(Explain("share the room anchor", shared.Status));
+        if (current != generation) return false;
+        if (!shared.Success)
+        {
+            Debug.Log($"[CADSharedAnchor] Direct share failed ({shared.Status}); saving the anchor first.");
+            var saved = await anchor.SaveAnchorAsync();
+            if (current != generation || !saved.Success) return Fail(Explain("save the room anchor", saved.Status));
+            shared = await OVRSpatialAnchor.ShareAsync(new[] { anchor }, GroupId);
+            if (current != generation || !shared.Success) return Fail(Explain("share the room anchor", shared.Status));
+        }
         Status = "Room aligned";
         return true;
     }
