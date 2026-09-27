@@ -1110,6 +1110,7 @@ GameObject:
   - component: {fileID: 191370968}
   - component: {fileID: 191370967}
   - component: {fileID: 191370969}
+  - component: {fileID: 191370970}
   m_Layer: 0
   m_Name: ManipulationManager
   m_TagString: Untagged
@@ -1353,6 +1354,23 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::CADMainMenuInput
   leftHandMenuGesture: 0
   verboseLogging: 1
+--- !u!114 &191370970
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 191370954}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: edf0f3a57a62ba741afd5017e1ffff54, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::CADDisplayModeController
+  creaseAngle: 30
+  edgeColor: {r: 0.08, g: 0.09, b: 0.11, a: 1}
+  wireEdgeColor: {r: 0.1, g: 0.16, b: 0.24, a: 1}
+  hiddenEdgeColor: {r: 0.1, g: 0.16, b: 0.24, a: 0.25}
+  wireSurfaceColor: {r: 0.86, g: 0.89, b: 0.93, a: 1}
 --- !u!1 &212617061
 GameObject:
   m_ObjectHideFlags: 0

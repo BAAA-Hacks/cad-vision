@@ -56,6 +56,21 @@ public class CADSelectionOutline : MonoBehaviour
 
     private bool showOutlines = true;
 
+    /// <summary>
+    /// Draw order of the outline hull (-1 = the shader's Geometry+10). The hull needs the
+    /// selected surfaces' depth before it; CADDisplayModeController moves it after its
+    /// see-through Wireframe surfaces.
+    /// </summary>
+    public int RenderQueue
+    {
+        get => material != null ? material.renderQueue : -1;
+        set
+        {
+            if (material != null)
+                material.renderQueue = value;
+        }
+    }
+
     private void Awake()
     {
         manipulationService = GetComponent<CADVisionManipulationService>();

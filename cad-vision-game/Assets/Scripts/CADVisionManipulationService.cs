@@ -34,6 +34,9 @@ public partial class CADVisionManipulationService : MonoBehaviour
     public string CurrentScopeId { get; private set; }
     public event Action ScopeChanged;
 
+    /// <summary>Raised after ReplaceImportedModel registered a new (or cleared) runtime model.</summary>
+    public event Action ModelReplaced;
+
     // True when visibility was set by Isolate(id)/scope exit, so ExitScope/ResetScope restore
     // the matching view. Explicit visibility calls (ShowAll, IsolateMany) clear it.
     private bool viewFollowsScope;
@@ -273,6 +276,7 @@ public partial class CADVisionManipulationService : MonoBehaviour
         Debug.Log(importedIds.Count > 0
             ? $"Imported {importedIds.Count} runtime CAD objects under {root.name}."
             : "No runtime CAD model; imported objects cleared.");
+        ModelReplaced?.Invoke();
     }
 
     // -------------------------
@@ -374,6 +378,16 @@ public partial class CADVisionManipulationService : MonoBehaviour
         selectedIds.Clear();
         selectionPointId = null;
         ClearHighlights();
+    }
+
+    /// <summary>Every registered CAD object that still exists (scene-placed and imported).</summary>
+    public IEnumerable<CADObject> GetRegisteredObjects()
+    {
+        foreach (CADObject cadObject in objects.Values)
+        {
+            if (cadObject != null)
+                yield return cadObject;
+        }
     }
 
     public IEnumerable<CADObject> GetSelectedObjects()
