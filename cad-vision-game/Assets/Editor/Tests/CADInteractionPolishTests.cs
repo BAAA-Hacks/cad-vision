@@ -9,7 +9,7 @@ using UnityEngine.UI;
 /// <summary>
 /// Interaction polish pass: left/right parity through the one semantic pointer layer,
 /// two-pointer scaling with controllers and hands (logical targets, no jumps), reset scale,
-/// focus / ghost, context-aware menus, above-bounds menu placement, hover tooltips and model
+/// focus / ghost, context-aware menus, beside-bounds menu placement, hover tooltips and model
 /// replacement. Fake pointer sources stand in for the SDK rays (no device); these tests cannot
 /// prove physical Quest input or rendering.
 /// Model near the user (root at 0, 1.2, 1): Root / A / { P1, P2, P3, S / { S1 }, P4 (origin 5 m
@@ -114,6 +114,7 @@ public class CADInteractionPolishTests
     [TearDown]
     public void TearDown()
     {
+        Call(pointer, "OnDestroy"); // The gesture readout.
         Call(display, "OnDestroy");
         Call(outline, "OnDestroy");
         foreach (object owner in new object[] { menu, mainMenu })
@@ -370,7 +371,7 @@ public class CADInteractionPolishTests
         svc.TryGetModelBounds(out Bounds before);
 
         MainButton("Reset ▼").onClick.Invoke();
-        MainButton("Reset scale").onClick.Invoke(); // Model mode: the model root.
+        MainButton("Reset all sizes").onClick.Invoke();
         Assert.That(Vector3.Distance(root.localScale, reviewScale), Is.LessThan(Eps));
         Assert.That(Quaternion.Angle(root.rotation, rotation), Is.LessThan(1e-3f));
         svc.TryGetModelBounds(out Bounds after);
@@ -379,28 +380,80 @@ public class CADInteractionPolishTests
 
     // 17
     [Test]
-    public void MainMenuResetScaleResetsTheSelectedRoots()
+    public void ResetAllSizesUndoesEveryResizeWithoutMovingAnything()
     {
-        svc.EnterScope("A");
-        Vector3 s1 = t["P1"].localScale, s2 = t["P2"].localScale;
-        svc.SetObjectScaleAroundPoint("P1", s1 * 2f, Vector3.zero, t["P1"].position);
-        svc.SetObjectScaleAroundPoint("P2", s2 * 4f, Vector3.zero, t["P2"].position);
-        Vector3 p1 = t["P1"].position;
-        svc.BeginMultiSelect();
-        svc.AddToSelection("P1");
-        svc.AddToSelection("P2");
+        // What a user typically does: scale the top-level assembly at model scope (an object
+        // scale, not the model root), a part inside it, and the model in model mode.
+        Vector3 a = t["A"].localScale, s1 = t["P1"].localScale, s2 = t["P2"].localScale;
+        Vector3 reviewScale = root.localScale;
+        svc.SetObjectScaleAroundPoint("A", a * 2f, Vector3.zero, t["A"].position);
+        svc.SetObjectScaleAroundPoint("P1", s1 * 3f, Vector3.zero, t["P1"].position);
+        svc.SetModelScaleAroundPoint(1.5f, Vector3.zero, root.position);
+        svc.SetObjectWorldPose("P2", t["P2"].position + Vector3.up * 0.1f, t["P2"].rotation);
+        svc.Select("P1");
 
         mainMenu.ShowMainMenu();
         MainButton("Reset ▼").onClick.Invoke();
-        Assert.That(MainButton("Reset scale").interactable, Is.True);
-        MainButton("Reset scale").onClick.Invoke();
-        Assert.That(Vector3.Distance(t["P1"].localScale, s1), Is.LessThan(Eps));
-        Assert.That(Vector3.Distance(t["P2"].localScale, s2), Is.LessThan(Eps));
-        Assert.That(Selected(), Is.EquivalentTo(new[] { "P1", "P2" }), "selection kept");
+        Assert.That(MainButton("Reset all sizes").interactable, Is.True);
+        MainButton("Reset all sizes").onClick.Invoke();
 
-        svc.EndMultiSelect(clearSelection: true);
+        Assert.That(Vector3.Distance(t["A"].localScale, a), Is.LessThan(Eps));
+        Assert.That(Vector3.Distance(t["P1"].localScale, s1), Is.LessThan(Eps));
+        Assert.That(Vector3.Distance(t["P2"].localScale, s2), Is.LessThan(Eps), "never resized: untouched");
+        Assert.That(Vector3.Distance(root.localScale, reviewScale), Is.LessThan(Eps));
+        Assert.That(Selected(), Is.EqualTo(new[] { "P1" }), "selection kept");
+
         mainMenu.Refresh();
-        Assert.That(MainButton("Reset scale", includeInactive: true).interactable, Is.False, "nothing to reset");
+        Assert.That(MainButton("Reset all sizes", includeInactive: true).interactable, Is.True,
+            "always available: it doesn't depend on the selection");
+    }
+
+    [Test]
+    public void ModelMenuResetAllSizesAlsoUndoesAnAssemblyResize()
+    {
+        Vector3 a = t["A"].localScale;
+        svc.SetObjectScaleAroundPoint("A", a * 2f, Vector3.zero, t["A"].position);
+        svc.BeginModelManipulation();
+        Tick();
+        ContextButton("Reset all sizes").onClick.Invoke();
+        Assert.That(Vector3.Distance(t["A"].localScale, a), Is.LessThan(Eps),
+            "an assembly scaled at model scope is reset too, not just the model root");
+    }
+
+    [Test]
+    public void ResetEverythingReturnsToAMovedHome()
+    {
+        Vector3 home = root.position + new Vector3(1f, 0f, 2f);
+        Quaternion homeRotation = Quaternion.Euler(0f, 90f, 0f);
+        Assert.That(svc.SetModelHomePose(home, homeRotation), Is.True);
+        Assert.That(root.position, Is.Not.EqualTo(home), "setting the home moves nothing");
+
+        svc.ResetModel();
+        Assert.That(Vector3.Distance(root.position, home), Is.LessThan(Eps));
+        Assert.That(Quaternion.Angle(root.rotation, homeRotation), Is.LessThan(1e-3f));
+        Assert.That(svc.TryGetModelHomePose(out Vector3 got, out _), Is.True);
+        Assert.That(Vector3.Distance(got, home), Is.LessThan(Eps));
+    }
+
+    [Test]
+    public void RecenterKeepsThePoseRelativeToTheHead()
+    {
+        // Head at the origin facing +Z, model 1 m ahead; after recentering the head faces +X.
+        CADRuntimeBridge.MoveWithHeadFrame(new Vector3(0f, 1.4f, 1f), Quaternion.identity,
+            new Vector3(0f, 1.6f, 0f), 0f, new Vector3(2f, 1.6f, 0f), 90f,
+            out Vector3 position, out Quaternion rotation);
+        Assert.That(Vector3.Distance(position, new Vector3(3f, 1.4f, 0f)), Is.LessThan(Eps), "still 1 m ahead");
+        Assert.That(Quaternion.Angle(rotation, Quaternion.Euler(0f, 90f, 0f)), Is.LessThan(1e-3f), "turned with the view");
+    }
+
+    [Test]
+    public void FocusIgnoresHiddenGeometry()
+    {
+        svc.EnterScope("A");
+        string[] allButP4 = { "P1", "P2", "P3", "S" };
+        Assert.That(svc.WouldFocusGhostAnything(allButP4), Is.True, "P4 would be ghosted");
+        svc.Hide("P4");
+        Assert.That(svc.WouldFocusGhostAnything(allButP4), Is.False, "hidden P4 wouldn't visibly change");
     }
 
     // ================= Focus =================
@@ -428,8 +481,8 @@ public class CADInteractionPolishTests
         Assert.That(svc.CurrentScopeId, Is.EqualTo("A"), "scope kept");
 
         OpenObjectMenu("P1");
-        Assert.That(ContextLabels(), Does.Contain("Clear Focus").And.Not.Contain("Focus"), "one context-aware action");
-        ContextButton("Clear Focus").onClick.Invoke();
+        Assert.That(ContextLabels(), Does.Contain("Clear focus").And.Not.Contain("Focus"), "one context-aware action");
+        ContextButton("Clear focus").onClick.Invoke();
         Assert.That(svc.IsFocusActive, Is.False);
         Assert.That(Materials("P2")[0], Is.SameAs(p2), "22: rendering restored");
         Assert.That(Overlay("P2").activeSelf, Is.False, "no edges in Shaded");
@@ -453,13 +506,13 @@ public class CADInteractionPolishTests
         svc.AddToSelection("P1");
         svc.AddToSelection("P2");
         Tick();
-        ContextButton("Focus Selection").onClick.Invoke();
+        ContextButton("Focus selection").onClick.Invoke();
 
         Assert.That(svc.IsInFocus("P1") && svc.IsInFocus("P2"), Is.True);
         Assert.That(Materials("P3")[0].name, Is.EqualTo("CAD Ghost Surface"));
         Assert.That(Materials("P1")[0].name, Is.Not.EqualTo("CAD Ghost Surface"));
         Tick();
-        Assert.That(ContextLabels(), Does.Contain("Clear Focus"));
+        Assert.That(ContextLabels(), Does.Contain("Clear focus"));
         Assert.That(Selected(), Is.EquivalentTo(new[] { "P1", "P2" }));
     }
 
@@ -489,9 +542,9 @@ public class CADInteractionPolishTests
         svc.Focus("P1");
         Call(outline, "LateUpdate");
         Assert.That(t["P2"].GetComponentsInChildren<CADVisualOverlay>(true).Any(o => o.name == "__CADOutline"), Is.True);
-        Assert.That(outline.RenderQueue, Is.GreaterThan(2500), "outline after the see-through ghosts");
+        Assert.That(outline.RenderQueue, Is.InRange(2981, 2999), "highlight after the see-through ghosts, before UI");
         svc.ClearFocus();
-        Assert.That(outline.RenderQueue, Is.EqualTo(2010));
+        Assert.That(outline.RenderQueue, Is.InRange(2981, 2999), "same order without focus");
     }
 
     // ================= Context-aware menus =================
@@ -502,7 +555,7 @@ public class CADInteractionPolishTests
     {
         svc.EnterScope("A");
         OpenObjectMenu("P1");
-        Assert.That(ContextLabels(), Is.EqualTo(new[] { "Exit Assembly", "Focus", "Detach", "Reset Object", "Multi-Select", "Main Menu", "Close" }));
+        Assert.That(ContextLabels(), Is.EqualTo(new[] { "Exit assembly", "Focus", "Detach", "Reset part", "Reset assembly", "Multi-select", "Main menu", "Close" }));
 
         svc.Detach("P1");
         OpenObjectMenu("P1");
@@ -514,17 +567,18 @@ public class CADInteractionPolishTests
     public void AssemblyMenuShowsAssemblyActions()
     {
         OpenObjectMenu("A");
-        Assert.That(ContextLabels(), Is.EqualTo(new[] { "Enter Assembly", "Focus", "Reset Assembly", "Multi-Select", "Main Menu", "Close" }),
-            "top-level assembly: no parent to detach from");
+        Assert.That(ContextLabels(), Is.EqualTo(new[] { "Enter assembly", "Reset part", "Multi-select", "Main menu", "Close" }),
+            "model scope, the only top-level assembly: no Focus (nothing to ghost), no Reset assembly (not inside one), " +
+            "no Detach (no parent)");
 
         svc.EnterScope("A");
         OpenObjectMenu("S");
-        Assert.That(ContextLabels(), Does.Contain("Enter Assembly").And.Contain("Detach"));
+        Assert.That(ContextLabels(), Does.Contain("Enter assembly").And.Contain("Detach"));
 
         svc.EnterScope("S");
         svc.Select("S"); // The current scope itself: nothing to enter.
         OpenObjectMenu("S");
-        Assert.That(ContextLabels(), Does.Not.Contain("Enter Assembly"));
+        Assert.That(ContextLabels(), Does.Not.Contain("Enter assembly"));
     }
 
     // 28
@@ -536,19 +590,19 @@ public class CADInteractionPolishTests
         svc.AddToSelection("P1");
         svc.AddToSelection("P2");
         Tick();
-        Assert.That(ContextLabels(), Is.EqualTo(new[] { "Exit Assembly", "Done", "Focus Selection", "Reset Selected", "Clear Selection" }));
+        Assert.That(ContextLabels(), Is.EqualTo(new[] { "Exit assembly", "Done", "Focus selection", "Reset selected", "Reset assembly", "Clear selection" }));
 
         ContextButton("Done").onClick.Invoke();
         Tick();
         typeof(CADContextMenu).GetMethod("Open", Any).Invoke(menu, new object[] { new CADContextMenuRequest("P1", t["P1"].position, true) });
-        Assert.That(ContextLabels(), Is.EqualTo(new[] { "Exit Assembly", "Focus Selection", "Reset Selected", "Edit Selection", "Clear Selection", "Close" }));
+        Assert.That(ContextLabels(), Is.EqualTo(new[] { "Exit assembly", "Focus selection", "Reset selected", "Reset assembly", "Edit selection", "Clear selection", "Close" }));
     }
 
     // 29
     [Test]
     public void GlobalActionsAreNotInObjectMenus()
     {
-        string[] global = { "Reset Model", "Manipulate Model", "Show All", "Isolate", "Isolate Selected" };
+        string[] global = { "Reset everything", "Manipulate model", "Show all", "Isolate", "Isolate selected" };
         svc.EnterScope("A");
         OpenObjectMenu("P1");
         Assert.That(ContextLabels().Intersect(global), Is.Empty);
@@ -570,7 +624,7 @@ public class CADInteractionPolishTests
         {
             OpenObjectMenu(id);
             svc.TryGetObjectBounds(id, out Bounds bounds);
-            AssertAbove(bounds, id);
+            AssertBeside(bounds, id);
         }
         Assert.That(Vector3.Distance(t["P4"].position, PanelOf(menu).position), Is.GreaterThan(3f),
             "34: P4's far-away origin is ignored");
@@ -586,7 +640,7 @@ public class CADInteractionPolishTests
         svc.AddToSelection("P3");
         Tick();
         svc.TryGetSelectionBounds(out Bounds bounds);
-        AssertAbove(bounds, "selection");
+        AssertBeside(bounds, "selection");
     }
 
     // 33
@@ -596,25 +650,58 @@ public class CADInteractionPolishTests
         svc.BeginModelManipulation();
         Tick();
         svc.TryGetModelBounds(out Bounds bounds);
-        AssertAbove(bounds, "model");
+        AssertBeside(bounds, "model");
     }
 
     // 35
     [Test]
-    public void TinyAndHugeTargetsClampComfortably()
+    public void TinyHugeAndCloseTargetsPlaceComfortably()
     {
+        svc.EnterScope("A");
+        OpenObjectMenu("P1"); // Any open menu: the panel's size is what matters.
         var panel = menu.Panel;
-        panel.PlaceAboveBounds(new Bounds(new Vector3(0f, 1.2f, 0.8f), Vector3.one * 0.002f), head);
-        float bottom = PanelBottom(panel);
-        Assert.That(bottom, Is.GreaterThanOrEqualTo(1.2f + 0.1f - 1e-3f), "tiny: minimum rise above the part");
 
-        // A 4 m assembly: its top is far above the eyes.
+        var tiny = new Bounds(new Vector3(0.2f, 1.5f, 0.9f), Vector3.one * 0.002f);
+        panel.PlaceBesideBounds(tiny, head);
+        AssertBesidePanel(panel, tiny, "tiny");
+
+        // A 4 m assembly: beside it would be far out of view, so the menu stays within 35°.
         var huge = new Bounds(new Vector3(0f, 2f, 3f), new Vector3(4f, 4f, 4f));
-        panel.PlaceAboveBounds(huge, head);
+        panel.PlaceBesideBounds(huge, head);
         Vector3 position = panel.Root.transform.position;
-        Assert.That(PanelBottom(panel), Is.LessThanOrEqualTo(head.position.y + 0.25f + 1e-3f), "not absurdly high");
-        Assert.That(Vector3.Distance(position, head.position), Is.InRange(0.45f - 1e-3f, 1.4f + 1e-3f), "comfortable distance");
-        Assert.That(Vector3.Dot(panel.Root.transform.forward, (position - head.position).normalized), Is.GreaterThan(0.99f), "faces the user");
+        Vector3 flat = Vector3.ProjectOnPlane(position - head.position, Vector3.up);
+        Assert.That(Vector3.Angle(flat, Vector3.forward), Is.LessThanOrEqualTo(35f + 0.1f), "huge: stays in view");
+        Assert.That(position.y, Is.LessThanOrEqualTo(head.position.y + 0.1f + 1e-3f), "not absurdly high");
+        Assert.That(Vector3.Distance(position, head.position), Is.InRange(CADMenuPanel.MinMenuDistance - 1e-3f, 1.6f));
+
+        // A part held right in front of the face: the menu still keeps its distance.
+        var close = new Bounds(new Vector3(0f, 1.6f, 0.25f), Vector3.one * 0.1f);
+        panel.PlaceBesideBounds(close, head);
+        Assert.That(Vector3.Distance(panel.Root.transform.position, head.position),
+            Is.GreaterThanOrEqualTo(CADMenuPanel.MinMenuDistance - 1e-3f), "close: minimum distance");
+    }
+
+    [Test]
+    public void MenuOpensOnTheSideTowardTheMiddleOfTheView()
+    {
+        svc.EnterScope("A");
+        OpenObjectMenu("P3"); // Right of the gaze (x = +0.15): the menu goes on its left.
+        svc.TryGetObjectBounds("P3", out Bounds right);
+        Assert.That(PanelOf(menu).position.x, Is.LessThan(right.min.x), "left of a part on the right");
+
+        Call(menu, "Hide", "test");
+        OpenObjectMenu("P1"); // Left of the gaze: the menu goes on its right.
+        svc.TryGetObjectBounds("P1", out Bounds left);
+        Assert.That(PanelOf(menu).position.x, Is.GreaterThan(left.max.x), "right of a part on the left");
+    }
+
+    [Test]
+    public void MainMenuRespectsTheMinimumDistance()
+    {
+        typeof(CADMainMenu).GetField("spawnDistance", Any).SetValue(mainMenu, 0.4f);
+        mainMenu.ShowMainMenu();
+        Vector3 flat = Vector3.ProjectOnPlane(mainMenu.PanelTransform.position - head.position, Vector3.up);
+        Assert.That(flat.magnitude, Is.GreaterThanOrEqualTo(CADMenuPanel.MinMenuDistance - 1e-3f));
     }
 
     // ================= Tooltips =================
@@ -627,7 +714,7 @@ public class CADInteractionPolishTests
         OpenObjectMenu("P1");
         CADMenuTooltip tooltip = menu.Panel.Tooltip;
         var focus = ContextButton("Focus").GetComponent<CADMenuTooltipTrigger>();
-        var reset = ContextButton("Reset Object").GetComponent<CADMenuTooltipTrigger>();
+        var reset = ContextButton("Reset part").GetComponent<CADMenuTooltipTrigger>();
 
         tooltip.Enter(focus, 10f);
         tooltip.Tick(10.2f);
@@ -638,7 +725,7 @@ public class CADInteractionPolishTests
         tooltip.Enter(reset, 11f);
         Assert.That(tooltip.IsShowing, Is.False, "38: new target restarts the delay");
         tooltip.Tick(11.6f);
-        Assert.That(tooltip.ShownText, Is.EqualTo("Restore this object to its original assembly transform."));
+        Assert.That(tooltip.ShownText, Is.EqualTo("Put this back where it was: original position, rotation and size."));
 
         tooltip.Exit(focus); // Stale exit from the previous button.
         Assert.That(tooltip.IsShowing, Is.True);
@@ -681,7 +768,7 @@ public class CADInteractionPolishTests
         svc.EnterScope("A");
         svc.Focus("P1");
         OpenObjectMenu("P1");
-        menu.Panel.Tooltip.Enter(ContextButton("Clear Focus").GetComponent<CADMenuTooltipTrigger>(), 0f);
+        menu.Panel.Tooltip.Enter(ContextButton("Clear focus").GetComponent<CADMenuTooltipTrigger>(), 0f);
         menu.Panel.Tooltip.Tick(1f);
         StartDrag(rightController, "P2");
         int focusEvents = 0;
@@ -713,7 +800,7 @@ public class CADInteractionPolishTests
     {
         OpenObjectMenu("A");
         Assert.That(ScopeLine(), Is.EqualTo("Scope: Full model"));
-        Assert.That(ContextLabels(), Does.Not.Contain("Exit Assembly"), "hidden at the root, not disabled");
+        Assert.That(ContextLabels(), Does.Not.Contain("Exit assembly"), "hidden at the root, not disabled");
         Assert.That(((Text)Get(menu, "scopeText")).raycastTarget, Is.False, "not clickable");
     }
 
@@ -725,14 +812,14 @@ public class CADInteractionPolishTests
         svc.EnterScope("S");
         OpenObjectMenu("S1");
         Assert.That(ScopeLine(), Is.EqualTo("Scope: S"));
-        Assert.That(ContextLabels(), Does.Contain("Exit Assembly"));
+        Assert.That(ContextLabels(), Does.Contain("Exit assembly"));
 
-        ContextButton("Exit Assembly").onClick.Invoke();
+        ContextButton("Exit assembly").onClick.Invoke();
         Assert.That(svc.CurrentScopeId, Is.EqualTo("A"), "one logical level, not the root");
 
         OpenObjectMenu("P1");
         Assert.That(ScopeLine(), Is.EqualTo("Scope: A"));
-        ContextButton("Exit Assembly").onClick.Invoke();
+        ContextButton("Exit assembly").onClick.Invoke();
         Assert.That(svc.CurrentScopeId, Is.Null);
     }
 
@@ -743,14 +830,14 @@ public class CADInteractionPolishTests
         svc.EnterScope("A");
         OpenObjectMenu("S");
         string[] labels = ContextLabels();
-        Assert.That(labels.Take(3), Is.EqualTo(new[] { "Exit Assembly", "Enter Assembly", "Focus" }),
+        Assert.That(labels.Take(3), Is.EqualTo(new[] { "Exit assembly", "Enter assembly", "Focus" }),
             "navigation at the top: Exit, then Enter, then the actions");
-        float exitY = ((RectTransform)ContextButton("Exit Assembly").transform).anchoredPosition.y;
-        float enterY = ((RectTransform)ContextButton("Enter Assembly").transform).anchoredPosition.y;
+        float exitY = ((RectTransform)ContextButton("Exit assembly").transform).anchoredPosition.y;
+        float enterY = ((RectTransform)ContextButton("Enter assembly").transform).anchoredPosition.y;
         float focusY = ((RectTransform)ContextButton("Focus").transform).anchoredPosition.y;
         Assert.That(enterY - focusY, Is.GreaterThan(exitY - enterY), "a gap separates navigation from the actions");
 
-        ContextButton("Enter Assembly").onClick.Invoke();
+        ContextButton("Enter assembly").onClick.Invoke();
         Assert.That(svc.CurrentScopeId, Is.EqualTo("S"));
     }
 
@@ -764,7 +851,7 @@ public class CADInteractionPolishTests
         svc.AddToSelection("P2");
         Tick();
         Assert.That(ScopeLine(), Is.EqualTo("Scope: A"));
-        ContextButton("Exit Assembly").onClick.Invoke();
+        ContextButton("Exit assembly").onClick.Invoke();
         Assert.That(svc.CurrentScopeId, Is.Null, "no need to pick a single object to go back up");
     }
 
@@ -775,7 +862,7 @@ public class CADInteractionPolishTests
         svc.BeginModelManipulation();
         Tick();
         Assert.That(((Text)Get(menu, "scopeText")).gameObject.activeSelf, Is.False);
-        Assert.That(ContextLabels(), Does.Not.Contain("Exit Assembly"));
+        Assert.That(ContextLabels(), Does.Not.Contain("Exit assembly"));
     }
 
     // ================= Movable menus =================
@@ -790,7 +877,7 @@ public class CADInteractionPolishTests
         OpenObjectMenu("P1");
         AssertGrabBand(menu.Panel, ContextButton("Focus"), "object menu");
         OpenObjectMenu("S");
-        AssertGrabBand(menu.Panel, ContextButton("Enter Assembly"), "assembly menu");
+        AssertGrabBand(menu.Panel, ContextButton("Enter assembly"), "assembly menu");
 
         svc.BeginMultiSelect();
         svc.AddToSelection("P1");
@@ -806,6 +893,57 @@ public class CADInteractionPolishTests
         Assert.That(mainMenu.PanelTransform.GetComponentsInChildren<Button>(true)
             .Select(CADMenuPanel.GetLabel).Any(label => label.ToLowerInvariant().Contains("move")), Is.False,
             "no move-window button");
+    }
+
+    [Test]
+    public void DraggedWindowsPushAndPullLikeObjectsWithinLimits()
+    {
+        menu.Panel.EnableBorderDrag(pointer);
+        svc.EnterScope("A");
+        OpenObjectMenu("P1");
+        Transform panel = PanelOf(menu);
+        Vector3 border = BorderPoint(menu.Panel, left: true);
+        Vector3 held = panel.InverseTransformPoint(border);
+
+        // The pointer well behind the window (hold distance beyond the 0.7 m reach).
+        Vector3 start = head.position + new Vector3(0f, -0.3f, -0.3f);
+        Quaternion aim = Quaternion.LookRotation(border - start);
+        rightController.Pose = new Pose(start, aim);
+        PressUi(rightController, border);
+        Tick();
+        Assert.That(menu.Panel.IsDragging, Is.True);
+        float hold0 = Vector3.Distance(start, border);
+
+        // Pushing 5 cm along the ray moves the window farther than 5 cm, but at most 2x.
+        rightController.Pose = new Pose(start + aim * Vector3.forward * 0.05f, aim);
+        Tick();
+        float growth = Vector3.Distance(rightController.Pose.position, panel.TransformPoint(held)) - hold0;
+        Assert.That(growth, Is.GreaterThan(0.01f), "amplified push beyond reach");
+        Assert.That(growth, Is.LessThanOrEqualTo(0.05f + 1e-4f), "gentler than objects: at most 2x");
+
+        // Sideways stays 1:1 (no amplification).
+        Vector3 before = panel.TransformPoint(held);
+        rightController.Pose = new Pose(rightController.Pose.position + aim * Vector3.right * 0.05f, aim);
+        Tick();
+        Assert.That(Vector3.Distance(panel.TransformPoint(held), before), Is.EqualTo(0.05f).Within(0.005f));
+
+        // Pushing on and on: never farther than 3 m from the head.
+        for (int i = 0; i < 80; i++)
+        {
+            rightController.Pose = new Pose(rightController.Pose.position + aim * Vector3.forward * 0.05f, aim);
+            Tick();
+        }
+        Assert.That(Vector3.Distance(panel.position, head.position), Is.LessThanOrEqualTo(3f + 1e-3f));
+        Assert.That(Vector3.Distance(panel.position, head.position), Is.GreaterThan(2.5f), "it did go far");
+
+        // Pulling back hard: never closer than 0.4 m.
+        for (int i = 0; i < 150; i++)
+        {
+            rightController.Pose = new Pose(rightController.Pose.position - aim * Vector3.forward * 0.05f, aim);
+            Tick();
+        }
+        Assert.That(Vector3.Distance(panel.position, head.position), Is.GreaterThanOrEqualTo(0.4f - 1e-3f));
+        Release(rightController);
     }
 
     // 13, 14, 15, 16, 17
@@ -861,12 +999,12 @@ public class CADInteractionPolishTests
         Call(menu, "Hide", "test");
         OpenObjectMenu("P3");
         svc.TryGetObjectBounds("P3", out Bounds bounds);
-        AssertAbove(bounds, "reopened for another target");
+        AssertBeside(bounds, "reopened for another target");
 
         DragMenuBorder(menu.Panel, new Vector3(0.5f, 0.4f, 0f));
         OpenObjectMenu("P1"); // Replacing an open, moved menu also re-places it.
         svc.TryGetObjectBounds("P1", out bounds);
-        AssertAbove(bounds, "replaced while open");
+        AssertBeside(bounds, "replaced while open");
     }
 
     // 19
@@ -926,7 +1064,7 @@ public class CADInteractionPolishTests
         svc.Select("N_A");
         typeof(CADContextMenu).GetMethod("Open", Any).Invoke(menu, new object[] { new CADContextMenuRequest("N_A", nodes["A"].position, true) });
         svc.TryGetObjectBounds("N_A", out Bounds bounds);
-        AssertAbove(bounds, "new model");
+        AssertBeside(bounds, "new model");
     }
 
     // ================= Tooltip delay =================
@@ -936,7 +1074,8 @@ public class CADInteractionPolishTests
     public void TooltipDelayIsPointThreeSeconds()
     {
         Assert.That(CADMenuTooltip.DefaultHoverDelay, Is.EqualTo(0.3f).Within(1e-4f));
-        OpenObjectMenu("A");
+        svc.EnterScope("A");
+        OpenObjectMenu("P1");
         CADMenuTooltip tooltip = menu.Panel.Tooltip;
         Assert.That(tooltip.HoverDelay, Is.EqualTo(CADMenuTooltip.DefaultHoverDelay), "one shared default");
         var focus = ContextButton("Focus").GetComponent<CADMenuTooltipTrigger>();
@@ -961,8 +1100,13 @@ public class CADInteractionPolishTests
         Assert.That(panel.IsGrabPoint(EdgePoint(panel, top: false)), Is.True, $"{what}: bottom border grabs");
         Assert.That(panel.IsGrabPoint(button.transform.position), Is.False, $"{what}: buttons win");
         var box = panel.Root.GetComponentInChildren<BoxCollider>();
-        Assert.That(box.size.x, Is.EqualTo((panel.Width + 2 * CADMenuPanel.BorderWidth) * CADMenuPanel.CanvasScale).Within(1e-5f),
-            $"{what}: the ray surface covers the border");
+        Assert.That(box.size.x, Is.EqualTo((panel.Width + 2 * (CADMenuPanel.BorderWidth + 2f + CADMenuPanel.GrabMargin))
+            * CADMenuPanel.CanvasScale).Within(1e-5f), $"{what}: the ray surface covers the border and the margin outside");
+        foreach (bool left in new[] { true, false })
+            Assert.That(panel.IsGrabPoint(OutsidePoint(panel, left, CADMenuPanel.GrabMargin - 2f)), Is.True,
+                $"{what}: just outside the visible edge still grabs");
+        Assert.That(panel.IsGrabPoint(OutsidePoint(panel, true, CADMenuPanel.GrabMargin + 10f)), Is.False,
+            $"{what}: well outside does not");
     }
 
     private static RectTransform CanvasOf(CADMenuPanel panel) => (RectTransform)panel.Root.transform.Find("Canvas");
@@ -974,6 +1118,15 @@ public class CADInteractionPolishTests
         Rect r = canvas.rect;
         float x = left ? r.xMin - CADMenuPanel.BorderWidth * 0.5f : r.xMax + CADMenuPanel.BorderWidth * 0.5f;
         return canvas.TransformPoint(new Vector3(x, r.center.y, 0f));
+    }
+
+    // Beyond the visible left/right edge (border line included) by distance canvas units.
+    private static Vector3 OutsidePoint(CADMenuPanel panel, bool left, float distance)
+    {
+        RectTransform canvas = CanvasOf(panel);
+        Rect r = canvas.rect;
+        float edge = CADMenuPanel.BorderWidth + 2f + distance;
+        return canvas.TransformPoint(new Vector3(left ? r.xMin - edge : r.xMax + edge, r.center.y, 0f));
     }
 
     private static Vector3 EdgePoint(CADMenuPanel panel, bool top)
@@ -1243,7 +1396,7 @@ public class CADInteractionPolishTests
     {
         svc.EnterScope("A");
         OpenObjectMenu("P1");
-        ContextButton("Multi-Select").onClick.Invoke();
+        ContextButton("Multi-select").onClick.Invoke();
         Tick();
         Assert.That(menu.IsOpen, Is.True);
         Assert.That(ContextLabels(), Does.Contain("Done"), "the picking menu");
@@ -1269,7 +1422,7 @@ public class CADInteractionPolishTests
         Tick();
         Call(mainMenu, "LateUpdate");
         Assert.That(menu.IsOpen, Is.True);
-        Assert.That(ContextLabels(), Is.EqualTo(new[] { "Done", "Reset Scale", "Reset Model" }));
+        Assert.That(ContextLabels(), Is.EqualTo(new[] { "Done", "Reset all sizes", "Reset everything" }));
         Assert.That(mainMenu.IsOpen, Is.False);
         Assert.That(OpenMenuCount(), Is.EqualTo(1));
 
@@ -1320,21 +1473,660 @@ public class CADInteractionPolishTests
 
     private int OpenMenuCount() => (menu.IsOpen ? 1 : 0) + (mainMenu.IsOpen ? 1 : 0);
 
+    // ================= Style guide =================
+
+    [Test]
+    public void MenusUseTheStyleGuidePalette()
+    {
+        CADMenuStyle style = CADMenuStyle.Default;
+        Assert.That((Color32)style.PanelColor, Is.EqualTo(new Color32(0x0C, 0x15, 0x24, 0xFF)), "Background");
+        Assert.That((Color32)style.ButtonColor, Is.EqualTo(new Color32(0x17, 0x26, 0x39, 0xFF)), "Surface");
+        Assert.That((Color32)style.SelectedButtonColor, Is.EqualTo(new Color32(0x2A, 0xDC, 0xDB, 0xFF)), "Accent");
+        Assert.That((Color32)style.BorderColor, Is.EqualTo(new Color32(0x28, 0x68, 0x81, 0xFF)), "Border");
+        Assert.That((Color32)style.SecondaryTextColor, Is.EqualTo(new Color32(0x9F, 0xB6, 0xCD, 0xFF)), "Secondary text");
+
+        svc.EnterScope("A");
+        OpenObjectMenu("P1");
+        var background = PanelOf(menu).GetComponentsInChildren<Image>(true).First(i => i.name == "Background");
+        Assert.That((Color32)background.color, Is.EqualTo((Color32)style.PanelColor));
+        Assert.That(((Text)Get(menu, "scopeText")).color, Is.EqualTo(style.SecondaryTextColor), "scope line is quiet");
+        Assert.That(((Text)Get(menu, "titleText")).fontSize, Is.EqualTo(CADMenuPanel.TitleSize));
+        Button focus = ContextButton("Focus");
+        Assert.That(focus.GetComponentInChildren<Text>().color, Is.EqualTo(Color.white), "secondary: white label");
+        Assert.That(((RectTransform)focus.transform).rect.height, Is.EqualTo(CADMenuPanel.ControlHeight), "52-unit target");
+    }
+
+    [Test]
+    public void PrimarySelectedAndDisabledButtonsLookDistinct()
+    {
+        svc.EnterScope("A");
+        svc.BeginMultiSelect();
+        Tick();
+        Button done = ContextButton("Done");
+        Text label = done.GetComponentInChildren<Text>();
+        Assert.That(done.GetComponent<CADMenuButtonState>().Primary, Is.True, "Done is the primary action");
+        Assert.That(label.color, Is.EqualTo(CADMenuStyle.Default.PanelColor), "navy label on cyan");
+        Assert.That(label.fontStyle, Is.EqualTo(FontStyle.Bold));
+
+        Button reset = ContextButton("Reset selected"); // Nothing selected yet: disabled.
+        Assert.That(reset.interactable, Is.False);
+        Assert.That(reset.GetComponentInChildren<Text>().color.a, Is.LessThan(1f), "disabled label dimmed but legible");
+
+        mainMenu.ShowMainMenu();
+        Button edges = MainButton("Edges");
+        Assert.That(mainMenu.Panel.IsSelected(edges), Is.True);
+        Assert.That(edges.GetComponentInChildren<Text>().color, Is.EqualTo(CADMenuStyle.Default.PanelColor),
+            "selected segment: navy on cyan");
+        Assert.That(MainButton("Shaded").GetComponentInChildren<Text>().color, Is.EqualTo(Color.white));
+    }
+
+    [Test]
+    public void MainMenuHeaderShowsTheLogoWordmarkAndSubtitle()
+    {
+        mainMenu.ShowMainMenu();
+        var header = (RectTransform)Get(mainMenu, "header");
+        RawImage logo = header.GetComponentInChildren<RawImage>();
+        Assert.That(logo, Is.Not.Null, "original CADVision logo");
+        Assert.That(logo.texture.name, Is.EqualTo("CADVisionLogo"));
+        Rect r = logo.rectTransform.rect;
+        Assert.That(r.width / r.height, Is.EqualTo((float)logo.texture.width / logo.texture.height).Within(1e-3f),
+            "proportions preserved");
+        Assert.That(logo.raycastTarget, Is.False, "decoration never takes input");
+        string[] texts = header.GetComponentsInChildren<Text>().Select(x => x.text).ToArray();
+        Assert.That(texts, Is.EquivalentTo(new[] { "CADVision", "Main menu" }));
+        Assert.That(mainMenu.Panel.IsGrabPoint(logo.rectTransform.TransformPoint(r.center)), Is.True, "header moves the menu");
+    }
+
+    [Test]
+    public void RoundedCornersCanBeSwitchedOff()
+    {
+        Assert.That(CADMenuPanel.RoundedSprite, Is.Not.Null);
+        CADMenuPanel.RoundedCorners = false;
+        try
+        {
+            Assert.That(CADMenuPanel.RoundedSprite, Is.Null, "square fallback");
+            var panel = new CADMenuPanel("Square Panel", 200f, CADMenuStyle.Default);
+            Button button = panel.CreateButton("Test", null);
+            Assert.That(((Image)button.targetGraphic).sprite, Is.Null);
+            panel.Destroy();
+        }
+        finally
+        {
+            CADMenuPanel.RoundedCorners = true;
+        }
+    }
+
+    // ================= Menu edits: detach exits, no no-op buttons =================
+
+    [Test]
+    public void DetachLeavesTheAssemblyAndKeepsThePartSelected()
+    {
+        svc.EnterScope("A");
+        svc.EnterScope("S");
+        OpenObjectMenu("S1");
+        ContextButton("Detach").onClick.Invoke();
+
+        Assert.That(svc.IsDetached("S1"), Is.True);
+        Assert.That(svc.CurrentScopeId, Is.EqualTo("A"), "one level up, out of the assembly it left");
+        Assert.That(Selected(), Is.EqualTo(new[] { "S1" }), "the detached part stays selected");
+
+        OpenObjectMenu("S1");
+        ContextButton("Reattach").onClick.Invoke();
+        Assert.That(svc.IsDetached("S1"), Is.False);
+        Assert.That(svc.CurrentScopeId, Is.EqualTo("A"), "reattaching doesn't change scope");
+    }
+
+    [Test]
+    public void DetachAtModelScopeKeepsTheScope()
+    {
+        svc.EnterScope("A");
+        OpenObjectMenu("S");
+        ContextButton("Detach").onClick.Invoke();
+        Assert.That(svc.CurrentScopeId, Is.Null, "A → model scope");
+        Assert.That(Selected(), Is.EqualTo(new[] { "S" }));
+    }
+
+    [Test]
+    public void ResetAssemblyIsOnlyOfferedInsideAnAssembly()
+    {
+        OpenObjectMenu("A"); // Model scope: the top-level assembly.
+        Assert.That(ContextLabels(), Does.Not.Contain("Reset assembly"));
+        Assert.That(ContextLabels(), Does.Contain("Reset part"), "a selected assembly has Reset part");
+
+        svc.EnterScope("A");
+        OpenObjectMenu("S"); // A subassembly inside A.
+        Assert.That(ContextLabels(), Does.Contain("Reset part"));
+        Assert.That(ContextLabels(), Does.Contain("Reset assembly"));
+    }
+
+    [Test]
+    public void ResetPartResetsTheSelectionAndResetAssemblyTheScope()
+    {
+        svc.EnterScope("A");
+        Vector3 s = t["S"].localPosition, s1 = t["S1"].localPosition, p1 = t["P1"].localPosition;
+        svc.SetObjectWorldPose("S1", t["S1"].position + Vector3.up * 0.1f, t["S1"].rotation);
+        svc.SetObjectWorldPose("S", t["S"].position + Vector3.right * 0.1f, t["S"].rotation);
+        svc.SetObjectWorldPose("P1", t["P1"].position + Vector3.forward * 0.1f, t["P1"].rotation);
+
+        OpenObjectMenu("S");
+        ContextButton("Reset part").onClick.Invoke(); // The selected assembly, with what's in it.
+        Assert.That(Vector3.Distance(t["S"].localPosition, s), Is.LessThan(Eps));
+        Assert.That(Vector3.Distance(t["S1"].localPosition, s1), Is.LessThan(Eps));
+        Assert.That(Vector3.Distance(t["P1"].localPosition, p1), Is.GreaterThan(0.05f), "only the selected assembly");
+
+        OpenObjectMenu("P2");
+        ContextButton("Reset assembly").onClick.Invoke(); // A, the scope, not P2.
+        Assert.That(Vector3.Distance(t["P1"].localPosition, p1), Is.LessThan(Eps));
+        Assert.That(svc.CurrentScopeId, Is.EqualTo("A"));
+    }
+
+    [Test]
+    public void FocusIsHiddenWhenItWouldChangeNothing()
+    {
+        Assert.That(svc.WouldFocusGhostAnything(new[] { "A" }), Is.False, "A holds all the geometry");
+        Assert.That(svc.WouldFocusGhostAnything(new[] { "P1" }), Is.True);
+        Assert.That(svc.WouldFocusGhostAnything(new[] { "S" }), Is.True);
+        Assert.That(svc.WouldFocusGhostAnything(new[] { "P1", "P2", "P3", "S", "P4" }), Is.False,
+            "every part of A together: nothing left to ghost");
+
+        OpenObjectMenu("A");
+        Assert.That(ContextLabels(), Does.Not.Contain("Focus"));
+
+        svc.EnterScope("A");
+        svc.BeginMultiSelect();
+        foreach (string id in new[] { "P1", "P2", "P3", "S", "P4" })
+            svc.AddToSelection(id);
+        Tick();
+        Assert.That(ContextLabels(), Does.Not.Contain("Focus selection"), "the whole assembly selected");
+        svc.RemoveFromSelection("P4");
+        Tick();
+        Assert.That(ContextLabels(), Does.Contain("Focus selection"));
+    }
+
+    [Test]
+    public void ClearFocusStaysAvailableWhileFocused()
+    {
+        svc.Focus("A"); // Focused elsewhere (e.g. via CADEN): nothing ghosted, but it is active.
+        OpenObjectMenu("A");
+        Assert.That(ContextLabels(), Does.Contain("Clear focus"));
+        ContextButton("Clear focus").onClick.Invoke();
+        Assert.That(svc.IsFocusActive, Is.False);
+    }
+
+    // ================= Grab affordance (edge glow) =================
+
+    [Test]
+    public void EdgeGlowLightsWhileARayIsOnTheGrabBand()
+    {
+        svc.EnterScope("A");
+        OpenObjectMenu("P1");
+        CADMenuPanel panel = menu.Panel;
+        Assert.That(panel.GrabGlow, Is.EqualTo(0f));
+
+        RaisePointer(panel, 7, Oculus.Interaction.PointerEventType.Hover, ContextButton("Focus").transform.position);
+        panel.UpdateGrabGlow(1f);
+        Assert.That(panel.GrabGlow, Is.EqualTo(0f), "over a button: no glow");
+
+        RaisePointer(panel, 7, Oculus.Interaction.PointerEventType.Move, BorderPoint(panel, left: true));
+        panel.UpdateGrabGlow(0.05f);
+        Assert.That(panel.GrabGlow, Is.InRange(0.01f, 0.99f), "fades in");
+        panel.UpdateGrabGlow(1f);
+        Assert.That(panel.GrabGlow, Is.EqualTo(1f), "on the grab band: full glow");
+
+        RaisePointer(panel, 7, Oculus.Interaction.PointerEventType.Unhover, BorderPoint(panel, left: true));
+        panel.UpdateGrabGlow(1f);
+        Assert.That(panel.GrabGlow, Is.EqualTo(0f), "ray left: off");
+
+        RaisePointer(panel, 7, Oculus.Interaction.PointerEventType.Hover, BorderPoint(panel, left: false));
+        panel.UpdateGrabGlow(1f);
+        Hide(menu);
+        Assert.That(panel.GrabGlow, Is.EqualTo(0f), "hiding clears it");
+    }
+
+    [Test]
+    public void MenusAreThreeQuartersOfTheStyleGuideSize()
+    {
+        Assert.That(CADMenuPanel.CanvasScale, Is.EqualTo(0.00075f).Within(1e-7f));
+        svc.EnterScope("A");
+        OpenObjectMenu("P1");
+        Assert.That(CanvasOf(menu.Panel).lossyScale.x, Is.EqualTo(0.00075f).Within(1e-7f));
+    }
+
+    [Test]
+    public void EdgeGlowIsOnlyNearTheCursorAndOnlyOutsideTheWindow()
+    {
+        svc.EnterScope("A");
+        OpenObjectMenu("P1");
+        CADMenuPanel panel = menu.Panel;
+        RaisePointer(panel, 3, Oculus.Interaction.PointerEventType.Hover, BorderPoint(panel, left: true));
+        panel.UpdateGrabGlow(1f);
+
+        Rect r = CanvasOf(panel).rect;
+        float edge = CADMenuPanel.BorderWidth;
+        Assert.That(panel.EdgeGlow.AlphaAt(new Vector2(r.xMin - edge, r.center.y)), Is.GreaterThan(0.9f), "lit at the cursor");
+        Assert.That(panel.EdgeGlow.AlphaAt(new Vector2(r.xMax + edge, r.center.y)), Is.LessThan(0.01f), "far edge stays dark");
+        Assert.That(panel.EdgeGlow.AlphaAt(new Vector2(r.center.x, r.yMax + edge)), Is.LessThan(0.2f), "fades along the edge");
+
+        // Every glow vertex is on or outside the window's rounded edge (the panel background).
+        List<Vector3> vertices = panel.EdgeGlow.GetVertexPositions();
+        Assert.That(vertices, Is.Not.Empty);
+        var window = new Rect(r.xMin - edge, r.yMin - edge, r.width + 2 * edge, r.height + 2 * edge);
+        float radius = panel.EdgeGlow.Radius;
+        foreach (Vector3 v in vertices)
+        {
+            Vector2 q = new Vector2(Mathf.Abs(v.x - window.center.x), Mathf.Abs(v.y - window.center.y))
+                - (window.size * 0.5f - Vector2.one * radius);
+            float outside = Vector2.Max(q, Vector2.zero).magnitude + Mathf.Min(Mathf.Max(q.x, q.y), 0f) - radius;
+            Assert.That(outside, Is.GreaterThanOrEqualTo(-1e-3f), $"glow vertex {v} is over the window");
+        }
+    }
+
+    [Test]
+    public void MenusOpenAtLeastPointEightMetresAway()
+    {
+        Assert.That(CADMenuPanel.MinMenuDistance, Is.EqualTo(0.8f).Within(1e-4f));
+    }
+
+    private static void RaisePointer(CADMenuPanel panel, int id, Oculus.Interaction.PointerEventType type, Vector3 point) =>
+        typeof(CADMenuPanel).GetMethod("TrackHover", Any).Invoke(panel,
+            new object[] { new Oculus.Interaction.PointerEvent(id, type, new Pose(point, Quaternion.identity)) });
+
+    private static void Hide(CADContextMenu contextMenu) =>
+        typeof(CADContextMenu).GetMethod("Hide", Any).Invoke(contextMenu, new object[] { "test" });
+
+    // ================= Two-pointer rotation =================
+
+    [Test]
+    public void TwoPointersRotateAroundThePivotWithoutResizing()
+    {
+        svc.EnterScope("A");
+        StartDrag(rightController, "P1");
+        var session = (CADGrabSession)Get(pointer, "session");
+        Vector3 scale0 = t["P1"].localScale;
+        Quaternion rotation0 = t["P1"].rotation;
+        Vector3 c = rightController.Pose.position;
+        var arm = new Vector3(0.3f, 0f, 0f);
+
+        Aim(leftController, "P1");
+        Press(leftController, c + arm);
+        Assert.That(pointer.IsScaling, Is.True);
+        Vector3 pivot = session.GrabPointWorld;
+
+        MoveTo(leftController, c + Quaternion.Euler(0f, 4f, 0f) * arm, 0.02f);
+        Assert.That(Quaternion.Angle(t["P1"].rotation, rotation0), Is.LessThan(1e-3f), "4°: inside the dead zone");
+
+        MoveTo(leftController, c + Quaternion.Euler(0f, 40f, 0f) * arm, 0.02f);
+        Assert.That(Quaternion.Angle(t["P1"].rotation, rotation0), Is.EqualTo(40f).Within(0.01f), "exact past the dead zone");
+        Assert.That(Vector3.Distance(t["P1"].localScale, scale0), Is.LessThan(1e-5f), "turning doesn't resize");
+        Assert.That(Vector3.Distance(session.GrabPointWorld, pivot), Is.LessThan(Eps), "around the pivot");
+        var readout = (CADGestureReadout)Get(pointer, "readout");
+        Assert.That(readout.IsShowing, Is.True);
+        Assert.That(readout.Text, Is.EqualTo("40°"));
+
+        MoveTo(leftController, c + Quaternion.Euler(0f, 40f, 0f) * (arm * 1.03f), 0.02f);
+        Assert.That(Vector3.Distance(t["P1"].localScale, scale0), Is.LessThan(1e-5f), "3% stretch: inside the dead zone");
+
+        MoveTo(leftController, c + Quaternion.Euler(0f, 40f, 0f) * (arm * 2f), 0.02f);
+        Assert.That(t["P1"].localScale.x, Is.EqualTo(scale0.x * 2f).Within(1e-4f), "both at once");
+        Assert.That(Quaternion.Angle(t["P1"].rotation, rotation0), Is.EqualTo(40f).Within(0.01f));
+        Assert.That(readout.Text, Is.EqualTo("×2.00   40°"));
+
+        Release(leftController);
+        Assert.That(readout.IsShowing, Is.False);
+    }
+
+    [Test]
+    public void TwoHandRotationCanBeSwitchedOff()
+    {
+        typeof(CADPointerInteraction).GetField("twoPointerRotation", Any).SetValue(pointer, false);
+        Call(pointer, "ApplySettings");
+        svc.EnterScope("A");
+        StartDrag(rightController, "P1");
+        Quaternion rotation0 = t["P1"].rotation;
+        Vector3 c = rightController.Pose.position;
+        Aim(leftController, "P1");
+        Press(leftController, c + new Vector3(0.3f, 0f, 0f));
+        MoveTo(leftController, c + Quaternion.Euler(0f, 40f, 0f) * new Vector3(0.3f, 0f, 0f), 0.02f);
+        Assert.That(Quaternion.Angle(t["P1"].rotation, rotation0), Is.LessThan(1e-3f));
+    }
+
+    [Test]
+    public void DeadZonesEaseInWithoutJumps()
+    {
+        Assert.That(CADScaleGesture.SoftDeadZone(5f, 6f), Is.EqualTo(0f));
+        Assert.That(CADScaleGesture.SoftDeadZone(6f, 6f), Is.EqualTo(0f));
+        Assert.That(CADScaleGesture.SoftDeadZone(9f, 6f), Is.EqualTo(6f));
+        Assert.That(CADScaleGesture.SoftDeadZone(12f, 6f), Is.EqualTo(12f));
+        Assert.That(CADScaleGesture.SoftDeadZone(30f, 6f), Is.EqualTo(30f));
+        Assert.That(CADGestureReadout.Format(1f, 0f), Is.Null);
+        Assert.That(CADGestureReadout.Format(1.25f, 0f), Is.EqualTo("×1.25"));
+        Assert.That(CADGestureReadout.Format(1f, 35.4f), Is.EqualTo("35°"));
+    }
+
+    [Test]
+    public void ResetSizeAppearsOnlyWhenResizedAndKeepsTheObjectInPlace()
+    {
+        svc.EnterScope("A");
+        OpenObjectMenu("P1");
+        Assert.That(ContextLabels(), Does.Not.Contain("Reset size"), "not resized");
+
+        Vector3 scale0 = t["P1"].localScale;
+        svc.SetObjectWorldPose("P1", t["P1"].position + new Vector3(0.2f, 0.1f, 0f), Quaternion.Euler(0f, 30f, 0f));
+        svc.SetObjectScaleAroundPoint("P1", scale0 * 2f, Vector3.zero, t["P1"].position);
+        svc.TryGetObjectBounds("P1", out Bounds before);
+        Quaternion rotation = t["P1"].rotation;
+
+        OpenObjectMenu("P1");
+        Assert.That(ContextLabels(), Is.EqualTo(new[] { "Exit assembly", "Focus", "Detach", "Reset part", "Reset size",
+            "Reset assembly", "Multi-select", "Main menu", "Close" }));
+        ContextButton("Reset size").onClick.Invoke();
+
+        Assert.That(Vector3.Distance(t["P1"].localScale, scale0), Is.LessThan(Eps), "original size");
+        svc.TryGetObjectBounds("P1", out Bounds after);
+        Assert.That(Vector3.Distance(after.center, before.center), Is.LessThan(1e-3f), "stays where it is");
+        Assert.That(Quaternion.Angle(t["P1"].rotation, rotation), Is.LessThan(1e-3f), "rotation kept");
+        Assert.That(svc.IsResized("P1"), Is.False);
+    }
+
+    // ================= CADEN panel =================
+
+    [Test]
+    public void CadenPanelIsOneOfOurWindowsAndFollowsTheToggle()
+    {
+        var go = Track(new GameObject("CADEN test"));
+        var caden = go.AddComponent<CadenPanel>();
+        Call(caden, "Awake");
+        typeof(CadenPanel).GetField("trackingReady", Any).SetValue(caden, true);
+        Call(caden, "Recenter");
+        var canvas = (RectTransform)Get(caden, "canvasRect");
+        var surface = (BoxCollider)Get(caden, "surfaceBox");
+        Assert.That(canvas.gameObject.activeSelf, Is.True, "shown while CADEN is on");
+        Assert.That(canvas.localScale.x, Is.EqualTo(CADMenuPanel.CanvasScale).Within(1e-7f), "same scale as the menus");
+        Assert.That(surface.size, Is.EqualTo(CADWindowFrame.SurfaceSize(720f, 820f)), "grab band and margin reach the surface");
+        Assert.That(Vector3.Distance(go.transform.position, head.position),
+            Is.GreaterThanOrEqualTo(CADMenuPanel.MinMenuDistance - 0.3f), "not in the user's face");
+
+        // Same frame as the menus: the edge grabs, the middle doesn't, controls never do.
+        var frame = (CADWindowFrame)Get(caden, "frame");
+        var window = (RectTransform)((GameObject)Get(caden, "expanded")).transform;
+        Rect r = window.rect;
+        Assert.That(frame.IsGrabPoint(window.TransformPoint(new Vector3(r.xMin - CADMenuPanel.BorderWidth * 0.5f, r.center.y, 0f))), Is.True);
+        Assert.That(frame.IsGrabPoint(window.TransformPoint(new Vector3(r.xMin - CADMenuPanel.BorderWidth - 2f - CADMenuPanel.GrabMargin + 2f, r.center.y, 0f))), Is.True, "margin outside");
+        Assert.That(frame.IsGrabPoint(window.TransformPoint(new Vector3(r.center.x, r.center.y, 0f))), Is.False);
+        var newChat = go.GetComponentsInChildren<Button>(true).First(b => b.name == "New chat");
+        Assert.That(frame.IsGrabPoint(newChat.transform.position + newChat.transform.TransformVector(new Vector3(40f, -20f, 0f))), Is.False,
+            "a button in the header grab region still wins");
+        Assert.That(frame.IsGrabPoint(window.TransformPoint(new Vector3(r.xMin + 300f, r.yMax - 50f, 0f))), Is.True, "header grabs");
+
+        // Opens 1.1 m away, facing the user, beside the model (which is straight ahead here).
+        Vector3 offset = go.transform.position - head.position;
+        Assert.That(Vector3.ProjectOnPlane(offset, Vector3.up).magnitude, Is.EqualTo(1.1f).Within(1e-3f));
+        Assert.That(Vector3.Dot(go.transform.forward, offset.normalized), Is.GreaterThan(0.99f), "faces the user");
+        AssertCadenClearOfModel(go.transform, "at startup");
+
+        // The edge glow lights at the cursor (the window's pivot is its logo, not its center).
+        Vector3 edge = window.TransformPoint(new Vector3(r.xMin - CADMenuPanel.BorderWidth * 0.5f, r.center.y, 0f));
+        frame.TrackHover(new Oculus.Interaction.PointerEvent(5, Oculus.Interaction.PointerEventType.Hover,
+            new Pose(edge, Quaternion.identity)));
+        frame.UpdateGrabGlow(1f);
+        Assert.That(frame.GrabGlow, Is.EqualTo(1f));
+        Vector3 edgeInGlow = frame.EdgeGlow.rectTransform.InverseTransformPoint(edge);
+        Assert.That(frame.EdgeGlow.AlphaAt(new Vector2(edgeInGlow.x, edgeInGlow.y)), Is.GreaterThan(0.9f), "lit at the cursor");
+        Assert.That(frame.EdgeGlow.GetVertexPositions(), Is.Not.Empty);
+
+        // Exempt from the one-menu rule: other menus open beside it.
+        mainMenu.ShowMainMenu();
+        Call(caden, "Update");
+        Assert.That(canvas.gameObject.activeSelf, Is.True);
+        Assert.That(mainMenu.IsOpen, Is.True);
+
+        // The Main Menu's CADEN toggle hides every CADEN element, and brings them back.
+        settings.SetCadenEnabled(false);
+        Call(caden, "Update");
+        Assert.That(canvas.gameObject.activeSelf, Is.False, "panel and head-locked logo hidden");
+        Assert.That(surface.gameObject.activeSelf, Is.False, "nothing left to hit with a ray");
+        settings.SetCadenEnabled(true);
+        Call(caden, "Update");
+        Assert.That(canvas.gameObject.activeSelf, Is.True);
+    }
+
+    // ================= Window resize =================
+
+    [Test]
+    public void CornersResizeTheWindowAroundTheOppositeCorner()
+    {
+        menu.Panel.EnableBorderDrag(pointer);
+        svc.EnterScope("A");
+        OpenObjectMenu("P1");
+        CADWindowFrame frame = menu.Panel.Frame;
+        Transform panel = PanelOf(menu);
+        RectTransform canvas = CanvasOf(menu.Panel);
+        Rect r = canvas.rect;
+        Vector3 corner = canvas.TransformPoint(new Vector3(r.xMax + 20f, r.yMin - 20f, 0f)); // Bottom right.
+        Vector3 anchor = canvas.TransformPoint(new Vector3(r.xMin, r.yMax, 0f));             // Top left.
+
+        Assert.That(frame.IsResizePoint(corner, out int pressed), Is.True);
+        Assert.That(pressed, Is.EqualTo(2));
+        foreach (Vector3 other in new[]
+                 {
+                     canvas.TransformPoint(new Vector3(r.xMin - 20f, r.yMax + 20f, 0f)),
+                     canvas.TransformPoint(new Vector3(r.xMax + 20f, r.yMax + 20f, 0f)),
+                     canvas.TransformPoint(new Vector3(r.xMin - 20f, r.yMin - 20f, 0f)),
+                 })
+            Assert.That(frame.IsResizePoint(other, out _), Is.True, "all four corners");
+        Assert.That(frame.IsResizePoint(BorderPoint(menu.Panel, left: true), out _), Is.False, "mid-edge moves instead");
+
+        // Handles: hidden until a ray comes near, lit on the corner.
+        Assert.That(frame.HandleVisibility(2, out _), Is.EqualTo(0f));
+        RaisePointer(menu.Panel, 4, Oculus.Interaction.PointerEventType.Hover, corner);
+        menu.Panel.UpdateGrabGlow(0.02f);
+        Assert.That(frame.HandleVisibility(2, out bool lit), Is.EqualTo(1f).Within(1e-3f));
+        Assert.That(lit, Is.True);
+        Assert.That(frame.HandleVisibility(0, out _), Is.EqualTo(0f), "far corners stay hidden");
+        RaisePointer(menu.Panel, 4, Oculus.Interaction.PointerEventType.Unhover, corner);
+
+        // Press the corner and drag it outward along the diagonal: 125%, top-left corner fixed.
+        Vector3 eye = head.position;
+        rightController.Pose = new Pose(eye, Quaternion.LookRotation(corner - eye));
+        PressUi(rightController, corner);
+        Tick();
+        Assert.That(menu.Panel.IsResizing, Is.True);
+        Assert.That(menu.Panel.IsDragging, Is.False, "corners win over moving");
+        Vector3 diagonal = corner - anchor;
+        rightController.Pose = new Pose(eye, Quaternion.LookRotation(anchor + diagonal * 1.25f - eye));
+        Tick();
+        Assert.That(panel.localScale.x, Is.EqualTo(1.25f).Within(0.01f));
+        Assert.That(Vector3.Distance(canvas.TransformPoint(new Vector3(r.xMin, r.yMax, 0f)), anchor), Is.LessThan(Eps),
+            "the opposite corner stays put");
+
+        rightController.Pose = new Pose(eye, Quaternion.LookRotation(anchor + diagonal * 5f - eye));
+        Tick();
+        Assert.That(panel.localScale.x, Is.EqualTo(1.6f).Within(1e-4f), "largest size");
+        rightController.Pose = new Pose(eye, Quaternion.LookRotation(anchor + diagonal * 0.1f - eye));
+        Tick();
+        Assert.That(panel.localScale.x, Is.EqualTo(0.6f).Within(1e-4f), "smallest size");
+        rightController.Pose = new Pose(eye, Quaternion.LookRotation(anchor + diagonal * 1.2f - eye));
+        Tick();
+        Release(rightController);
+        Tick();
+        Assert.That(menu.Panel.IsResizing, Is.False);
+        float kept = panel.localScale.x;
+
+        OpenObjectMenu("P2");
+        Assert.That(panel.localScale.x, Is.EqualTo(kept).Within(1e-4f), "the next context menu keeps the size");
+    }
+
+    [Test]
+    public void ResizingTheMainMenuSetsTheUiScale()
+    {
+        mainMenu.ShowMainMenu();
+        mainMenu.Panel.EnableBorderDrag(pointer);
+        CADWindowFrame frame = mainMenu.Panel.Frame;
+        RectTransform canvas = CanvasOf(mainMenu.Panel);
+        Rect r = canvas.rect;
+        Vector3 corner = canvas.TransformPoint(new Vector3(r.xMin - 20f, r.yMin - 20f, 0f)); // Bottom left.
+        Vector3 anchor = canvas.TransformPoint(new Vector3(r.xMax, r.yMax, 0f));
+        Vector3 eye = head.position;
+        rightController.Pose = new Pose(eye, Quaternion.LookRotation(corner - eye));
+        PressUi(rightController, corner);
+        Call(mainMenu, "LateUpdate");
+        Assert.That(mainMenu.Panel.IsResizing, Is.True);
+
+        rightController.Pose = new Pose(eye, Quaternion.LookRotation(anchor + (corner - anchor) * 0.8f - eye));
+        Call(mainMenu, "LateUpdate");
+        Assert.That(settings.UiScale, Is.EqualTo(0.8f).Within(0.01f));
+        Assert.That(mainMenu.PanelTransform.localScale.x, Is.EqualTo(settings.UiScale).Within(1e-4f));
+        Assert.That(Vector3.Distance(canvas.TransformPoint(new Vector3(r.xMax, r.yMax, 0f)), anchor), Is.LessThan(Eps));
+        Release(rightController);
+        Call(mainMenu, "LateUpdate");
+        Assert.That(frame.IsResizing, Is.False);
+    }
+
+    [Test]
+    public void CadenPanelResizesButItsLogoDoesNot()
+    {
+        var go = Track(new GameObject("CADEN resize test"));
+        var caden = go.AddComponent<CadenPanel>();
+        Call(caden, "Awake");
+        typeof(CadenPanel).GetField("trackingReady", Any).SetValue(caden, true);
+        Call(caden, "Recenter");
+        var frame = (CADWindowFrame)Get(caden, "frame");
+        var canvas = (RectTransform)Get(caden, "canvasRect");
+        var window = ((GameObject)Get(caden, "expanded")).transform;
+        var surface = (BoxCollider)Get(caden, "surfaceBox");
+        Assert.That(frame.CanResize, Is.True);
+
+        Call(caden, "SetSize", 1.3f);
+        Assert.That(window.localScale.x, Is.EqualTo(1.3f).Within(1e-4f));
+        Assert.That(surface.size.x, Is.EqualTo(CADWindowFrame.SurfaceSize(720f, 820f).x * 1.3f).Within(1e-5f));
+        Vector3 windowCenter = window.TransformPoint(((RectTransform)window).rect.center);
+        Assert.That(Vector3.Distance(surface.transform.TransformPoint(surface.center), windowCenter), Is.LessThan(1e-3f),
+            "the ray surface stays centered on the resized panel");
+        Assert.That(canvas.localScale.x, Is.EqualTo(CADMenuPanel.CanvasScale).Within(1e-7f), "the logo tile keeps its size");
+    }
+
+    [Test]
+    public void CadenPanelOpensStraightAheadWhenTheModelIsElsewhere()
+    {
+        root.position = head.position + new Vector3(-2f, 0f, 0.5f); // Far to the left.
+        var go = Track(new GameObject("CADEN clear test"));
+        var caden = go.AddComponent<CadenPanel>();
+        Call(caden, "Awake");
+        typeof(CadenPanel).GetField("trackingReady", Any).SetValue(caden, true);
+        Call(caden, "Recenter");
+        Vector3 flat = Vector3.ProjectOnPlane(go.transform.position - head.position, Vector3.up);
+        Assert.That(Vector3.Angle(flat, Vector3.forward), Is.LessThan(0.5f), "nothing in the way: straight ahead");
+
+        // A model loaded afterwards, right in front: the panel steps aside (it wasn't moved).
+        root.position = head.position + new Vector3(0f, -0.4f, 1.2f);
+        Call(caden, "Update"); // Finds the service and subscribes.
+        svc.ReplaceImportedModel(root, t.ToDictionary(kv => kv.Key, kv => kv.Value.gameObject));
+        AssertCadenClearOfModel(go.transform, "after the model loaded");
+    }
+
+    // The CADEN panel's horizontal extent (seen from the head) doesn't overlap the model's.
+    private void AssertCadenClearOfModel(Transform caden, string when)
+    {
+        Assert.That(svc.TryGetModelBounds(out Bounds model), Is.True);
+        Vector3 forward = Vector3.ProjectOnPlane(caden.position - head.position, Vector3.up).normalized;
+        float min = float.PositiveInfinity, max = float.NegativeInfinity;
+        for (int i = 0; i < 8; i++)
+        {
+            Vector3 corner = model.center + Vector3.Scale(model.extents,
+                new Vector3((i & 1) == 0 ? -1 : 1, (i & 2) == 0 ? -1 : 1, (i & 4) == 0 ? -1 : 1));
+            float angle = Vector3.SignedAngle(forward, Vector3.ProjectOnPlane(corner - head.position, Vector3.up), Vector3.up);
+            min = Mathf.Min(min, angle);
+            max = Mathf.Max(max, angle);
+        }
+        float distance = Vector3.ProjectOnPlane(caden.position - head.position, Vector3.up).magnitude;
+        float half = Mathf.Atan2((720f / 2 + CADMenuPanel.BorderWidth) * CADMenuPanel.CanvasScale, distance) * Mathf.Rad2Deg;
+        Assert.That(max < -half || min > half, Is.True, $"{when}: the panel covers the model ({min:F1}..{max:F1} vs ±{half:F1})");
+    }
+
+    // ================= CADEN hand voice =================
+
+    [Test]
+    public void MiddlePinchDrivesCadenVoiceLikeY()
+    {
+        var pinch = new CadenPinchToTalk();
+        const CadenPinchToTalk.Action none = CadenPinchToTalk.Action.None;
+        const CadenPinchToTalk.Action press = CadenPinchToTalk.Action.Press;
+        const CadenPinchToTalk.Action release = CadenPinchToTalk.Action.Release;
+        float t = 0f;
+        CadenPinchToTalk.Action Step(bool tracked, bool middle, bool index = false, bool enabled = true, bool busy = false)
+        {
+            t += 0.05f;
+            return pinch.Update(tracked, middle, index, enabled, busy, t);
+        }
+
+        Assert.That(Step(true, true), Is.EqualTo(none), "held when tracking starts: ignored");
+        Assert.That(Step(true, false), Is.EqualTo(none));
+
+        // Hold to talk / quick pinch: the voice decides from the timing (same as Y).
+        Assert.That(Step(true, true), Is.EqualTo(press));
+        Assert.That(Step(true, true), Is.EqualTo(none));
+        Assert.That(Step(true, false), Is.EqualTo(release));
+        t += 1f;
+
+        // A fist (index pinching too), a busy left hand or CADEN off never counts.
+        Assert.That(Step(true, true, index: true), Is.EqualTo(none));
+        Assert.That(Step(true, true), Is.EqualTo(none), "still ignored until the pinch opens");
+        Assert.That(Step(true, false), Is.EqualTo(none));
+        Assert.That(Step(true, true, busy: true), Is.EqualTo(none));
+        Assert.That(Step(true, false), Is.EqualTo(none));
+        Assert.That(Step(true, true, enabled: false), Is.EqualTo(none));
+        Assert.That(Step(true, false), Is.EqualTo(none));
+
+        // Tracking lost while holding: keep recording (no release); the next pinch sends.
+        t += 1f;
+        Assert.That(Step(true, true), Is.EqualTo(press));
+        Assert.That(Step(false, false), Is.EqualTo(none), "no release on tracking loss");
+        Assert.That(pinch.IsHeld, Is.False);
+        Assert.That(Step(true, true), Is.EqualTo(none), "back with the pinch still closed: ignored");
+        Assert.That(Step(true, false), Is.EqualTo(none));
+        t += 1f;
+        Assert.That(Step(true, true), Is.EqualTo(press), "the next pinch (sends the recording)");
+        Assert.That(Step(true, false), Is.EqualTo(release));
+
+        // Two pinches closer than MinInterval: the second doesn't count.
+        t += 1f;
+        Assert.That(Step(true, true), Is.EqualTo(press));
+        Assert.That(Step(true, false), Is.EqualTo(release));
+        Assert.That(Step(true, true), Is.EqualTo(none), "too soon after the last pinch");
+    }
+
     // ================= Helpers =================
 
-    private void AssertAbove(Bounds bounds, string what)
+    private void AssertBeside(Bounds bounds, string what) => AssertBesidePanel(menu.Panel, bounds, what);
+
+    // Beside the target (clear of it sideways, or at the 35° view limit for huge ones), not
+    // behind its near face, at least the minimum distance away, facing the user.
+    private void AssertBesidePanel(CADMenuPanel menuPanel, Bounds bounds, string what)
     {
-        Transform panel = PanelOf(menu);
-        float bottom = PanelBottom(menu.Panel);
-        Assert.That(bottom, Is.GreaterThanOrEqualTo(bounds.max.y - 1e-3f), $"{what}: panel bottom above the target top");
-        Vector2 flat = new Vector2(panel.position.x - bounds.center.x, panel.position.z - bounds.center.z);
-        Assert.That(flat.magnitude, Is.LessThan(bounds.extents.magnitude + 0.2f), $"{what}: over the target, not elsewhere");
+        Transform panel = menuPanel.Root.transform;
+        Vector3 forward = Vector3.ProjectOnPlane(bounds.center - head.position, Vector3.up).normalized;
+        Vector3 right = Vector3.Cross(Vector3.up, forward);
+        Vector3 e = bounds.extents;
+        float lateralExtent = Mathf.Abs(right.x) * e.x + Mathf.Abs(right.z) * e.z;
+        float depthExtent = Mathf.Abs(forward.x) * e.x + Mathf.Abs(forward.z) * e.z;
+        float halfWidth = menuPanel.OuterWorldWidth * 0.5f;
+
+        float lateral = Mathf.Abs(Vector3.Dot(panel.position - bounds.center, right));
+        float depth = Vector3.Dot(panel.position - head.position, forward);
+        bool clear = lateral >= lateralExtent + halfWidth - 1e-3f;
+        bool atViewLimit = Mathf.Abs(Mathf.Atan2(lateral, depth) * Mathf.Rad2Deg - 35f) < 0.5f;
+        Assert.That(clear || atViewLimit, Is.True, $"{what}: beside the target, not in front of it");
+        Assert.That(lateral, Is.LessThan(lateralExtent + halfWidth + 0.15f), $"{what}: next to the target, not elsewhere");
+
+        float nearFace = Vector3.Dot(bounds.center - head.position, forward) - depthExtent;
+        Assert.That(depth, Is.LessThanOrEqualTo(Mathf.Max(nearFace, CADMenuPanel.MinMenuDistance) + 1e-3f),
+            $"{what}: not behind the part's near face");
+        Assert.That(Vector3.Distance(panel.position, head.position), Is.GreaterThanOrEqualTo(CADMenuPanel.MinMenuDistance - 1e-3f),
+            $"{what}: minimum distance");
         Assert.That(Vector3.Dot(panel.forward, (panel.position - head.position).normalized), Is.GreaterThan(0.99f),
             $"{what}: faces the user");
     }
 
-    private static float PanelBottom(CADMenuPanel panel) =>
-        panel.Root.transform.position.y - panel.OuterWorldHeight * 0.5f; // Including the grab band.
 
     private static Transform PanelOf(CADContextMenu contextMenu) => ((GameObject)Get(contextMenu, "panelRoot")).transform;
 

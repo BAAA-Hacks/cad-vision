@@ -19,6 +19,7 @@ public sealed class StreamingSpeechTurn
     private readonly Queue<(string Text, CancellationToken Token)> queue = new Queue<(string, CancellationToken)>();
     private readonly SemaphoreSlim wake = new SemaphoreSlim(0);
     private readonly Action<Exception> report;
+    private readonly Func<string, CancellationToken, Task>? streamAndPlay;
     private CancellationTokenSource? round;
     private SpeechTextBuffer buffer = new();
     private string received = "";
@@ -27,9 +28,10 @@ public sealed class StreamingSpeechTurn
     public Task Completion { get; }
 
     public StreamingSpeechTurn(ISpeechClient client, Func<byte[], CancellationToken, Task> play,
-        Action<Exception> report, CancellationToken cancellation)
+        Action<Exception> report, CancellationToken cancellation, Func<string, CancellationToken, Task>? streamAndPlay = null)
     {
         this.report = report;
+        this.streamAndPlay = streamAndPlay;
         stopped = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
         Completion = RunAsync(client, play);
     }
@@ -98,11 +100,17 @@ public sealed class StreamingSpeechTurn
                 try
                 {
                     item.Token.ThrowIfCancellationRequested();
-                    var pcm = await client.SynthesizeAsync(item.Text, item.Token);
-                    item.Token.ThrowIfCancellationRequested();
-                    await play(pcm, item.Token);
+                    if (streamAndPlay != null) await streamAndPlay(item.Text, item.Token);
+                    else
+                    {
+                        var pcm = await client.SynthesizeAsync(item.Text, item.Token);
+                        item.Token.ThrowIfCancellationRequested();
+                        await play(pcm, item.Token);
+                    }
                 }
                 catch (OperationCanceledException) when (item.Token.IsCancellationRequested) { }
+                // A dropped or slow connection loses one sentence, not the rest of the answer.
+                catch (Exception ex) when (IsTransient(ex)) { report(ex); }
             }
         }
         catch (OperationCanceledException) when (stopped.IsCancellationRequested) { }
@@ -119,6 +127,11 @@ public sealed class StreamingSpeechTurn
             }
         }
     }
+    /// <summary>Network failures worth skipping past; configuration errors (bad key, voice, model) still stop speech.</summary>
+    public static bool IsTransient(Exception ex) => ex is TimeoutException || ex is IOException ||
+        ex is System.Net.WebException || ex is System.Net.Sockets.SocketException || ex is System.Net.WebSockets.WebSocketException ||
+        (ex is System.Net.Http.HttpRequestException http && (!http.Message.StartsWith("ELEVENLABS_HTTP_", StringComparison.Ordinal) ||
+            http.Message.StartsWith("ELEVENLABS_HTTP_5", StringComparison.Ordinal) || http.Message.StartsWith("ELEVENLABS_HTTP_429", StringComparison.Ordinal)));
     private void Enqueue(string text, CancellationToken token) { queue.Enqueue((text, token)); wake.Release(); }
 }
 }

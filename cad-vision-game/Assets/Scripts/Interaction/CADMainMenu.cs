@@ -4,9 +4,10 @@ using UnityEngine.UI;
 
 /// <summary>
 /// The application's single global menu: Scope (current scope + one context-aware
-/// Enter/Exit Assembly button), CADEN (placeholder toggle), View (display mode buttons,
+/// Enter/Exit Assembly button), CADEN (show/hide the assistant), View (display mode buttons,
 /// outline toggle), Model (Manipulate model / Stop manipulating, and the Reset options shown
-/// under "Reset ▼": object, scale, assembly, model), Interface (UI scale), Close. Buttons carry
+/// under "Reset ▼": selected, assembly, all sizes, everything), Close. Its corners resize it
+/// (the UI scale, CADUISettings.UiScale). Buttons carry
 /// hover tooltips (CADMenuPanel).
 ///
 /// Rendering and input are CADMenuPanel, the same construction the object/assembly context
@@ -17,8 +18,8 @@ using UnityEngine.UI;
 /// the context menu switches its button sets.
 ///
 /// Lifecycle: starts hidden (Inspector: startVisible). ToggleMainMenu / ShowMainMenu /
-/// HideMainMenu are the entry points. Every show respawns it ~0.7 m in front of the head,
-/// a little below eye level, facing the user (never head-locked). While open it stays put,
+/// HideMainMenu are the entry points. Every show respawns it ~0.85 m (at least
+/// CADMenuPanel.MinMenuDistance) in front of the head, a little below eye level, facing the user (never head-locked). While open it stays put,
 /// except that pressing and holding its border or its header with trigger or pinch drags it
 /// rigidly with the pointer (CADMenuPanel's shared border drag; the plain-text header is an
 /// extra grab region). It stays open across model replacement; all state
@@ -34,7 +35,7 @@ public class CADMainMenu : MonoBehaviour
 {
     [Header("Placement")]
     [Tooltip("Distance in front of the headset when shown (m).")]
-    [SerializeField, Range(0.4f, 1.2f)] private float spawnDistance = 0.7f;
+    [SerializeField, Range(0.4f, 1.2f)] private float spawnDistance = 0.85f;
     [Tooltip("How far below eye level it appears (m).")]
     [SerializeField] private float spawnDrop = 0.12f;
 
@@ -42,13 +43,15 @@ public class CADMainMenu : MonoBehaviour
     [Tooltip("Development safety net: show the menu at startup.")]
     [SerializeField] private bool startVisible;
 
-    // Layout in canvas units (1 unit = 1 mm at 100% UI scale).
-    private const float PanelWidth = 360f;
-    private const float TitleHeight = 32f;
-    private const float SectionHeight = 26f;
-    private const float TextHeight = 32f;
-    private const float ButtonHeight = 44f;
-    private const float SectionSpacing = 16f;
+    // Layout in canvas units (1 unit = 1 mm at 100% UI scale); style guide sizes (CADMenuPanel).
+    private const float PanelWidth = 440f;
+    private const float HeaderHeight = 64f;
+    private const float LogoSize = 56f;
+    private const float SectionHeight = 28f;
+    private const float TextHeight = 30f;
+    private const float ButtonHeight = CADMenuPanel.ControlHeight;
+    private const float SectionSpacing = CADMenuPanel.SectionSpacing;
+    private const string LogoResource = "CADVision/CADVisionLogo";
 
     private CADVisionManipulationService manipulationService;
     private CADUISettings settings;
@@ -57,14 +60,16 @@ public class CADMainMenu : MonoBehaviour
     private CADMenuPanel panel;
     private CADMenuPanel codePanel;
     private GameObject panelRoot; // panel.Root.
-    private Text title; // Plain header text; also a grab region of the border drag.
+    private RectTransform header; // Logo + wordmark + subtitle; also a grab region of the border drag.
+    private Text title;           // "CADVision" wordmark.
+
     private Text scopeSection, roomSection, roomStatus, cadenSection, viewSection, modelSection, interfaceSection;
     private Text scopeText, displayLabel, outlineLabel, scaleLabel, scaleValue;
     private readonly Dictionary<CADDisplayMode, Button> displayButtons = new();
     private Button scopeButton, hostRoomButton, hostVirtualRoomButton, joinRoomButton, leaveRoomButton;
     private Button cadenButton, outlineButton;
     private Button manipulateButton, resetButton, resetObjectButton, resetScaleButton, resetAssemblyButton, resetModelButton;
-    private Button scaleDownButton, scaleUpButton, closeButton;
+    private Button closeButton;
     private bool resetExpanded;
     private CADMultiplayerCoordinator multiplayer;
     private Text enteredRoomCode;
@@ -170,7 +175,9 @@ public class CADMainMenu : MonoBehaviour
             forward = Vector3.forward;
         forward.Normalize();
 
-        Vector3 position = head.position + forward * spawnDistance + Vector3.down * spawnDrop;
+        // Never closer than the shared minimum menu distance.
+        float distance = Mathf.Max(spawnDistance, CADMenuPanel.MinMenuDistance);
+        Vector3 position = head.position + forward * distance + Vector3.down * spawnDrop;
         panelRoot.transform.SetPositionAndRotation(position,
             Quaternion.LookRotation(position - head.position, Vector3.up));
     }
@@ -218,10 +225,6 @@ public class CADMainMenu : MonoBehaviour
         CADMenuPanel.SetInteractable(resetAssemblyButton, !multiplayer.IsInRoom && ResetAssemblyTarget() != null);
         CADMenuPanel.SetInteractable(resetModelButton, !multiplayer.IsInRoom && manipulationService.ModelRoot != null);
 
-        SetText(scaleValue, $"{Mathf.RoundToInt(settings.UiScale * 100f)}%");
-        CADMenuPanel.SetInteractable(scaleDownButton, settings.UiScale > CADUISettings.MinUiScale + 1e-4f);
-        CADMenuPanel.SetInteractable(scaleUpButton, settings.UiScale < CADUISettings.MaxUiScale - 1e-4f);
-
         Vector3 scale = Vector3.one * settings.UiScale;
         if (panelRoot.transform.localScale != scale)
             panelRoot.transform.localScale = scale;
@@ -233,19 +236,9 @@ public class CADMainMenu : MonoBehaviour
             text.text = value;
     }
 
-    // The selected assembly, else the assembly containing the one selected object, else the
-    // current scope (entered assembly). Same rule as the object context menu.
-    private string ResetAssemblyTarget()
-    {
-        List<string> selected = manipulationService.GetSelectedIds();
-        if (selected.Count == 1)
-        {
-            string id = selected[0];
-            return manipulationService.HasCadChildren(id) ? id : manipulationService.GetLogicalParentId(id);
-        }
-
-        return manipulationService.CurrentScopeId;
-    }
+    // The assembly the user is in (current scope); none at model scope. Same rule as the
+    // context menus.
+    private string ResetAssemblyTarget() => manipulationService.CurrentScopeId;
 
     // ---------------- Actions ----------------
 
@@ -343,31 +336,17 @@ public class CADMainMenu : MonoBehaviour
         ApplyLayout();
     }
 
-    // One selected object: ResetObject; several: ResetSelected (same per-root rules).
+    // The selection: parts reset, assemblies reset with everything in them.
     private void ResetObjectAction()
     {
-        List<string> selected = manipulationService.GetSelectedIds();
-        if (selected.Count == 1)
-            manipulationService.ResetObject(selected[0]);
-        else if (selected.Count > 1)
-            manipulationService.ResetSelected();
+        manipulationService.ResetSelected();
         CollapseReset();
     }
 
-    // Model mode: the model root's review scale; else the selection's (one object or the
-    // selected transform roots). Position and rotation stay.
+    // Every resized object and the model root back to their original size; nothing moves.
     private void ResetScaleAction()
     {
-        if (manipulationService.IsModelManipulationActive)
-            manipulationService.ResetModelScale();
-        else
-        {
-            List<string> selected = manipulationService.GetSelectedIds();
-            if (selected.Count == 1)
-                manipulationService.ResetObjectScale(selected[0]);
-            else if (selected.Count > 1)
-                manipulationService.ResetSelectedScale();
-        }
+        manipulationService.ResetAllScales();
         CollapseReset();
     }
 
@@ -406,14 +385,18 @@ public class CADMainMenu : MonoBehaviour
         panel = new CADMenuPanel("CAD Main Menu", PanelWidth, CADMenuStyle.Default);
         panelRoot = panel.Root;
         panel.CloseRequested = HideMainMenu; // Another menu opened (single-menu rule).
+        // Corner resize sets the UI scale (applied at once so the opposite corner stays put).
+        panel.EnableResize(() => settings.UiScale, size =>
+        {
+            settings.SetUiScale(size);
+            panelRoot.transform.localScale = Vector3.one * settings.UiScale;
+        });
 
-        // Title bar: a normal panel button that is also a grab region of the shared border drag.
-        // Header: plain text (not a button) that, like the border, can be grabbed to move the menu.
-        title = panel.CreateText("Title", "Main menu", CADMenuPanel.FontSize + 2, FontStyle.Bold);
-        panel.AddGrabRegion(title.rectTransform);
+        BuildHeader();
 
         scopeSection = Section("Scope");
-        scopeText = panel.CreateText("Scope Value", "Scope: Full model");
+        scopeText = panel.CreateText("Scope Value", "Scope: Full model", CADMenuPanel.FontSize, FontStyle.Normal,
+            TextAnchor.MiddleLeft);
         scopeButton = AddButton("Enter assembly", OnScopeButton,
             "Enter the selected assembly, or go back up one level.");
 
@@ -429,10 +412,10 @@ public class CADMainMenu : MonoBehaviour
             "Disconnect from the shared room.");
 
         cadenSection = Section("CADEN");
-        cadenButton = AddButton("CADEN: Off", settings.ToggleCaden, "CADEN design assistant (placeholder toggle).");
+        cadenButton = AddButton("CADEN: Off", settings.ToggleCaden, "Show or hide the CADEN design assistant.");
 
         viewSection = Section("View");
-        displayLabel = panel.CreateText("Display Label", "Display");
+        displayLabel = Label("Display");
         foreach (CADDisplayMode mode in new[] { CADDisplayMode.Shaded, CADDisplayMode.Edges, CADDisplayMode.Wireframe })
         {
             CADDisplayMode captured = mode;
@@ -443,7 +426,7 @@ public class CADMainMenu : MonoBehaviour
                 _ => "Normal shaded surfaces.",
             });
         }
-        outlineLabel = panel.CreateText("Outline Label", "Outline");
+        outlineLabel = Label("Outline");
         outlineButton = AddButton("On", () => settings.SetOutlineEnabled(!settings.OutlineEnabled),
             "Show or hide the selection outline.");
 
@@ -451,27 +434,66 @@ public class CADMainMenu : MonoBehaviour
         manipulateButton = AddButton("Manipulate model", ToggleModelManipulation,
             "Move, rotate, or scale the entire CAD model.");
         resetButton = AddButton("Reset ▼", ToggleReset, "Show the reset options.");
-        resetObjectButton = AddButton("Reset object", ResetObjectAction,
-            "Restore the selected object to its original assembly transform.");
-        resetScaleButton = AddButton("Reset scale", ResetScaleAction,
-            "Restore the original scale without changing position or rotation.");
+        resetObjectButton = AddButton("Reset selected", ResetObjectAction,
+            "Put the selected parts back: original positions, rotations and sizes.");
+        resetScaleButton = AddButton("Reset all sizes", ResetScaleAction,
+            "Undo all resizing of the model and its parts. Nothing moves.");
         resetAssemblyButton = AddButton("Reset assembly", ResetAssemblyAction,
-            "Restore the assembly and its parts to their original transforms.");
-        resetModelButton = AddButton("Reset model", ResetModelAction,
-            "Restore the whole model and every part to the review pose.");
-
-        interfaceSection = Section("Interface");
-        scaleLabel = panel.CreateText("Scale Label", "UI scale");
-        scaleDownButton = AddButton("-", () => settings.StepUiScale(-1), "Make the main menu smaller.");
-        scaleValue = panel.CreateText("Scale Value", "100%", CADMenuPanel.FontSize, FontStyle.Bold);
-        scaleUpButton = AddButton("+", () => settings.StepUiScale(1), "Make the main menu larger.");
+            "Put the assembly you're in and all its parts back: original positions, rotations and sizes.");
+        resetModelButton = AddButton("Reset everything", ResetModelAction,
+            "Undo every change: all parts back in place, the model back in front of you at its original size.");
 
         closeButton = AddButton("Close", HideMainMenu);
 
         ApplyLayout();
     }
 
-    private Text Section(string title) => panel.CreateText(title, title, CADMenuPanel.FontSize - 2, FontStyle.Bold);
+    // Section heading: bold white (style guide 20–22).
+    private Text Section(string heading) =>
+        panel.CreateText(heading, heading, CADMenuPanel.SectionSize, FontStyle.Bold, TextAnchor.LowerLeft);
+
+    // Control label: muted secondary text, left-aligned beside or above its control.
+    private Text Label(string value) =>
+        panel.CreateText(value + " Label", value, CADMenuPanel.SecondarySize, FontStyle.Normal, TextAnchor.MiddleLeft,
+            panel.SecondaryTextColor);
+
+    // Branding for the app's main menu (style guide): the original logo (proportions kept, clear
+    // space around it), the CADVision wordmark and a quiet feature subtitle.
+    private void BuildHeader()
+    {
+        header = panel.CreateGroup("Header");
+        panel.AddGrabRegion(header);
+
+        float textLeft = 0f;
+        var logo = Resources.Load<Texture2D>(LogoResource);
+        if (logo != null)
+        {
+            float aspect = logo.height > 0 ? (float)logo.width / logo.height : 1f;
+            RawImage image = panel.CreateRawImage(header, "Logo", logo);
+            PlaceInHeader(image.rectTransform, 0f, 0f, LogoSize * aspect, LogoSize, verticalCenter: true);
+            textLeft = LogoSize * aspect + LogoSize * 0.25f; // Clear space ≈ a quarter of its height.
+        }
+        else
+        {
+            Debug.LogWarning($"[CADMainMenu] Logo '{LogoResource}' not found; header shows the wordmark only.");
+        }
+
+        title = panel.CreateText(header, "Title", "CADVision", CADMenuPanel.TitleSize + 2, FontStyle.Bold,
+            TextAnchor.LowerLeft);
+        PlaceInHeader(title.rectTransform, textLeft, 0f, 300f, 36f, verticalCenter: false);
+        Text subtitle = panel.CreateText(header, "Subtitle", "Main menu", CADMenuPanel.SecondarySize, FontStyle.Normal,
+            TextAnchor.UpperLeft, panel.SecondaryTextColor);
+        PlaceInHeader(subtitle.rectTransform, textLeft, 38f, 300f, 24f, verticalCenter: false);
+    }
+
+    // Top-left based placement inside the header group (canvas units).
+    private static void PlaceInHeader(RectTransform rect, float x, float top, float width, float height, bool verticalCenter)
+    {
+        rect.anchorMin = rect.anchorMax = new Vector2(0f, verticalCenter ? 0.5f : 1f);
+        rect.pivot = new Vector2(0f, verticalCenter ? 0.5f : 1f);
+        rect.anchoredPosition = new Vector2(x, verticalCenter ? 0f : -top);
+        rect.sizeDelta = new Vector2(width, height);
+    }
 
     // Every button refreshes the menu after its action (labels, selected and enabled states).
     private Button AddButton(string label, UnityEngine.Events.UnityAction onClick, string tooltip = null)
@@ -487,7 +509,7 @@ public class CADMainMenu : MonoBehaviour
     {
         var rows = new List<CADMenuPanel.Row>
         {
-            new(TitleHeight, CADMenuPanel.RowSpacing, title),
+            new(HeaderHeight, SectionSpacing, header),
 
             new(SectionHeight, scopeSection),
             new(TextHeight, scopeText),
@@ -514,12 +536,10 @@ public class CADMainMenu : MonoBehaviour
         if (resetExpanded)
         {
             rows.Add(new(ButtonHeight, resetObjectButton));
-            rows.Add(new(ButtonHeight, resetScaleButton));
             rows.Add(new(ButtonHeight, resetAssemblyButton));
+            rows.Add(new(ButtonHeight, resetScaleButton));
             rows.Add(new(ButtonHeight, SectionSpacing, resetModelButton));
         }
-        rows.Add(new(SectionHeight, interfaceSection));
-        rows.Add(new(ButtonHeight, SectionSpacing, scaleLabel, scaleDownButton, scaleValue, scaleUpButton));
         rows.Add(new(ButtonHeight, closeButton));
 
         panel.Stack(rows);

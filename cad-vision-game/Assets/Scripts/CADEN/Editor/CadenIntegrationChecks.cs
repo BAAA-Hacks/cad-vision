@@ -96,20 +96,44 @@ public static class CadenIntegrationChecks
             await Apply("hide_objects", Ids("A")); Require(!nodes[2].activeInHierarchy, "Assembly hide failed");
             await Apply("show_objects", Ids("P"));
             Require(nodes[2].activeInHierarchy && !nodes[3].activeInHierarchy, "Unhide failed to restore ancestor or exposed sibling");
-            await Apply("clear_isolation");
+            await Apply("show_objects", Ids("R"));
             Vector3 original = nodes[2].transform.position;
-            var detachArgs = await Arguments(new JObject { ["objectId"] = "P" });
+            var detachArgs = await Arguments(Ids("P"));
             var detached = await registry.ExecuteAsync("detach_for_inspection", detachArgs);
             Require((bool)detached["success"] && service.IsDetached("P") && (nodes[2].transform.position - original).magnitude >= 0.1f, "Inspection detach did not move part");
             Vector3 moved = nodes[2].transform.position;
             var replay = await registry.ExecuteAsync("detach_for_inspection", detachArgs);
             Require((bool)replay["receipt"]["replayed"] && nodes[2].transform.position == moved, "Replay moved object twice");
-            var conflict = (JObject)detachArgs.DeepClone(); conflict["objectId"] = "Q";
+            var conflict = (JObject)detachArgs.DeepClone(); conflict["objectIds"] = new JArray("Q");
             Require(Code(await registry.ExecuteAsync("detach_for_inspection", conflict)) == "IDEMPOTENCY_CONFLICT", "Operation ID accepted different target");
-            await Apply("isolate_objects", Ids("A"));
-            Require(nodes[2].activeInHierarchy && nodes[3].activeInHierarchy && !nodes[4].activeInHierarchy, "Isolation lost detached descendant");
+            await Apply("focus_objects", Ids("A"));
+            Require(service.IsInFocus("P") && !service.IsInFocus("O") && nodes[4].activeInHierarchy, "Focus failed to include detached descendant or changed visibility");
             await Apply("reset_objects", Ids("A"));
-            Require(!service.IsDetached("P") && nodes[2].transform.position == original && !nodes[4].activeInHierarchy, "Scoped reset failed or changed isolation");
+            Require(!service.IsDetached("P") && nodes[2].transform.position == original && service.IsInFocus("P") && nodes[4].activeInHierarchy, "Scoped reset failed or changed focus");
+            // Detach multiple: the parts move together and keep their relative layout.
+            Vector3 p0 = nodes[2].transform.position, q0 = nodes[3].transform.position;
+            await Apply("detach_for_inspection", Ids("P", "Q"));
+            Require(service.IsDetached("P") && service.IsDetached("Q") && (nodes[2].transform.position - p0).magnitude >= 0.1f &&
+                Vector3.Distance(nodes[3].transform.position - nodes[2].transform.position, q0 - p0) < 1e-4f, "Group detach did not move parts together");
+            await Apply("reset_objects", Ids("A"));
+            // Explode: one assembly separates its parts away from their shared barycenter.
+            var explode = Ids("A"); explode["mode"] = "explode";
+            await Apply("detach_for_inspection", explode);
+            Vector3 barycenter = (p0 + q0) / 2;
+            Require(service.IsDetached("P") && service.IsDetached("Q") &&
+                Vector3.Distance(nodes[2].transform.position, barycenter) > Vector3.Distance(p0, barycenter) + 0.05f &&
+                Vector3.Distance(nodes[3].transform.position, barycenter) > Vector3.Distance(q0, barycenter) + 0.05f, "Explode did not separate parts from the barycenter");
+            var lone = Ids("P"); lone["mode"] = "explode";
+            Require(Code(await registry.ExecuteAsync("detach_for_inspection", await Arguments(lone))) == "INVALID_ARGUMENTS", "Explode accepted a single part");
+            Require(Code(await registry.ExecuteAsync("detach_for_inspection", await Arguments(Ids("R")))) == "INVALID_ARGUMENTS", "Root assembly detach accepted");
+            await Apply("reset_objects", Ids("A"));
+            Require(!service.IsDetached("P") && !service.IsDetached("Q") && nodes[2].transform.position == p0, "Reset did not undo explode");
+            var staleFocus = await Arguments(Ids("A")); service.Focus("O");
+            Require(Code(await registry.ExecuteAsync("focus_objects", staleFocus)) == "REVISION_CONFLICT", "Human focus change ignored");
+            await Apply("hide_objects", Ids("O"));
+            await Apply("clear_focus");
+            Require(!service.IsFocusActive && !nodes[4].activeInHierarchy, "Clear focus changed explicit hides");
+            await Apply("focus_objects", Ids("A"));
             var stale = await Arguments(Ids("Q")); service.Select("P");
             Require(Code(await registry.ExecuteAsync("select_objects", stale)) == "REVISION_CONFLICT", "Human selection change ignored");
             service.BeginMultiSelect();

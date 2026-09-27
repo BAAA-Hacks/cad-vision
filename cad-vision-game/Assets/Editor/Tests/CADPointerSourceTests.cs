@@ -88,6 +88,8 @@ public class CADPointerSourceTests
     [TearDown]
     public void TearDown()
     {
+        if (pointer != null)
+            Call(pointer, "OnDestroy"); // The gesture readout.
         if (menu != null && Get(menu, "panelRoot") is GameObject panel)
             Object.DestroyImmediate(panel);
         foreach (EventSystem es in Object.FindObjectsByType<EventSystem>(FindObjectsInactive.Include))

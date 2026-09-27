@@ -42,7 +42,7 @@ public partial class CADVisionManipulationService
         }
         internal Pose Root;
         internal readonly List<Pose> Poses = new List<Pose>();
-        internal string[] Selected, Detached;
+        internal string[] Selected, Detached, Focused;
         internal string Scope;
         internal bool Multi, Follows;
         public string Fingerprint { get; internal set; }
@@ -55,6 +55,7 @@ public partial class CADVisionManipulationService
             Root = modelRoot == null ? null : new CadenViewBackup.Pose(modelRoot),
             Selected = GetSelectedIds().OrderBy(id => id, StringComparer.Ordinal).ToArray(),
             Detached = detachedIds.OrderBy(id => id, StringComparer.Ordinal).ToArray(),
+            Focused = FocusIds.OrderBy(id => id, StringComparer.Ordinal).ToArray(),
             Scope = CurrentScopeId, Multi = IsMultiSelectActive, Follows = viewFollowsScope
         };
         using var bytes = new MemoryStream();
@@ -63,6 +64,7 @@ public partial class CADVisionManipulationService
             writer.Write(state.Scope ?? ""); writer.Write(state.Multi); writer.Write(state.Follows);
             writer.Write(state.Selected.Length); foreach (var id in state.Selected) writer.Write(id);
             writer.Write(state.Detached.Length); foreach (var id in state.Detached) writer.Write(id);
+            writer.Write(state.Focused.Length); foreach (var id in state.Focused) writer.Write(id);
             state.Root?.Write(writer);
             foreach (var id in ids)
             {
@@ -85,6 +87,7 @@ public partial class CADVisionManipulationService
         foreach (var id in state.Selected) AddToSelection(id);
         if (state.Multi) BeginMultiSelect(); else EndMultiSelect();
         viewFollowsScope = state.Follows;
+        Focus(state.Focused);
     }
 
     public void SetCadenIsolation(IEnumerable<string> visibleIds, IEnumerable<string> cadIds)
@@ -115,30 +118,91 @@ public partial class CADVisionManipulationService
         }
     }
 
-    public void DetachCadenForInspection(string id, Vector3 viewerRight)
+    /// <summary>
+    /// Detaches targets and moves them together to the viewer's right, clear of their assemblies,
+    /// keeping their layout relative to each other. One target behaves as a single inspection detach.
+    /// </summary>
+    public void DetachCadenGroup(IEnumerable<string> ids, Vector3 viewerRight)
     {
-        if (IsDetached(id)) return; // Retries cannot keep pushing the object further away.
-        if (!TryGetLiveObject(id, out var obj) || GetParentId(id) == null)
-            throw new InvalidOperationException("Only a mapped object with a CAD parent can be detached.");
-        if (!TryGetLiveObject(GetParentId(id), out var parent)) throw new InvalidOperationException("CAD parent is unavailable.");
-        Bounds BoundsOf(CADObject target)
-        {
-            var renderers = target.GetComponentsInChildren<Renderer>(true).Where(r => r.GetComponent<CADVisualOverlay>() == null).ToArray();
-            if (renderers.Length == 0) throw new InvalidOperationException("Inspection placement requires geometry bounds.");
-            var bounds = renderers[0].bounds;
-            foreach (var renderer in renderers.Skip(1)) bounds.Encapsulate(renderer.bounds);
-            return bounds;
-        }
-        var partBounds = BoundsOf(obj); var parentBounds = BoundsOf(parent);
+        // Already detached is a no-op, so retries cannot keep pushing objects further away.
+        var targets = CadenTopmost(ids).Where(id => !IsDetached(id)).ToArray();
+        if (targets.Length == 0) return;
         var right = viewerRight.normalized;
         if (!float.IsFinite(right.x) || !float.IsFinite(right.y) || !float.IsFinite(right.z) || right.sqrMagnitude < 0.5f)
             throw new InvalidOperationException("A valid headset right direction is required.");
+        Bounds? group = null, parents = null;
+        foreach (var id in targets)
+        {
+            var (part, parent) = CadenDetachable(id);
+            group = Encapsulate(group, CadenBounds(part)); parents = Encapsulate(parents, CadenBounds(parent));
+        }
         float Extent(Bounds b) => Vector3.Dot(b.extents, new Vector3(Mathf.Abs(right.x), Mathf.Abs(right.y), Mathf.Abs(right.z)));
-        float distance = Mathf.Max(0.1f, Vector3.Dot(parentBounds.center - partBounds.center, right) + Extent(parentBounds) + Extent(partBounds) + 0.1f);
+        float distance = Mathf.Max(0.1f, Vector3.Dot(parents.Value.center - group.Value.center, right) + Extent(parents.Value) + Extent(group.Value) + 0.1f);
         if (!float.IsFinite(distance) || distance > 2f)
             throw new InvalidOperationException("Inspection offset would exceed two world metres; reduce model review scale first.");
-        if (!Detach(id)) throw new InvalidOperationException("Detach failed.");
-        SetObjectWorldPose(id, obj.transform.position + right * distance, obj.transform.rotation);
+        DetachAndOffset(targets.ToDictionary(id => id, _ => right * distance));
+    }
+
+    /// <summary>
+    /// Explodes targets apart: each moves away from their shared barycenter (mean geometry centre), its
+    /// distance from it scaled by 1 + spread. A target sitting on the barycenter is detached but stays put.
+    /// </summary>
+    public void ExplodeCaden(IEnumerable<string> ids, float spread)
+    {
+        if (!float.IsFinite(spread) || spread <= 0f) throw new InvalidOperationException("Explode spread must be positive.");
+        // Already detached objects keep their pose; with fewer than two left there is nothing to separate.
+        var targets = CadenTopmost(ids).Where(id => !IsDetached(id)).ToArray();
+        if (targets.Length < 2) return;
+        var centers = targets.ToDictionary(id => id, id => CadenBounds(CadenDetachable(id).Part).center);
+        var barycenter = centers.Values.Aggregate(Vector3.zero, (sum, center) => sum + center) / centers.Count;
+        var offsets = centers.ToDictionary(pair => pair.Key, pair => (pair.Value - barycenter) * spread);
+        foreach (var offset in offsets.Values)
+            if (!float.IsFinite(offset.x) || !float.IsFinite(offset.y) || !float.IsFinite(offset.z) || offset.magnitude > 2f)
+                throw new InvalidOperationException("Explode offset would exceed two world metres; lower spread or reduce model review scale first.");
+        DetachAndOffset(offsets);
+    }
+
+    private (CADObject Part, CADObject Parent) CadenDetachable(string id)
+    {
+        if (!TryGetLiveObject(id, out var part) || GetParentId(id) == null)
+            throw new InvalidOperationException("Only a mapped object with a CAD parent can be detached: " + id);
+        if (!TryGetLiveObject(GetParentId(id), out var parent)) throw new InvalidOperationException("CAD parent is unavailable: " + id);
+        return (part, parent);
+    }
+
+    // Drops targets whose logical ancestor is also a target: moving the ancestor already carries them.
+    private string[] CadenTopmost(IEnumerable<string> ids)
+    {
+        var set = new HashSet<string>(ids, StringComparer.Ordinal);
+        bool HasTargetAncestor(string id)
+        {
+            for (var parent = GetParentId(id); parent != null; parent = GetParentId(parent)) if (set.Contains(parent)) return true;
+            return false;
+        }
+        return set.Where(id => !HasTargetAncestor(id)).OrderBy(id => id, StringComparer.Ordinal).ToArray();
+    }
+
+    private void DetachAndOffset(IReadOnlyDictionary<string, Vector3> offsets)
+    {
+        foreach (var pair in offsets)
+        {
+            if (!TryGetLiveObject(pair.Key, out var obj) || !Detach(pair.Key)) throw new InvalidOperationException("Detach failed: " + pair.Key);
+            SetObjectWorldPose(pair.Key, obj.transform.position + pair.Value, obj.transform.rotation);
+        }
+    }
+
+    private static Bounds CadenBounds(CADObject target)
+    {
+        var renderers = target.GetComponentsInChildren<Renderer>(true).Where(r => r.GetComponent<CADVisualOverlay>() == null).ToArray();
+        if (renderers.Length == 0) throw new InvalidOperationException("Inspection placement requires geometry bounds.");
+        var bounds = renderers[0].bounds;
+        foreach (var renderer in renderers.Skip(1)) bounds.Encapsulate(renderer.bounds);
+        return bounds;
+    }
+    private static Bounds Encapsulate(Bounds? total, Bounds next)
+    {
+        if (total == null) return next;
+        var bounds = total.Value; bounds.Encapsulate(next); return bounds;
     }
 
     public void ResetCadenObjects(IEnumerable<string> ids)

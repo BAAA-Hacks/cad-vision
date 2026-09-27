@@ -1,6 +1,6 @@
 // Wireframe-mode surface (Built-in Render Pipeline, Quest-safe): see-through faces.
 // Pass 1 writes depth only, so the nearest face still hides the faces behind it, hidden edges
-// can be drawn faintly behind it, and the selection outline hull keeps its rim. Pass 2 blends a
+// can be drawn faintly behind it (selection edges too). Pass 2 blends a
 // faint pale color over whatever is behind (sky, floor, passthrough). The alpha channel
 // accumulates as "over", so passthrough stays visible through the faces.
 // Queue 2980: after the skybox and opaque scene, before UI canvases (3000), so menus are never

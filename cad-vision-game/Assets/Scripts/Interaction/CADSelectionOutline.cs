@@ -3,22 +3,30 @@ using UnityEngine;
 using UnityEngine.Rendering;
 
 /// <summary>
-/// Neon outline for selected CAD objects instead of the whole-object color tint. Imported
-/// materials are never touched: each selected renderer gets a child "shell" (same mesh, normals
-/// averaged across split vertices) drawn with an inverted-hull shader, so only a rim around the
-/// silhouette shows. One extra unlit draw per selected renderer; no extra cameras or passes.
+/// Selection outline for CAD objects instead of the whole-object color tint: one continuous
+/// rim around the whole selection's silhouette (a selected assembly gets a single outline, not
+/// lines between its parts). Imported materials are never touched: each selected renderer gets
+/// a child "__CADOutline" overlay (the same mesh with normals averaged across split vertices)
+/// drawn with two materials in two queues:
+/// 1. CADSelectionMask (2988): marks the selection's silhouette in stencil bit 2.
+/// 2. CADSelectionOutline (2990): back faces pushed out by a constant on-screen width, drawn
+///    only outside that mask, and pushed slightly away from the eye so the rim is never
+///    coplanar with (and never z-fights) touching parts or its own surfaces.
+/// Both run after every CAD layer (surfaces, edges, see-through Wireframe / ghost surfaces)
+/// and before UI, in every display mode.
 ///
-/// Presentation only: reads the service's selection each frame, owns nothing else. Shells are
-/// children of the CAD renderers, so they follow moves, hide/isolate and model replacement.
+/// Presentation only: reads the service's selection each frame, owns nothing else. Overlays
+/// are children of the CAD renderers, so they follow moves, hide/isolate and model replacement.
 /// </summary>
 [DisallowMultipleComponent]
 [RequireComponent(typeof(CADVisionManipulationService))]
 public class CADSelectionOutline : MonoBehaviour
 {
-    private const string ShaderResource = "CADVision/CADOutlineHull";
+    private const string MaskShaderResource = "CADVision/CADSelectionMask";
+    private const string ShaderResource = "CADVision/CADSelectionOutline";
     private const string ShellName = "__CADOutline";
 
-    [SerializeField] private Color outlineColor = new Color(0f, 0.9f, 1f, 1f);
+    [SerializeField] private Color outlineColor = new Color(0.16f, 0.86f, 0.86f, 1f); // Style guide accent.
     [Tooltip("Outline thickness as a fraction of the view height (constant on screen at any distance).")]
     [SerializeField, Range(0.0005f, 0.02f)] private float outlineWidth = 0.004f;
 
@@ -30,7 +38,9 @@ public class CADSelectionOutline : MonoBehaviour
     private static readonly Dictionary<Mesh, Mesh> ShellMeshes = new();
 
     private CADVisionManipulationService manipulationService;
-    private Material material;
+    private Material material;     // The rim.
+    private Material maskMaterial; // The silhouette stencil mask.
+    private Material[] materials;  // { mask, rim }: one draw each, in their own queues.
     private readonly Dictionary<string, List<GameObject>> shellsById = new();
     private readonly Dictionary<string, CADObject> outlinedObjects = new();
     private readonly HashSet<string> selectedNow = new();
@@ -56,34 +66,25 @@ public class CADSelectionOutline : MonoBehaviour
 
     private bool showOutlines = true;
 
-    /// <summary>
-    /// Draw order of the outline hull (-1 = the shader's Geometry+10). The hull needs the
-    /// selected surfaces' depth before it; CADDisplayModeController moves it after its
-    /// see-through Wireframe surfaces.
-    /// </summary>
-    public int RenderQueue
-    {
-        get => material != null ? material.renderQueue : -1;
-        set
-        {
-            if (material != null)
-                material.renderQueue = value;
-        }
-    }
+    /// <summary>Draw order of the outline rim: after every CAD layer, before UI (the shader's queue).</summary>
+    public int RenderQueue => material != null ? material.renderQueue : -1;
 
     private void Awake()
     {
         manipulationService = GetComponent<CADVisionManipulationService>();
 
         Shader shader = Resources.Load<Shader>(ShaderResource);
-        if (shader == null || !shader.isSupported)
+        Shader maskShader = Resources.Load<Shader>(MaskShaderResource);
+        if (shader == null || !shader.isSupported || maskShader == null || !maskShader.isSupported)
         {
-            Debug.LogWarning($"[CADSelectionOutline] Outline shader '{ShaderResource}' unavailable; keeping color tint.");
+            Debug.LogWarning($"[CADSelectionOutline] Outline shaders unavailable; keeping color tint.");
             enabled = false;
             return;
         }
 
         material = new Material(shader) { name = "CAD Selection Outline", enableInstancing = true };
+        maskMaterial = new Material(maskShader) { name = "CAD Selection Mask", enableInstancing = true };
+        materials = new[] { maskMaterial, material };
     }
 
     private void OnEnable()
@@ -103,6 +104,8 @@ public class CADSelectionOutline : MonoBehaviour
     {
         if (material != null)
             DestroySafe(material);
+        if (maskMaterial != null)
+            DestroySafe(maskMaterial);
     }
 
     // LateUpdate: after this frame's selection changes (pointer, menu, service calls).
@@ -168,7 +171,7 @@ public class CADSelectionOutline : MonoBehaviour
             shell.AddComponent<CADVisualOverlay>();
             shell.AddComponent<MeshFilter>().sharedMesh = shellMesh;
             var renderer = shell.AddComponent<MeshRenderer>();
-            renderer.sharedMaterial = material;
+            renderer.sharedMaterials = materials; // Mask, then rim (separate queues).
             renderer.shadowCastingMode = ShadowCastingMode.Off;
             renderer.receiveShadows = false;
             renderer.lightProbeUsage = LightProbeUsage.Off;

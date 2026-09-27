@@ -106,7 +106,7 @@ public class CADMainMenuInputTests
     [Test]
     public void ClosesTheSameInstanceOpenedElsewhere()
     {
-        menu.ShowMainMenu(); // e.g. from the context menu's "Main Menu" entry.
+        menu.ShowMainMenu(); // e.g. from the context menu's "Main menu" entry.
         GameObject panel = menu.PanelTransform.gameObject;
         Press();
         Assert.That(menu.IsOpen, Is.False);

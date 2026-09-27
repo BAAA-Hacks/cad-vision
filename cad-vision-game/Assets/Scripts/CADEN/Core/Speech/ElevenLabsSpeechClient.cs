@@ -31,9 +31,13 @@ namespace Core.Speech
     {
         Task<byte[]> SynthesizeAsync(string text, CancellationToken cancellation = default);
     }
+    public interface IStreamingSpeechClient
+    {
+        Task StreamAsync(string text, Func<byte[], CancellationToken, Task> receive, CancellationToken cancellation);
+    }
 
     // Returns mono signed 16-bit little-endian PCM at 24 kHz. Playback belongs to the host.
-    public sealed class ElevenLabsSpeechClient : ISpeechClient
+    public sealed class ElevenLabsSpeechClient : ISpeechClient, IStreamingSpeechClient
     {
         private readonly HttpClient http;
         private readonly ElevenLabsSettings settings;
@@ -42,6 +46,16 @@ namespace Core.Speech
 
         public async Task<byte[]> SynthesizeAsync(string text, CancellationToken cancellation = default)
         {
+            using var audio = new MemoryStream();
+            await ReadAudioAsync(text, (chunk, token) => { audio.Write(chunk, 0, chunk.Length); return Task.CompletedTask; }, cancellation, false).ConfigureAwait(false);
+            return audio.ToArray();
+        }
+
+        public Task StreamAsync(string text, Func<byte[], CancellationToken, Task> receive, CancellationToken cancellation)
+            => ReadAudioAsync(text, receive, cancellation, true);
+
+        private async Task ReadAudioAsync(string text, Func<byte[], CancellationToken, Task> receive, CancellationToken cancellation, bool streaming)
+        {
             if (string.IsNullOrWhiteSpace(text)) throw new ArgumentException("Speech text is empty.");
             if (text.Length > 5000) throw new ArgumentException("Speech exceeds the 5,000-character desktop limit; the full answer remains in chat.");
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
@@ -49,7 +63,7 @@ namespace Core.Speech
             try
             {
                 using var request = new HttpRequestMessage(HttpMethod.Post,
-                    "https://api.elevenlabs.io/v1/text-to-speech/" + Uri.EscapeDataString(settings.VoiceId) + "?output_format=pcm_24000");
+                    "https://api.elevenlabs.io/v1/text-to-speech/" + Uri.EscapeDataString(settings.VoiceId) + (streaming ? "/stream" : "") + "?output_format=pcm_24000");
                 request.Headers.Add("xi-api-key", settings.ApiKey);
                 request.Content = new StringContent(JsonConvert.SerializeObject(new { text, model_id = settings.Model }), Encoding.UTF8, "application/json");
                 using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
@@ -67,18 +81,20 @@ namespace Core.Speech
                     throw new HttpRequestException("ELEVENLABS_HTTP_" + (int)response.StatusCode + ": " + guidance);
                 }
                 using var stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
-                using var audio = new MemoryStream();
+                if (response.Content.Headers.ContentType?.MediaType == "application/json") throw new InvalidDataException("ELEVENLABS_INVALID_AUDIO: expected PCM.");
+                long total = 0;
                 var buffer = new byte[8192];
                 int count;
                 while ((count = await stream.ReadAsync(buffer, 0, buffer.Length, timeout.Token).ConfigureAwait(false)) != 0)
                 {
-                    if (audio.Length + count > 24000 * 2 * 300) throw new InvalidDataException("ELEVENLABS_AUDIO_TOO_LARGE: audio exceeds five minutes.");
-                    audio.Write(buffer, 0, count);
+                    total += count;
+                    if (total > 24000 * 2 * 300) throw new InvalidDataException("ELEVENLABS_AUDIO_TOO_LARGE: audio exceeds five minutes.");
+                    var chunk = new byte[count]; Buffer.BlockCopy(buffer, 0, chunk, 0, count);
+                    await receive(chunk, timeout.Token).ConfigureAwait(false);
                 }
                 timeout.Token.ThrowIfCancellationRequested();
-                if (audio.Length == 0 || audio.Length % 2 != 0 || response.Content.Headers.ContentType?.MediaType == "application/json")
+                if (total == 0 || total % 2 != 0)
                     throw new InvalidDataException("ELEVENLABS_INVALID_AUDIO: expected nonempty 16-bit PCM audio.");
-                return audio.ToArray();
             }
             catch (OperationCanceledException) when (!cancellation.IsCancellationRequested)
             { throw new TimeoutException("ELEVENLABS_TIMEOUT: speech generation exceeded " + settings.TimeoutSeconds + " seconds."); }

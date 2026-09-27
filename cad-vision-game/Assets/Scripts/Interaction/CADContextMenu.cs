@@ -42,8 +42,9 @@ using UnityEngine.UI;
 /// The picking and model menus open when their mode starts; if another menu (e.g. the Main
 /// Menu) takes over while the mode lasts, they reopen only once no other menu is open.
 ///
-/// Placement: every variant sits above its target's visible bounds (object, selection or
-/// model; never a Transform origin), via CADMenuPanel.PlaceAboveBounds, facing the user.
+/// Placement: every variant opens beside its target's visible bounds (object, selection or
+/// model; never a Transform origin) so the part never blocks it, at least
+/// CADMenuPanel.MinMenuDistance from the user, via CADMenuPanel.PlaceBesideBounds.
 /// </summary>
 [DisallowMultipleComponent]
 [RequireComponent(typeof(CADVisionManipulationService))]
@@ -53,45 +54,40 @@ public class CADContextMenu : MonoBehaviour
     {
         EnterAssembly, Focus, DetachOrReattach, ResetObject, ResetAssembly, MultiSelect, MainMenu, Close,
         Done, FocusSelection, ResetSelected, EditSelection, ClearSelection,
-        ModelDone, ResetScale, ResetModel, ExitAssembly,
+        ModelDone, ResetScale, ResetModel, ExitAssembly, ResetSize,
     }
 
     [Header("Placement")]
     [Tooltip("Re-face the headset only after it moves this far while the menu is open (m).")]
     [SerializeField, Min(0.05f)] private float refaceHeadMovement = 0.4f;
 
-    [Header("Style")]
-    [SerializeField] private Color panelColor = new Color(0.10f, 0.11f, 0.14f, 0.96f);
-    [SerializeField] private Color borderColor = new Color(0.55f, 0.85f, 1f, 1f);
-    [SerializeField] private Color buttonColor = new Color(0.30f, 0.33f, 0.40f, 1f);
-    [SerializeField] private Color textColor = Color.white;
-
-    // Layout in canvas units (1 unit = 1 mm).
-    private const float PanelWidth = 260f;
-    private const float TitleHeight = 40f;
-    private const float ScopeHeight = 24f;
-    private const float SectionGap = 20f; // Separates the hierarchy section from the actions.
-    private const float ButtonHeight = 44f;
+    // Layout in canvas units (1 unit = 1 mm); style guide sizes (CADMenuPanel).
+    private const float PanelWidth = 320f;
+    private const float TitleHeight = 36f;
+    private const float ScopeHeight = 26f;
+    private const float SectionGap = CADMenuPanel.SectionSpacing; // Separates the hierarchy section from the actions.
+    private const float ButtonHeight = CADMenuPanel.ControlHeight;
 
     private static readonly Dictionary<MenuAction, string> Labels = new()
     {
-        { MenuAction.EnterAssembly, "Enter Assembly" },
+        { MenuAction.EnterAssembly, "Enter assembly" },
         { MenuAction.Focus, "Focus" },
         { MenuAction.DetachOrReattach, "Detach" },
-        { MenuAction.ResetObject, "Reset Object" },
-        { MenuAction.ResetAssembly, "Reset Assembly" },
-        { MenuAction.MultiSelect, "Multi-Select" },
-        { MenuAction.MainMenu, "Main Menu" },
+        { MenuAction.ResetObject, "Reset part" },
+        { MenuAction.ResetSize, "Reset size" },
+        { MenuAction.ResetAssembly, "Reset assembly" },
+        { MenuAction.MultiSelect, "Multi-select" },
+        { MenuAction.MainMenu, "Main menu" },
         { MenuAction.Close, "Close" },
         { MenuAction.Done, "Done" },
-        { MenuAction.FocusSelection, "Focus Selection" },
-        { MenuAction.ResetSelected, "Reset Selected" },
-        { MenuAction.EditSelection, "Edit Selection" },
-        { MenuAction.ClearSelection, "Clear Selection" },
+        { MenuAction.FocusSelection, "Focus selection" },
+        { MenuAction.ResetSelected, "Reset selected" },
+        { MenuAction.EditSelection, "Edit selection" },
+        { MenuAction.ClearSelection, "Clear selection" },
         { MenuAction.ModelDone, "Done" },
-        { MenuAction.ResetScale, "Reset Scale" },
-        { MenuAction.ResetModel, "Reset Model" },
-        { MenuAction.ExitAssembly, "Exit Assembly" },
+        { MenuAction.ResetScale, "Reset all sizes" },
+        { MenuAction.ResetModel, "Reset everything" },
+        { MenuAction.ExitAssembly, "Exit assembly" },
     };
 
     private static readonly Dictionary<MenuAction, string> Tooltips = new()
@@ -99,18 +95,19 @@ public class CADContextMenu : MonoBehaviour
         { MenuAction.EnterAssembly, "Inspect and interact with this assembly's children." },
         { MenuAction.Focus, "Emphasize this selection and ghost the rest of the model." },
         { MenuAction.DetachOrReattach, "Move this part independently from its assembly." },
-        { MenuAction.ResetObject, "Restore this object to its original assembly transform." },
-        { MenuAction.ResetAssembly, "Restore this assembly and its parts to their original transforms." },
+        { MenuAction.ResetObject, "Put this back where it was: original position, rotation and size." },
+        { MenuAction.ResetSize, "Back to the original size. It stays where it is." },
+        { MenuAction.ResetAssembly, "Put the assembly you're in and all its parts back: original positions, rotations and sizes." },
         { MenuAction.MultiSelect, "Select multiple parts and move them together." },
         { MenuAction.MainMenu, "Open the main menu." },
         { MenuAction.FocusSelection, "Emphasize the selection and ghost the rest of the model." },
-        { MenuAction.ResetSelected, "Restore the selected objects to their original transforms." },
+        { MenuAction.ResetSelected, "Put the selected parts back: original positions, rotations and sizes." },
         { MenuAction.EditSelection, "Add or remove parts from this selection." },
         { MenuAction.ClearSelection, "Deselect everything." },
         { MenuAction.Done, "Finish picking; the selection stays." },
         { MenuAction.ModelDone, "Stop manipulating the whole model." },
-        { MenuAction.ResetScale, "Restore the original scale without changing position or rotation." },
-        { MenuAction.ResetModel, "Restore the whole model and every part to the review pose." },
+        { MenuAction.ResetScale, "Undo all resizing of the model and its parts. Nothing moves." },
+        { MenuAction.ResetModel, "Undo every change: all parts back in place, the model back in front of you at its original size." },
         { MenuAction.ExitAssembly, "Go up one assembly level." },
     };
 
@@ -260,7 +257,7 @@ public class CADContextMenu : MonoBehaviour
         multiSignature = null;
         targetId = null;
         target = null;
-        titleText.text = "Manipulate Model";
+        titleText.text = "Manipulate model";
         Refresh(forceLayout: true);
         PlaceModel();
         panel.Show();
@@ -287,7 +284,7 @@ public class CADContextMenu : MonoBehaviour
         List<string> ids = manipulationService.GetSelectedIds();
         ids.Sort(StringComparer.Ordinal);
         string signature = string.Join("|", ids);
-        titleText.text = $"Multi-Select: {ids.Count} selected";
+        titleText.text = $"Multi-select: {ids.Count} selected";
         bool relaid = Refresh(forceLayout: forcePlace);
         if (forcePlace || relaid || signature != multiSignature)
         {
@@ -442,16 +439,20 @@ public class CADContextMenu : MonoBehaviour
         if (multiMode)
         {
             actions.Add(MenuAction.Done);
-            actions.Add(MenuAction.FocusSelection);
+            if (FocusApplies())
+                actions.Add(MenuAction.FocusSelection);
             actions.Add(MenuAction.ResetSelected);
+            AddResetAssembly(actions);
             actions.Add(MenuAction.ClearSelection);
             return actions;
         }
 
         if (groupMode)
         {
-            actions.Add(MenuAction.FocusSelection);
+            if (FocusApplies())
+                actions.Add(MenuAction.FocusSelection);
             actions.Add(MenuAction.ResetSelected);
+            AddResetAssembly(actions);
             actions.Add(MenuAction.EditSelection);
             actions.Add(MenuAction.ClearSelection);
             actions.Add(MenuAction.Close);
@@ -464,15 +465,26 @@ public class CADContextMenu : MonoBehaviour
         bool assembly = manipulationService.HasCadChildren(targetId);
         if (assembly && targetId != manipulationService.CurrentScopeId)
             actions.Add(MenuAction.EnterAssembly);
-        actions.Add(MenuAction.Focus);
+        if (FocusApplies())
+            actions.Add(MenuAction.Focus);
         if (manipulationService.IsDetached(targetId) || manipulationService.GetLogicalParentId(targetId) != null)
             actions.Add(MenuAction.DetachOrReattach);
-        actions.Add(assembly ? MenuAction.ResetAssembly : MenuAction.ResetObject);
+        actions.Add(MenuAction.ResetObject); // The selected part or assembly.
+        if (manipulationService.IsResized(targetId))
+            actions.Add(MenuAction.ResetSize);
+        AddResetAssembly(actions);
         actions.Add(MenuAction.MultiSelect);
         if (mainMenu != null)
             actions.Add(MenuAction.MainMenu);
         actions.Add(MenuAction.Close);
         return actions;
+    }
+
+    // Only inside an assembly: resets the assembly the user is in (the current scope).
+    private void AddResetAssembly(List<MenuAction> actions)
+    {
+        if (!manipulationService.IsAtRootScope)
+            actions.Add(MenuAction.ResetAssembly);
     }
 
     private static bool IsNavigation(MenuAction action) =>
@@ -513,9 +525,9 @@ public class CADContextMenu : MonoBehaviour
             scopeText.text = scope;
 
         bool focusHere = IsFocusOnTarget();
-        SetLabel(MenuAction.Focus, focusHere ? "Clear Focus" : Labels[MenuAction.Focus]);
+        SetLabel(MenuAction.Focus, focusHere ? "Clear focus" : Labels[MenuAction.Focus]);
         SetTooltip(MenuAction.Focus, focusHere ? ClearFocusTooltip : Tooltips[MenuAction.Focus]);
-        SetLabel(MenuAction.FocusSelection, focusHere ? "Clear Focus" : Labels[MenuAction.FocusSelection]);
+        SetLabel(MenuAction.FocusSelection, focusHere ? "Clear focus" : Labels[MenuAction.FocusSelection]);
         SetTooltip(MenuAction.FocusSelection, focusHere ? ClearFocusTooltip : Tooltips[MenuAction.FocusSelection]);
 
         if (targetId != null && !groupMode)
@@ -530,6 +542,18 @@ public class CADContextMenu : MonoBehaviour
         SetInteractable(MenuAction.ResetSelected, any);
         SetInteractable(MenuAction.ClearSelection, any);
         return relayout;
+    }
+
+    // Focus is offered only when it changes something: Clear focus while focused on the target,
+    // otherwise Focus only if it would ghost some other geometry.
+    private bool FocusApplies()
+    {
+        if (IsFocusOnTarget())
+            return true;
+        IEnumerable<string> targets = multiMode || groupMode
+            ? manipulationService.GetSelectedLogicalRoots()
+            : targetId != null ? new[] { targetId } : Array.Empty<string>();
+        return manipulationService.WouldFocusGhostAnything(targets);
     }
 
     // Focus is "on" the target when every target object is inside the current focus.
@@ -563,18 +587,18 @@ public class CADContextMenu : MonoBehaviour
             CADMenuPanel.SetInteractable(button, value);
     }
 
-    // ---------------- Placement (always above the target's visible bounds) ----------------
+    // ---------------- Placement (always beside the target's visible bounds) ----------------
 
     private void PlaceObject(CADContextMenuRequest? request)
     {
         if (panel.WasMoved)
             return;
         if (manipulationService.TryGetObjectBounds(targetId, out Bounds bounds))
-            PlaceAbove(bounds);
+            PlaceBeside(bounds);
         else if (request.HasValue)
-            PlaceAbove(new Bounds(request.Value.AnchorPoint, Vector3.zero)); // No visible geometry.
+            PlaceBeside(new Bounds(request.Value.AnchorPoint, Vector3.zero)); // No visible geometry.
         else if (target != null)
-            PlaceAbove(new Bounds(target.transform.position, Vector3.zero));
+            PlaceBeside(new Bounds(target.transform.position, Vector3.zero));
     }
 
     // The selected objects' combined visible bounds; with nothing visible, in front of the head.
@@ -583,7 +607,7 @@ public class CADContextMenu : MonoBehaviour
         if (panel.WasMoved)
             return;
         if (manipulationService.TryGetSelectionBounds(out Bounds bounds))
-            PlaceAbove(bounds);
+            PlaceBeside(bounds);
         else
             PlaceInFrontOfHead();
     }
@@ -595,15 +619,15 @@ public class CADContextMenu : MonoBehaviour
             return;
         Transform head = Head();
         if (manipulationService.TryGetModelBounds(out Bounds bounds) && (head == null || !bounds.Contains(head.position)))
-            PlaceAbove(bounds);
+            PlaceBeside(bounds);
         else
             PlaceInFrontOfHead();
     }
 
-    private void PlaceAbove(Bounds bounds)
+    private void PlaceBeside(Bounds bounds)
     {
         Transform head = Head();
-        panel.PlaceAboveBounds(bounds, head);
+        panel.PlaceBesideBounds(bounds, head);
         if (head != null)
             headPositionAtFacing = head.position;
     }
@@ -616,7 +640,7 @@ public class CADContextMenu : MonoBehaviour
         Vector3 forward = Vector3.ProjectOnPlane(head.forward, Vector3.up);
         if (forward.sqrMagnitude < 1e-6f)
             forward = Vector3.forward;
-        panelRoot.transform.position = head.position + forward.normalized * 0.8f;
+        panelRoot.transform.position = head.position + forward.normalized * Mathf.Max(0.8f, CADMenuPanel.MinMenuDistance);
         panel.FaceHead(head);
         headPositionAtFacing = head.position;
     }
@@ -624,11 +648,6 @@ public class CADContextMenu : MonoBehaviour
     private static Transform Head() => Camera.main != null ? Camera.main.transform : null;
 
     // ---------------- Actions ----------------
-
-    // The target itself if it is an assembly, else the assembly that logically contains it.
-    private string ResetAssemblyTarget() =>
-        manipulationService.HasCadChildren(targetId) ? targetId
-            : manipulationService.GetLogicalParentId(targetId);
 
     private void OnAction(MenuAction action)
     {
@@ -639,7 +658,8 @@ public class CADContextMenu : MonoBehaviour
 
         // Object menu: every action closes it (most change selection, scope or pose anyway).
         // Picking menu: stays open for Focus / Reset; model menu for its resets.
-        bool keepOpen = (multiMode && (action == MenuAction.ResetSelected || action == MenuAction.FocusSelection)) ||
+        bool keepOpen = (multiMode && (action == MenuAction.ResetSelected || action == MenuAction.ResetAssembly ||
+                action == MenuAction.FocusSelection)) ||
             (modelMode && (action == MenuAction.ResetModel || action == MenuAction.ResetScale));
         if (!keepOpen)
             Hide($"action {action}");
@@ -652,13 +672,25 @@ public class CADContextMenu : MonoBehaviour
                 else manipulationService.Focus(id);
                 break;
             case MenuAction.DetachOrReattach:
-                if (detached) manipulationService.Reattach(id);
-                else manipulationService.Detach(id);
+                if (detached)
+                    manipulationService.Reattach(id);
+                else if (manipulationService.Detach(id) && !manipulationService.IsAtRootScope)
+                {
+                    // The part no longer belongs to the assembly being worked in: step out one
+                    // level (which clears the selection) and keep the detached part selected.
+                    manipulationService.ExitScope();
+                    manipulationService.Select(id);
+                }
                 break;
-            case MenuAction.ResetObject: manipulationService.ResetObject(id); break;
+            case MenuAction.ResetSize: manipulationService.ResetObjectScale(id); break;
+            case MenuAction.ResetObject:
+                // An assembly resets with everything in it.
+                if (manipulationService.HasCadChildren(id)) manipulationService.ResetAssembly(id);
+                else manipulationService.ResetObject(id);
+                break;
             case MenuAction.ResetAssembly:
-                string assemblyId = ResetAssemblyTarget();
-                if (assemblyId != null) manipulationService.ResetAssembly(assemblyId);
+                if (!manipulationService.IsAtRootScope)
+                    manipulationService.ResetAssembly(manipulationService.CurrentScopeId);
                 break;
             case MenuAction.MultiSelect: manipulationService.BeginMultiSelect(); break; // Selection menu opens next frame.
             case MenuAction.MainMenu:
@@ -674,7 +706,7 @@ public class CADContextMenu : MonoBehaviour
             case MenuAction.EditSelection: manipulationService.BeginMultiSelect(); break; // Picking menu opens next frame.
             case MenuAction.ClearSelection: manipulationService.EndMultiSelect(clearSelection: true); break;
             case MenuAction.ModelDone: manipulationService.EndModelManipulation(); break;
-            case MenuAction.ResetScale: manipulationService.ResetModelScale(); break;
+            case MenuAction.ResetScale: manipulationService.ResetAllScales(); break;
             case MenuAction.ResetModel: manipulationService.ResetModel(); break;
             case MenuAction.ExitAssembly: manipulationService.ExitScope(); break;
         }
@@ -692,29 +724,26 @@ public class CADContextMenu : MonoBehaviour
 
     // ---------------- Construction ----------------
 
-    private CADMenuStyle Style => new CADMenuStyle
-    {
-        PanelColor = panelColor,
-        BorderColor = borderColor,
-        ButtonColor = buttonColor,
-        SelectedButtonColor = CADMenuStyle.Default.SelectedButtonColor,
-        TextColor = textColor,
-    };
-
     private void BuildPanel()
     {
-        panel = new CADMenuPanel("CAD Context Menu", PanelWidth, Style);
+        panel = new CADMenuPanel("CAD Context Menu", PanelWidth, CADMenuStyle.Default);
         panelRoot = panel.Root;
+        // Corner resize: one size for every context menu (the panel is reused), kept for the session.
+        panel.EnableResize(() => panelRoot.transform.localScale.x,
+            size => panelRoot.transform.localScale = Vector3.one * size);
         panel.CloseRequested = () => Hide("another menu opened");
 
-        titleText = panel.CreateText("Title", "", CADMenuPanel.FontSize, FontStyle.Bold);
-        scopeText = panel.CreateText("Scope", "Scope: Full model", CADMenuPanel.FontSize - 4);
-        scopeText.color = new Color(textColor.r, textColor.g, textColor.b, 0.7f); // Secondary.
+        // Header: title, then the quiet scope line (the hierarchy section starts here).
+        titleText = panel.CreateText("Title", "", CADMenuPanel.TitleSize, FontStyle.Bold, TextAnchor.MiddleLeft);
+        scopeText = panel.CreateText("Scope", "Scope: Full model", CADMenuPanel.SecondarySize, FontStyle.Normal,
+            TextAnchor.MiddleLeft, panel.SecondaryTextColor);
         foreach (KeyValuePair<MenuAction, string> entry in Labels)
         {
             MenuAction action = entry.Key;
             Tooltips.TryGetValue(action, out string tooltip);
-            buttons[action] = panel.CreateButton(entry.Value, () => OnAction(action), tooltip);
+            // "Done" is the one dominant action of the picking and model menus.
+            bool primary = action == MenuAction.Done || action == MenuAction.ModelDone;
+            buttons[action] = panel.CreateButton(entry.Value, () => OnAction(action), tooltip, primary);
         }
 
         Refresh(forceLayout: true);

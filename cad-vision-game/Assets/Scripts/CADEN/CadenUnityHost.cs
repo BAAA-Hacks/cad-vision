@@ -30,11 +30,20 @@ namespace CADEN.Unity
         public string ConfigurationDirectory;
         public TextAsset SystemPrompt;
         public UnityEvent<string> AnswerReceived = new UnityEvent<string>();
+        public UnityEvent<string> InputReceived = new UnityEvent<string>();
         public UnityEvent<string> StatusChanged = new UnityEvent<string>();
         public UnityEvent<string> ErrorReceived = new UnityEvent<string>();
         public string Status { get; private set; } = "Waiting for model";
         public ToolRegistry Registry { get; private set; }
         public bool Ready => session != null;
+        public ChatSession Session => session;
+        public bool IsBusy => turn != null;
+        public bool IsSpeaking => audioSource != null && audioSource.isPlaying;
+        private readonly float[] levelSamples = new float[256];
+        private const int SpeechStallMilliseconds = 10000;
+        private const double SpeechTailPaddingSeconds = 0.3;
+        public string ConfigurationPath => ResolveConfigurationDirectory();
+        public CADVisionRuntime ModelRuntime => runtime;
         private readonly HttpClient http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
         private readonly object logGate = new object();
         private readonly SemaphoreSlim audioGate = new SemaphoreSlim(1, 1);
@@ -171,11 +180,13 @@ namespace CADEN.Unity
             var pending = CancellationTokenSource.CreateLinkedTokenSource(modelLifetime.Token);
             turn = pending;
             var voice = speech == null ? null : new StreamingSpeechTurn(speech, PlayPcmAsync,
-                ex => mainContext.Post(_ => { if (this != null) Report(ex, "unity.speech"); }, null), pending.Token);
+                ex => mainContext.Post(_ => { if (this != null) Report(ex, "unity.speech"); }, null), pending.Token,
+                speech is IStreamingSpeechClient streaming ? (text, token) => SpeakStreamedAsync(streaming, text, token) : null);
             speaking = voice;
             SetStatus("CADEN is thinking");
             try
             {
+                InputReceived.Invoke(prompt);
                 string answer = await current.SendAsync(prompt, pending.Token, voice == null ? null : voice.Receive);
                 pending.Token.ThrowIfCancellationRequested();
                 if (!ReferenceEquals(session, current)) throw new OperationCanceledException();
@@ -187,7 +198,15 @@ namespace CADEN.Unity
                 if (!(ex is OperationCanceledException) && this != null) Report(ex, "unity.send");
                 throw;
             }
-            finally { if (ReferenceEquals(turn, pending)) turn = null; pending.Dispose(); }
+            finally
+            {
+                if (ReferenceEquals(turn, pending))
+                {
+                    turn = null;
+                    if (this != null && ReferenceEquals(session, current)) SetStatus("CADEN ready");
+                }
+                pending.Dispose();
+            }
         }
         public async void SendMessageToCaden(string prompt)
         {
@@ -196,6 +215,14 @@ namespace CADEN.Unity
             catch (Exception ex) { if (this != null) ErrorReceived.Invoke(DiagnosticLog.Redact(ex.Message)); }
         }
         public void CancelTurn() { turn?.Cancel(); StopSpeech(); }
+        /// <summary>RMS loudness (0..1) of the speech currently playing.</summary>
+        public float SpeechLevel()
+        {
+            if (!IsSpeaking) return 0;
+            audioSource.GetOutputData(levelSamples, 0);
+            float sum = 0; foreach (float s in levelSamples) sum += s * s;
+            return Mathf.Sqrt(sum / levelSamples.Length);
+        }
         public void StopSpeech() { speaking?.Cancel(); if (audioSource != null) audioSource.Stop(); }
         private async Task PlayPcmAsync(byte[] pcm, CancellationToken token)
         {
@@ -212,6 +239,77 @@ namespace CADEN.Unity
                 while (audioSource != null && audioSource.isPlaying) { token.ThrowIfCancellationRequested(); await Task.Delay(20, token); }
             }
             finally { if (audioSource != null) { audioSource.Stop(); audioSource.clip = null; } if (clip != null) Destroy(clip); audioGate.Release(); }
+        }
+        // One retry for a sentence that failed before any of it was heard; replaying after that would repeat words.
+        private async Task SpeakStreamedAsync(IStreamingSpeechClient client, string text, CancellationToken token)
+        {
+            bool started = false;
+            try { await StreamPcmAsync(client, text, token, () => started = true); }
+            catch (Exception ex) when (!started && !token.IsCancellationRequested && StreamingSpeechTurn.IsTransient(ex))
+            {
+                Debug.LogWarning("[CADEN] Speech failed before playback (" + DiagnosticLog.Redact(ex.Message) + "); retrying once.");
+                await StreamPcmAsync(client, text, token, null);
+            }
+        }
+        private async Task StreamPcmAsync(IStreamingSpeechClient client, string text, CancellationToken token, Action started)
+        {
+            await audioGate.WaitAsync(token);
+            using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(token);
+            var fifo = new PcmStreamBuffer();
+            AudioClip clip = null;
+            Task download = null;
+            // Written by the download thread; a stall watchdog ends the sentence instead of waiting out the full request timeout.
+            int lastArrival = Environment.TickCount;
+            void CheckStall()
+            {
+                if (!download.IsCompleted && Environment.TickCount - lastArrival > SpeechStallMilliseconds)
+                    throw new TimeoutException("ELEVENLABS_STALLED: no speech audio received for " + SpeechStallMilliseconds / 1000 + " seconds.");
+            }
+            try
+            {
+                async Task Produce()
+                {
+                    await client.StreamAsync(text, async (bytes, t) =>
+                    {
+                        lastArrival = Environment.TickCount;
+                        await fifo.AppendAsync(bytes, t).ConfigureAwait(false);
+                        lastArrival = Environment.TickCount;
+                    }, lifetime.Token).ConfigureAwait(false);
+                    fifo.Complete();
+                }
+                download = Produce();
+                // Start after 500ms (12,000 samples at 24kHz), or immediately for a completed shorter utterance.
+                while (fifo.Count < 12000 && !download.IsCompleted) { CheckStall(); await Task.Delay(10, lifetime.Token); }
+                if (download.IsCompleted) await download;
+                token.ThrowIfCancellationRequested();
+                if (this == null || audioSource == null) throw new OperationCanceledException();
+                const int clipSamples = 1024;
+                clip = AudioClip.Create("CADEN streaming speech", clipSamples, 1, 24000, true, fifo.Read);
+                audioSource.clip = clip; audioSource.loop = true; audioSource.Play();
+                started?.Invoke();
+                while (!fifo.Drained)
+                {
+                    token.ThrowIfCancellationRequested();
+                    if (download.IsCompleted) await download;
+                    // Only a starved buffer counts as a stall; a full one is just backpressure.
+                    if (fifo.Count == 0) CheckStall();
+                    await Task.Delay(10, lifetime.Token);
+                }
+                await download;
+                // The audio callback can consume ahead of the physical speaker. Drain Unity's DSP queue, plus the
+                // device output latency Unity doesn't report (Quest/Android), or the last syllable is cut off.
+                AudioSettings.GetDSPBufferSize(out int length, out int buffers);
+                double end = AudioSettings.dspTime + (double)length * buffers / AudioSettings.outputSampleRate + (double)clipSamples / 24000 + SpeechTailPaddingSeconds;
+                while (AudioSettings.dspTime < end) await Task.Delay(10, lifetime.Token);
+            }
+            finally
+            {
+                lifetime.Cancel();
+                if (audioSource != null) { audioSource.Stop(); audioSource.loop = false; audioSource.clip = null; }
+                if (clip != null) Destroy(clip);
+                if (download != null) { try { await download; } catch { /* Original failure/cancellation is reported by the speech queue. */ } }
+                audioGate.Release();
+            }
         }
         private DiagnosticReceipt Report(Exception ex, string operation)
         { var receipt = DiagnosticLog.Report(ex, operation); Debug.LogError(receipt.UserMessage); ErrorReceived.Invoke(receipt.UserMessage); return receipt; }

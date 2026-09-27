@@ -63,11 +63,13 @@ namespace CADEN.Unity
             Guard();
             if (Available) Observe();
             var ids = runtime.GetAllObjects();
+            var focused = service == null ? Array.Empty<string>() : service.FocusIds.Where(ids.ContainsKey).OrderBy(id => id, StringComparer.Ordinal).ToArray();
             var selected = service == null ? Array.Empty<string>() : service.GetSelectedIds().Where(ids.ContainsKey).ToArray();
             var detached = service == null ? Array.Empty<string>() : ids.Keys.Where(service.IsDetached).OrderBy(id => id, StringComparer.Ordinal).ToArray();
             return new JObject { ["viewSessionId"] = sessionId, ["revision"] = revision, ["modelRevision"] = modelRevision,
                 ["viewAvailable"] = Available, ["selectedObjectIds"] = new JArray(selected.Take(64)),
                 ["selectedObjectCount"] = selected.Length, ["selectionComplete"] = selected.Length <= 64,
+                ["focusedObjectIds"] = new JArray(focused.Take(64)), ["focusedObjectCount"] = focused.Length, ["focusComplete"] = focused.Length <= 64,
                 ["interactionScopeId"] = service?.CurrentScopeId != null && ids.ContainsKey(service.CurrentScopeId) ? service.CurrentScopeId : null,
                 ["multiSelectActive"] = service != null && service.IsMultiSelectActive,
                 ["detachedObjectIds"] = new JArray(detached.Take(64)), ["detachedObjectCount"] = detached.Length, ["detachedComplete"] = detached.Length <= 64,
@@ -100,9 +102,21 @@ namespace CADEN.Unity
             string mode = (string)arguments["mode"];
             if (service.IsMultiSelectActive && (command == "clear_selection" || command == "select_objects" && (mode == null || mode == "replace") || command == "reset_view"))
                 throw new ToolInputException("INTERACTION_BUSY", "Finish headset multi-selection before replacing selection or resetting the whole view.");
-            bool usesHierarchy = new[] { "isolate_objects", "hide_objects", "show_objects", "detach_for_inspection", "reset_objects", "reset_view" }.Contains(command);
+            bool usesHierarchy = new[] { "focus_objects", "hide_objects", "show_objects", "detach_for_inspection", "reset_objects", "reset_view" }.Contains(command);
             if (usesHierarchy && snapshot.Capabilities.Hierarchy != CapabilityState.Available)
                 throw new ToolInputException("CAPABILITY_UNAVAILABLE", "A valid metadata hierarchy is required for this view action.");
+            string[] explodeParts = null;
+            if (command == "detach_for_inspection")
+            {
+                foreach (var id in ids) if (snapshot.Indexes.Parent(id) == null)
+                    throw new ToolInputException("INVALID_ARGUMENTS", "The root assembly cannot be detached: " + id);
+                if (mode == "explode")
+                {
+                    // One assembly means "explode this assembly": separate its direct children.
+                    explodeParts = ids.Length == 1 ? snapshot.ComponentsById.Keys.Where(id => snapshot.Indexes.Parent(id) == ids[0] && registry.ContainsKey(id)).ToArray() : ids;
+                    if (explodeParts.Length < 2) throw new ToolInputException("INVALID_ARGUMENTS", "Explode needs at least two parts, or one assembly with several parts.");
+                }
+            }
             cancellation.ThrowIfCancellationRequested(); Guard();
             long previousRevision = revision;
             try
@@ -114,22 +128,23 @@ namespace CADEN.Unity
                         foreach (var id in ids) { if (mode == "remove") service.RemoveFromSelection(id); else service.AddToSelection(id); }
                         break;
                     case "clear_selection": service.ClearSelection(); break;
-                    case "isolate_objects": service.SetCadenIsolation(Expand(ids), registry.Keys); break;
-                    case "clear_isolation": service.SetCadenIsolation(registry.Keys, registry.Keys); break;
+                    case "focus_objects": service.Focus(ids); break;
+                    case "clear_focus": service.ClearFocus(); break;
                     case "hide_objects": service.Hide(Expand(ids)); break;
                     case "show_objects": service.ShowCadenObjects(Expand(ids)); break;
                     case "detach_for_inspection":
-                        if (!service.IsDetached(ids[0]))
+                        if (explodeParts != null) service.ExplodeCaden(explodeParts, (float?)arguments["spread"] ?? 1f);
+                        else if (ids.Any(id => !service.IsDetached(id)))
                         {
                             if (Camera.main == null) throw new ToolInputException("CAPABILITY_UNAVAILABLE", "Headset/view camera is required for inspection placement.");
-                            service.DetachCadenForInspection(ids[0], Camera.main.transform.right);
+                            service.DetachCadenGroup(ids, Camera.main.transform.right);
                         }
                         break;
                     case "reattach_objects": foreach (var id in ids) if (service.IsDetached(id) && !service.Reattach(id)) throw new InvalidOperationException("Reattach failed: " + id); break;
                     case "reset_objects": service.ResetCadenObjects(mode == "object" ? ids : ParentFirst(Expand(ids))); break;
                     case "reset_view":
                         service.ResetCadenObjects(ParentFirst(registry.Keys)); service.ResetModelTransform();
-                        service.SetCadenIsolation(registry.Keys, registry.Keys); service.EndMultiSelect(true); service.ResetScope(); break;
+                        service.ClearFocus(); service.SetCadenIsolation(registry.Keys, registry.Keys); service.EndMultiSelect(true); service.ResetScope(); break;
                     default: throw new ToolInputException("UNKNOWN_TOOL", "Unknown Unity view command.");
                 }
                 Guard();

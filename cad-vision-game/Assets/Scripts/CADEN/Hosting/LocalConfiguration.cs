@@ -57,6 +57,14 @@ namespace Desktop.Configuration
             return new Core.Speech.ElevenLabsSettings(Get("ELEVENLABS_API_KEY"), Get("ELEVENLABS_VOICE_ID"), Get("ELEVENLABS_MODEL", "eleven_flash_v2_5"), timeout);
         }
 
+        public static Core.Speech.TranscriptionSettings LoadTranscription(string directory)
+        {
+            var values = ReadValues(directory);
+            string Get(string name, string fallback = "") => Environment.GetEnvironmentVariable(name)
+                ?? (values.TryGetValue(name, out var value) ? value : fallback);
+            return new Core.Speech.TranscriptionSettings(Get("ELEVENLABS_API_KEY"), Get("ELEVENLABS_STT_MODEL", "scribe_v2"));
+        }
+
         private static Dictionary<string, string> ReadValues(string directory)
         {
             var values = new Dictionary<string, string>(StringComparer.Ordinal);

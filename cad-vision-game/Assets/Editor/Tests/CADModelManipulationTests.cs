@@ -204,7 +204,7 @@ public class CADModelManipulationTests
         Assert.That(ShellCount("P1"), Is.EqualTo(1));
 
         OpenObjectMenu("P1");
-        Assert.That(ActiveLabels(), Has.No.Member("Manipulate Model"), "global action lives in the Main Menu");
+        Assert.That(ActiveLabels(), Has.No.Member("Manipulate model"), "global action lives in the Main Menu");
         svc.BeginModelManipulation(); // Main Menu → Manipulate model.
         Assert.That(svc.IsModelManipulationActive, Is.True);
         DragModel("P2", new Vector3(0.1f, 0.2f, 0f));
@@ -261,7 +261,7 @@ public class CADModelManipulationTests
         DragModel("P2", new Vector3(0.2f, 0.2f, 0.2f), Quaternion.Euler(0f, -25f, 0f));
         svc.SetModelScaleAroundPoint(0.4f, Vector3.zero, root.position);
 
-        MenuButton("Reset Model").onClick.Invoke();
+        MenuButton("Reset everything").onClick.Invoke();
 
         Assert.That(svc.IsDetached("P3"), Is.False);
         Assert.That(t["P3"].parent, Is.SameAs(p3Parent), "reattached");
@@ -296,7 +296,7 @@ public class CADModelManipulationTests
         Click("P1");
         Assert.That(Selected(), Is.EquivalentTo(new[] { "P1", "P2" }));
         Tick();
-        Assert.That(ActiveLabels(), Is.EquivalentTo(new[] { "Done", "Reset Scale", "Reset Model" }), "only the model menu");
+        Assert.That(ActiveLabels(), Is.EquivalentTo(new[] { "Done", "Reset all sizes", "Reset everything" }), "only the model menu");
     }
 
     // 13
