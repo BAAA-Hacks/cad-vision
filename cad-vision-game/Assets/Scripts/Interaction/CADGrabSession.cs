@@ -174,6 +174,9 @@ public sealed class CADGrabSession
             !multiplayer.HasLease(IsModel
                 ? new[] { CADMultiplayerLeaseTable.ModelId } : GrabbedIds))
         {
+            // Not ours to move yet: hold still, and keep asking (a grab that began before the room
+            // was ready, or one the other person just let go of, gets access without re-grabbing).
+            multiplayer.KeepRequesting(IsModel ? new[] { CADMultiplayerLeaseTable.ModelId } : GrabbedIds);
             Rebase(pointer);
             return true;
         }

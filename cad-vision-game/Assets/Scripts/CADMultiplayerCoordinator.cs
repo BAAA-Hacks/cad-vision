@@ -25,6 +25,8 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
     private const string SessionType = "cadvision.same-room.v1";
     private const int MaxPacketBytes = 2 * 1024 * 1024;
     private const float PoseInterval = 0.05f;
+    private const float PresenceInterval = 0.1f;
+    private const float PresenceTimeout = 3f;
     private const float HeartbeatInterval = 1f;
     // Model transfer: 64 KB chunks, up to ChunkWindow requested ahead (not one round trip per
     // chunk), so a large model arrives in seconds rather than minutes over the relay.
@@ -78,6 +80,7 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
     private long receivedRevision;
     private float nextPoseTime;
     private float nextHeartbeatTime;
+    private float nextLeaseRetry;
     private int operationGeneration;
     private Pose virtualFrame;
     private bool virtualFrameReady;
@@ -92,6 +95,11 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
     private float nextHelloTime;
     private float lastChunkTime;
     private bool guestLocalizing;
+    private float nextPresenceTime;
+    private float lastPresenceTime = float.NegativeInfinity;
+    private GameObject remoteHead;       // The other person's head (virtual rooms only).
+    private Vector3 remoteHeadTarget;
+    private Quaternion remoteHeadRotation = Quaternion.identity;
 
     private void Awake()
     {
@@ -487,6 +495,9 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
             case "release":
                 if (ulong.TryParse(message.token, out ulong released)) leases.Release(sender, released);
                 break;
+            case "presence":
+                if (readyClients.Contains(sender)) ReceivePresence(message);
+                break;
         }
     }
 
@@ -515,6 +526,7 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
                 { leasePending = false; Status = message.reason ?? "Selection is busy"; }
                 break;
             case "error": SetError(message.reason ?? "Room error"); break;
+            case "presence": ReceivePresence(message); break;
         }
     }
 
@@ -716,6 +728,13 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
     {
         if (message.revision <= receivedRevision || !ValidPose(message)) return;
         if (message.id != CADMultiplayerLeaseTable.ModelId && !byId.ContainsKey(message.id)) return;
+        // The host echoes our own moves back a moment late; applying them would pull what we are
+        // holding back to where it was (jitter). What we hold is ours until we let go.
+        if (OwnsTarget(message.id))
+        {
+            receivedRevision = message.revision;
+            return;
+        }
         applyingNetworkState = true;
         if (message.id == CADMultiplayerLeaseTable.ModelId)
         {
@@ -824,9 +843,77 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
         float.IsFinite(q.z) && float.IsFinite(q.w) &&
         Mathf.Abs(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w - 1f) < 0.02f;
 
+    // Each headset shares its head pose (in the room frame) ten times a second. In a virtual room
+    // the other person shows as a simple head; in passthrough you see them for real.
+    private void UpdatePresence()
+    {
+        bool show = roomActive && Mode == RoomMode.Virtual && State == RoomState.Ready && FrameReady &&
+            Time.unscaledTime - lastPresenceTime < PresenceTimeout;
+        if (remoteHead != null && remoteHead.activeSelf != show) remoteHead.SetActive(show);
+        if (show)
+        {
+            Pose frame = FramePose;
+            Vector3 target = frame.position + frame.rotation * remoteHeadTarget;
+            Quaternion rotation = frame.rotation * remoteHeadRotation;
+            float blend = 1f - Mathf.Exp(-15f * Time.unscaledDeltaTime); // Smooth 10 Hz updates.
+            remoteHead.transform.SetPositionAndRotation(
+                Vector3.Lerp(remoteHead.transform.position, target, blend),
+                Quaternion.Slerp(remoteHead.transform.rotation, rotation, blend));
+        }
+
+        if (!roomActive || State != RoomState.Ready || !FrameReady || Camera.main == null ||
+            Time.unscaledTime < nextPresenceTime) return;
+        nextPresenceTime = Time.unscaledTime + PresenceInterval;
+        Pose room = FramePose;
+        Transform head = Camera.main.transform;
+        var message = new CADRoomWire { kind = "presence", scale = Vector3.one,
+            position = Quaternion.Inverse(room.rotation) * (head.position - room.position),
+            rotation = Quaternion.Inverse(room.rotation) * head.rotation };
+        if (IsHost) Broadcast(message);
+        else Send(message, NetworkManager.ServerClientId);
+    }
+
+    private void ReceivePresence(CADRoomWire message)
+    {
+        if (!ValidPose(message)) return;
+        bool first = Time.unscaledTime - lastPresenceTime >= PresenceTimeout;
+        remoteHeadTarget = message.position;
+        remoteHeadRotation = message.rotation;
+        lastPresenceTime = Time.unscaledTime;
+        if (remoteHead == null) remoteHead = BuildRemoteHead();
+        if (first && FrameReady)
+        {
+            Pose frame = FramePose;
+            remoteHead.transform.SetPositionAndRotation(frame.position + frame.rotation * remoteHeadTarget,
+                frame.rotation * remoteHeadRotation);
+        }
+    }
+
+    // A cyan head with a dark visor showing where the other person looks. No colliders.
+    private static GameObject BuildRemoteHead()
+    {
+        var head = new GameObject("CAD Room Other Person") { layer = 2 };
+        GameObject skull = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+        GameObject visor = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        foreach (GameObject part in new[] { skull, visor })
+        {
+            Destroy(part.GetComponent<Collider>());
+            part.layer = 2;
+            part.transform.SetParent(head.transform, false);
+        }
+        skull.transform.localScale = Vector3.one * 0.2f;
+        skull.GetComponent<Renderer>().material.color = new Color32(42, 220, 219, 255);
+        visor.transform.localScale = new Vector3(0.16f, 0.06f, 0.05f);
+        visor.transform.localPosition = new Vector3(0f, 0.01f, 0.085f);
+        visor.GetComponent<Renderer>().material.color = new Color32(12, 21, 36, 255);
+        head.SetActive(false);
+        return head;
+    }
+
     private void LateUpdate()
     {
         UpdateGuestHandshake();
+        UpdatePresence();
         if (!roomActive || State != RoomState.Ready || applyingNetworkState || !FrameReady)
         {
             if (roomActive && State == RoomState.Ready && !FrameReady)
@@ -949,6 +1036,37 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
         return false;
     }
 
+    /// <summary>
+    /// Called every frame by a grab that doesn't have edit access yet: requests it if the grab
+    /// began before the room was ready, and asks again about once a second after a denial (the
+    /// other person may have let go), so the grab starts moving without being re-grabbed.
+    /// </summary>
+    public void KeepRequesting(IEnumerable<string> ids)
+    {
+        if (!roomActive || State != RoomState.Ready || !FrameReady) return;
+        string[] requested = Normalize(ids);
+        if (requested.Length == 0) return;
+        if (localTargets == null && localLeaseReferences == 0)
+        {
+            RequestLease(requested); // Counted once; the grab's End releases it.
+            nextLeaseRetry = Time.unscaledTime + 1f;
+            return;
+        }
+        if (!SameTargets(localTargets, requested) || localToken != 0 || leasePending ||
+            Time.unscaledTime < nextLeaseRetry) return;
+        nextLeaseRetry = Time.unscaledTime + 1f;
+        if (IsHost)
+        {
+            if (leases.TryAcquire(network.LocalClientId, requested, Time.unscaledTimeAsDouble,
+                out ulong token, out string reason))
+            { localToken = token; Status = "You can move the selection"; }
+            else Status = reason;
+            return;
+        }
+        leasePending = true;
+        Send(new CADRoomWire { kind = "lease-request", ids = requested }, NetworkManager.ServerClientId);
+    }
+
     public bool HasLease(IEnumerable<string> ids) => !roomActive ||
         State == RoomState.Ready && localToken != 0 && SameTargets(localTargets, ids);
 
@@ -1017,6 +1135,8 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
         incomingOffset = 0;
         awaitingHost = false;
         guestLocalizing = false;
+        lastPresenceTime = float.NegativeInfinity;
+        if (remoteHead != null) remoteHead.SetActive(false);
         virtualFrameReady = false;
         alignment.ResetAnchor();
         GetComponent<CADVirtualLocomotion>()?.SetRoomActive(false);
@@ -1037,6 +1157,7 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
     private async void OnDestroy()
     {
         if (service != null) service.ModelReplaced -= OnModelReplaced;
+        if (remoteHead != null) Destroy(remoteHead);
         if (roomActive) await LeaveRoomAsync();
     }
 }

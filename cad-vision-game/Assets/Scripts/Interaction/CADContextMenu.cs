@@ -421,8 +421,23 @@ public class CADContextMenu : MonoBehaviour
 
     // ---------------- Context-aware contents ----------------
 
+    // In a shared room these would be undone at once (only grabs sync), so they aren't offered.
+    private static readonly HashSet<MenuAction> NotInSharedRoom = new()
+    {
+        MenuAction.DetachOrReattach, MenuAction.ResetObject, MenuAction.ResetSize, MenuAction.ResetAssembly,
+        MenuAction.ResetSelected, MenuAction.ResetScale, MenuAction.ResetModel,
+    };
+
     // The actions that apply to the current target right now, in display order.
     private List<MenuAction> CurrentActions()
+    {
+        List<MenuAction> actions = ActionsForTarget();
+        if (TryGetComponent(out CADMultiplayerCoordinator room) && room.IsInRoom)
+            actions.RemoveAll(NotInSharedRoom.Contains);
+        return actions;
+    }
+
+    private List<MenuAction> ActionsForTarget()
     {
         var actions = new List<MenuAction>();
         if (modelMode)

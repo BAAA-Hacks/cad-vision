@@ -260,6 +260,9 @@ public class CADRuntimeBridge : MonoBehaviour
         Transform head = Camera.main != null ? Camera.main.transform : null;
         if (root == null || head == null)
             return;
+        // In a shared room the model belongs to the room's shared frame; moving it would be undone.
+        if (TryGetComponent(out CADMultiplayerCoordinator room) && room.IsInRoom)
+            return;
 
         if (!hasHomeFrame)
         {
