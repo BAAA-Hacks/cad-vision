@@ -16,6 +16,8 @@ public sealed class CadenSessionHost : MonoBehaviour
     public event Action<string> Feedback;
     public CadenVoiceInput Voice => FindAnyObjectByType<CadenVoiceInput>();
     public bool IsBusy => (host != null && host.IsBusy) || (Voice != null && Voice.Busy);
+    public bool IsSpeaking => host != null && host.IsSpeaking;
+    public float SpeechLevel => host == null ? 0 : host.SpeechLevel();
     public string AssemblyName
     {
         get

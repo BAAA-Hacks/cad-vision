@@ -28,4 +28,4 @@ API reference: https://elevenlabs.io/docs/api-reference/text-to-speech/convert
 
 Gemini streaming reference: https://ai.google.dev/api/generate-content#method:-models.streamgeneratecontent
 
-Unity/Quest now uses the `/stream` PCM endpoint through `IStreamingSpeechClient`, with a 500 ms startup buffer, bounded PCM FIFO and DSP-tail draining. It starts playback during the download. Desktop retains full-buffer playback. See Quest_Speech_To_Text.md for the realtime input/output path.
+Unity/Quest now uses the `/stream` PCM endpoint through `IStreamingSpeechClient`, with a 500 ms startup buffer, bounded PCM FIFO and DSP-tail draining. It starts playback during the download. If no audio arrives for 10 seconds the sentence is treated as stalled; a sentence that fails before playback starts is retried once, and network failures skip only that sentence rather than silencing the rest of the answer. Desktop retains full-buffer playback. See Quest_Speech_To_Text.md for the realtime input/output path.

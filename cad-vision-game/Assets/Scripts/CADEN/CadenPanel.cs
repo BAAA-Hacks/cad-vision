@@ -15,6 +15,23 @@ using UnityEngine.UI;
 public sealed class CadenPanel : MonoBehaviour
 {
     private const float W = 720, H = 820, Scale = 0.001f;
+    // Minimized tile framing the logo in the panel's top-left corner.
+    private const float TileX = 34, TileY = 12, TileSize = 82, MinimizeSeconds = 0.28f;
+    private static readonly Vector2 LogoCenter = new Vector2(TileX + TileSize / 2, TileY + TileSize / 2);
+    private static readonly Vector3 LogoLocal = new Vector3((LogoCenter.x - W / 2) * Scale, (H / 2 - LogoCenter.y) * Scale, 0);
+    // Head-space position of the minimized logo; it stays pinned to the top-left of view.
+    [SerializeField] private Vector3 minimizedLogoOffset = new Vector3(-0.34f, 0.15f, 0.9f);
+    // Distance of the opened panel; it unfolds right and down from the logo's direction.
+    [SerializeField] private float expandedDistance = 1.05f;
+    private Vector3 expandedPosition;
+    private Quaternion expandedRotation = Quaternion.identity;
+    // Logo feedback: glow while speaking, spin-and-settle cycles while thinking.
+    private const float SpinSeconds = 0.75f, SpinPauseSeconds = 0.25f, SpeechGapSeconds = 0.6f;
+    private RectTransform logoRect;
+    private Image logoGlow;
+    private Sprite glowSprite;
+    private Texture2D glowTexture;
+    private float glow, spinTime = -1, lastSpokeAt = float.NegativeInfinity;
     private static readonly Color Navy = new Color32(12, 21, 36, 255);
     private static readonly Color Card = new Color32(23, 38, 57, 255);
     private static readonly Color Muted = new Color32(159, 182, 205, 255);
@@ -23,6 +40,9 @@ public sealed class CadenPanel : MonoBehaviour
     private RectTransform canvasRect, messages;
     private RectTransform loadingSpinner;
     private GameObject expanded;
+    private CanvasGroup expandedGroup, minimizedTile;
+    private bool minimized;
+    private float openness = 1;
     private Image microphoneFace;
     private GameObject microphoneSlash;
     private bool microphonePreview;
@@ -91,6 +111,36 @@ public sealed class CadenPanel : MonoBehaviour
             microphoneFace.color = microphonePreview
                 ? Color.Lerp(Card, Cyan, 0.5f + 0.5f * Mathf.Sin(Time.unscaledTime * 7f)) : Card;
         if (microphoneSlash != null) microphoneSlash.SetActive(!microphonePreview);
+        AnimateLogo(host.IsBusy && !microphonePreview);
+    }
+
+    private void AnimateLogo(bool working)
+    {
+        bool speaking = host.IsSpeaking;
+        if (speaking) lastSpokeAt = Time.unscaledTime;
+        // Glow follows speech loudness; it eases out between sentences instead of flickering.
+        float target = speaking ? 0.55f + 0.45f * Mathf.Clamp01(host.SpeechLevel * 6f) : 0;
+        glow = Mathf.Lerp(glow, target, 1 - Mathf.Exp(-12f * Time.unscaledDeltaTime));
+        logoGlow.color = new Color(Cyan.r, Cyan.g, Cyan.b, glow * 0.8f);
+        logoGlow.rectTransform.localScale = Vector3.one * (0.9f + 0.2f * glow);
+
+        // Gaps between spoken sentences are still "talking", not thinking.
+        bool thinking = working && Time.unscaledTime - lastSpokeAt > SpeechGapSeconds;
+        if (spinTime < 0 && !thinking) return;
+        if (spinTime < 0) spinTime = 0;
+        spinTime += Time.unscaledDeltaTime;
+        // A cycle always finishes, so the logo never stops at an odd angle.
+        if (spinTime >= SpinSeconds + SpinPauseSeconds) spinTime = thinking ? 0 : -1;
+        float angle = spinTime < 0 ? 0 : 360f * EaseOutBack(Mathf.Clamp01(spinTime / SpinSeconds));
+        logoRect.localRotation = Quaternion.Euler(0, 0, -angle);
+    }
+
+    // Starts fast, overshoots slightly, then settles back onto the target.
+    private static float EaseOutBack(float t)
+    {
+        const float c1 = 1.2f, c3 = c1 + 1;
+        float u = t - 1;
+        return 1 + c3 * u * u * u + c1 * u * u;
     }
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
@@ -131,6 +181,7 @@ public sealed class CadenPanel : MonoBehaviour
     private void Update()
     {
         if (!positioned && trackingReady) Recenter();
+        AnimateMinimize();
         if (Time.unscaledTime < nextContextUpdate) return;
         nextContextUpdate = Time.unscaledTime + 0.5f;
         context.text = "Assembly  /  " + host.AssemblyName;
@@ -153,10 +204,8 @@ public sealed class CadenPanel : MonoBehaviour
         viewer = head;
         draggingPanel = false;
 
-        var forward = Vector3.ProjectOnPlane(head.forward, Vector3.up).normalized;
-        if (forward.sqrMagnitude < 0.01f) forward = Vector3.forward;
-        transform.position = head.position + forward * 0.95f - Vector3.Cross(Vector3.up, forward) * 0.85f;
-        transform.rotation = Quaternion.LookRotation(transform.position - head.position, Vector3.up);
+        PlaceAtLogo();
+        ApplyPose(Mathf.SmoothStep(0, 1, openness));
         canvasRect.GetComponent<Canvas>().worldCamera = head.GetComponent<Camera>() ?? Camera.main;
         canvasRect.gameObject.SetActive(true);
         surfaceBox.gameObject.SetActive(true);
@@ -178,13 +227,14 @@ public sealed class CadenPanel : MonoBehaviour
         canvas.worldCamera = Camera.main;
         canvasRect.gameObject.AddComponent<GraphicRaycaster>();
         expanded = Rect("Expanded", canvasRect, 0, 0, W, H).gameObject;
+        expandedGroup = expanded.AddComponent<CanvasGroup>();
         var p = (RectTransform)expanded.transform;
+        // Scale about the logo so the panel collapses into it and grows back out of it.
+        p.pivot = new Vector2(LogoCenter.x / W, 1 - LogoCenter.y / H);
+        p.anchoredPosition = new Vector2(LogoCenter.x, -LogoCenter.y);
         Draggable(Image("Outline", p, -2, -2, W + 4, H + 4, new Color32(40, 104, 129, 255)));
         Draggable(Image("Surface", p, 0, 0, W, H, Navy));
         Draggable(Image("Brand accent", p, 28, 22, 5, 58, Cyan));
-        var logo = Rect("CADVision logo", p, 46, 24, 58, 58).gameObject.AddComponent<RawImage>();
-        logo.texture = Resources.Load<Texture2D>("CADEN/CADVisionLogo");
-        logo.raycastTarget = false;
         Label("Brand", p, 120, 25, 270, 30, "CADVision", 27, Color.white, true);
         Label("Subtitle", p, 120, 58, 300, 24, "CADEN · Assembly chat", 18, Muted);
         ActionButton("New chat", p, 568, 29, 124, 46, () => host.NewChat());
@@ -241,6 +291,7 @@ public sealed class CadenPanel : MonoBehaviour
             dot.rectTransform.anchoredPosition = new Vector2(Mathf.Cos(angle), Mathf.Sin(angle)) * 13;
         }
         loadingSpinner.gameObject.SetActive(false);
+        BuildLogoToggle();
 
         var surfaceObject = new GameObject("CADEN ray surface"); surfaceObject.layer = 2;
         surfaceObject.transform.SetParent(transform, false);
@@ -252,7 +303,101 @@ public sealed class CadenPanel : MonoBehaviour
         ray.InjectOptionalSelectSurface(surface); ray.InjectOptionalPointableElement(pointable);
     }
 
-    public void ShowPanel() => Recenter();
+    public void ShowPanel() { SetMinimized(false); Recenter(); }
+
+    // The logo lives outside Expanded so it stays visible and clickable when the panel collapses.
+    private void BuildLogoToggle()
+    {
+        var tile = Rect("Minimized tile", canvasRect, TileX, TileY, TileSize, TileSize);
+        minimizedTile = tile.gameObject.AddComponent<CanvasGroup>();
+        minimizedTile.alpha = 0; minimizedTile.blocksRaycasts = false;
+        Image("Outline", tile, -2, -2, TileSize + 4, TileSize + 4, new Color32(40, 104, 129, 255)).raycastTarget = false;
+        Image("Surface", tile, 0, 0, TileSize, TileSize, Navy).raycastTarget = false;
+        BuildGlow();
+        var logo = Rect("CADVision logo", canvasRect, 46, 24, 58, 58).gameObject.AddComponent<RawImage>();
+        logo.texture = Resources.Load<Texture2D>("CADEN/CADVisionLogo");
+        // Centered pivot so the thinking spin turns the logo in place.
+        logoRect = logo.rectTransform;
+        logoRect.pivot = new Vector2(0.5f, 0.5f);
+        logoRect.anchoredPosition = new Vector2(LogoCenter.x, -LogoCenter.y);
+        var button = logo.gameObject.AddComponent<Button>(); button.targetGraphic = logo;
+        var colors = button.colors; colors.highlightedColor = new Color(0.8f, 0.97f, 1); colors.pressedColor = new Color(0.6f, 0.85f, 0.9f);
+        button.colors = colors; button.navigation = new Navigation { mode = Navigation.Mode.None };
+        button.onClick.AddListener(() => SetMinimized(!minimized));
+    }
+
+    private void BuildGlow()
+    {
+        const int size = 64;
+        glowTexture = new Texture2D(size, size, TextureFormat.RGBA32, false);
+        var pixels = new Color[size * size];
+        for (int y = 0; y < size; y++) for (int x = 0; x < size; x++)
+        {
+            float d = Mathf.Clamp01(Vector2.Distance(new Vector2(x, y), new Vector2(31.5f, 31.5f)) / 32f);
+            pixels[y * size + x] = new Color(1, 1, 1, (1 - d) * (1 - d));
+        }
+        glowTexture.SetPixels(pixels); glowTexture.Apply();
+        glowSprite = Sprite.Create(glowTexture, new Rect(0, 0, size, size), new Vector2(0.5f, 0.5f));
+        logoGlow = Image("Speaking glow", canvasRect, 0, 0, 124, 124, Color.clear);
+        logoGlow.sprite = glowSprite; logoGlow.type = UnityEngine.UI.Image.Type.Simple; logoGlow.raycastTarget = false;
+        logoGlow.rectTransform.pivot = new Vector2(0.5f, 0.5f);
+        logoGlow.rectTransform.anchoredPosition = new Vector2(LogoCenter.x, -LogoCenter.y);
+    }
+
+    public void SetMinimized(bool value)
+    {
+        if (minimized == value) return;
+        // Collapse from wherever the panel was dragged; expand like other menus, in front of the user.
+        if (value && openness == 1) { expandedPosition = transform.position; expandedRotation = transform.rotation; }
+        if (!value && viewer != null) PlaceAtLogo();
+        minimized = value;
+        if (!value) expanded.SetActive(true);
+        expandedGroup.interactable = expandedGroup.blocksRaycasts = !value;
+        // Shrink the ray collider to the logo tile so the collapsed panel doesn't block the scene.
+        surfaceBox.size = value ? new Vector3(TileSize * Scale, TileSize * Scale, 0.004f) : new Vector3(W * Scale, H * Scale, 0.004f);
+        surfaceBox.center = value
+            ? new Vector3((TileX + TileSize / 2 - W / 2) * Scale, (H / 2 - TileY - TileSize / 2) * Scale, 0)
+            : Vector3.zero;
+    }
+
+    private void AnimateMinimize()
+    {
+        float target = minimized ? 0 : 1;
+        if (openness == target) return;
+        openness = Mathf.MoveTowards(openness, target, Time.unscaledDeltaTime / MinimizeSeconds);
+        float e = Mathf.SmoothStep(0, 1, openness);
+        expanded.transform.localScale = Vector3.one * Mathf.Lerp(TileSize / W, 1, e);
+        // Content fades out early on collapse; the logo tile fades in as the panel reaches it.
+        expandedGroup.alpha = Mathf.SmoothStep(0, 1, Mathf.InverseLerp(0.2f, 1, openness));
+        minimizedTile.alpha = Mathf.SmoothStep(0, 1, Mathf.InverseLerp(0.4f, 0, openness));
+        ApplyPose(e);
+        if (openness == 0) expanded.SetActive(false);
+    }
+
+    private void PlaceAtLogo()
+    {
+        var forward = Vector3.ProjectOnPlane(viewer.forward, Vector3.up).normalized;
+        if (forward.sqrMagnitude < 0.01f) forward = Vector3.forward;
+        // Upright like the other menus, with its logo where the pinned logo is, so it opens rightward.
+        expandedRotation = Quaternion.LookRotation(forward, Vector3.up);
+        var logoPoint = viewer.position + viewer.rotation * minimizedLogoOffset.normalized * expandedDistance;
+        expandedPosition = logoPoint - expandedRotation * LogoLocal;
+    }
+
+    // Blends between the panel's world pose and the head-pinned pose that puts the logo top-left.
+    private void ApplyPose(float e)
+    {
+        if (viewer == null) return;
+        var minimizedRotation = viewer.rotation * Quaternion.LookRotation(minimizedLogoOffset, Vector3.up);
+        var minimizedPosition = viewer.position + viewer.rotation * minimizedLogoOffset - minimizedRotation * LogoLocal;
+        transform.SetPositionAndRotation(Vector3.Lerp(minimizedPosition, expandedPosition, e),
+            Quaternion.Slerp(minimizedRotation, expandedRotation, e));
+    }
+
+    // Runs after the rig's late head update so the pinned logo doesn't lag behind the view.
+    private void FollowViewer() { if (positioned && openness < 1) ApplyPose(Mathf.SmoothStep(0, 1, openness)); }
+    private void OnEnable() => Application.onBeforeRender += FollowViewer;
+    private void OnDisable() => Application.onBeforeRender -= FollowViewer;
 
     private void ResetConversation()
     {
@@ -395,5 +540,6 @@ public sealed class CadenPanel : MonoBehaviour
         generation++; if (host != null) { host.Changed -= ResetConversation; host.Feedback -= ShowFeedback; }
         if (rounded != null) Destroy(rounded); if (roundedTexture != null) Destroy(roundedTexture);
         if (circle != null) Destroy(circle); if (circleTexture != null) Destroy(circleTexture);
+        if (glowSprite != null) Destroy(glowSprite); if (glowTexture != null) Destroy(glowTexture);
     }
 }
