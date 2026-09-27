@@ -107,7 +107,6 @@ public class CADDetachInteractionTests
         svc.SetObjectWorldPose("P1", t["P1"].position + Vector3.one * 0.2f, t["P1"].rotation);
 
         Assert.That(svc.GetLogicalParentId("P1"), Is.EqualTo("A"));
-        Assert.That(MenuResetAssemblyTarget("P1"), Is.EqualTo("A"), "menu's Reset Assembly acts on A");
 
         svc.ResetAssembly("A");
 
@@ -144,19 +143,6 @@ public class CADDetachInteractionTests
     // ---- helpers ----
 
     private string[] SelectedIds() => svc.GetSelectedObjects().Select(o => o.id).ToArray();
-
-    // CADContextMenu's own rule (target if assembly, else its logical parent), read via reflection
-    // so the test tracks the menu's real implementation.
-    private string MenuResetAssemblyTarget(string id)
-    {
-        var menu = svc.gameObject.AddComponent<CADContextMenu>();
-        typeof(CADContextMenu).GetField("manipulationService", BindingFlags.NonPublic | BindingFlags.Instance)
-            .SetValue(menu, svc);
-        typeof(CADContextMenu).GetField("targetId", BindingFlags.NonPublic | BindingFlags.Instance)
-            .SetValue(menu, id);
-        return (string)typeof(CADContextMenu).GetMethod("ResetAssemblyTarget", BindingFlags.NonPublic | BindingFlags.Instance)
-            .Invoke(menu, null);
-    }
 
     private Transform Node(string name, Transform parent, Vector3 local, bool mesh)
     {

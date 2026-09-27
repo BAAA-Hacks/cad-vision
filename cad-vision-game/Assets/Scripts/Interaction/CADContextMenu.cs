@@ -73,7 +73,7 @@ public class CADContextMenu : MonoBehaviour
         { MenuAction.EnterAssembly, "Enter assembly" },
         { MenuAction.Focus, "Focus" },
         { MenuAction.DetachOrReattach, "Detach" },
-        { MenuAction.ResetObject, "Reset object" },
+        { MenuAction.ResetObject, "Reset part" },
         { MenuAction.ResetAssembly, "Reset assembly" },
         { MenuAction.MultiSelect, "Multi-select" },
         { MenuAction.MainMenu, "Main menu" },
@@ -84,8 +84,8 @@ public class CADContextMenu : MonoBehaviour
         { MenuAction.EditSelection, "Edit selection" },
         { MenuAction.ClearSelection, "Clear selection" },
         { MenuAction.ModelDone, "Done" },
-        { MenuAction.ResetScale, "Reset scale" },
-        { MenuAction.ResetModel, "Reset model" },
+        { MenuAction.ResetScale, "Reset all sizes" },
+        { MenuAction.ResetModel, "Reset everything" },
         { MenuAction.ExitAssembly, "Exit assembly" },
     };
 
@@ -94,18 +94,18 @@ public class CADContextMenu : MonoBehaviour
         { MenuAction.EnterAssembly, "Inspect and interact with this assembly's children." },
         { MenuAction.Focus, "Emphasize this selection and ghost the rest of the model." },
         { MenuAction.DetachOrReattach, "Move this part independently from its assembly." },
-        { MenuAction.ResetObject, "Restore this object to its original assembly transform." },
-        { MenuAction.ResetAssembly, "Restore this assembly and its parts to their original transforms." },
+        { MenuAction.ResetObject, "Put this back where it was: original position, rotation and size." },
+        { MenuAction.ResetAssembly, "Put the assembly you're in and all its parts back: original positions, rotations and sizes." },
         { MenuAction.MultiSelect, "Select multiple parts and move them together." },
         { MenuAction.MainMenu, "Open the main menu." },
         { MenuAction.FocusSelection, "Emphasize the selection and ghost the rest of the model." },
-        { MenuAction.ResetSelected, "Restore the selected objects to their original transforms." },
+        { MenuAction.ResetSelected, "Put the selected parts back: original positions, rotations and sizes." },
         { MenuAction.EditSelection, "Add or remove parts from this selection." },
         { MenuAction.ClearSelection, "Deselect everything." },
         { MenuAction.Done, "Finish picking; the selection stays." },
         { MenuAction.ModelDone, "Stop manipulating the whole model." },
-        { MenuAction.ResetScale, "Restore the original scale without changing position or rotation." },
-        { MenuAction.ResetModel, "Restore the whole model and every part to the review pose." },
+        { MenuAction.ResetScale, "Undo all resizing of the model and its parts. Nothing moves." },
+        { MenuAction.ResetModel, "Undo every change: all parts back in place, the model back in front of you at its original size." },
         { MenuAction.ExitAssembly, "Go up one assembly level." },
     };
 
@@ -437,16 +437,20 @@ public class CADContextMenu : MonoBehaviour
         if (multiMode)
         {
             actions.Add(MenuAction.Done);
-            actions.Add(MenuAction.FocusSelection);
+            if (FocusApplies())
+                actions.Add(MenuAction.FocusSelection);
             actions.Add(MenuAction.ResetSelected);
+            AddResetAssembly(actions);
             actions.Add(MenuAction.ClearSelection);
             return actions;
         }
 
         if (groupMode)
         {
-            actions.Add(MenuAction.FocusSelection);
+            if (FocusApplies())
+                actions.Add(MenuAction.FocusSelection);
             actions.Add(MenuAction.ResetSelected);
+            AddResetAssembly(actions);
             actions.Add(MenuAction.EditSelection);
             actions.Add(MenuAction.ClearSelection);
             actions.Add(MenuAction.Close);
@@ -459,15 +463,24 @@ public class CADContextMenu : MonoBehaviour
         bool assembly = manipulationService.HasCadChildren(targetId);
         if (assembly && targetId != manipulationService.CurrentScopeId)
             actions.Add(MenuAction.EnterAssembly);
-        actions.Add(MenuAction.Focus);
+        if (FocusApplies())
+            actions.Add(MenuAction.Focus);
         if (manipulationService.IsDetached(targetId) || manipulationService.GetLogicalParentId(targetId) != null)
             actions.Add(MenuAction.DetachOrReattach);
-        actions.Add(assembly ? MenuAction.ResetAssembly : MenuAction.ResetObject);
+        actions.Add(MenuAction.ResetObject); // The selected part or assembly.
+        AddResetAssembly(actions);
         actions.Add(MenuAction.MultiSelect);
         if (mainMenu != null)
             actions.Add(MenuAction.MainMenu);
         actions.Add(MenuAction.Close);
         return actions;
+    }
+
+    // Only inside an assembly: resets the assembly the user is in (the current scope).
+    private void AddResetAssembly(List<MenuAction> actions)
+    {
+        if (!manipulationService.IsAtRootScope)
+            actions.Add(MenuAction.ResetAssembly);
     }
 
     private static bool IsNavigation(MenuAction action) =>
@@ -525,6 +538,18 @@ public class CADContextMenu : MonoBehaviour
         SetInteractable(MenuAction.ResetSelected, any);
         SetInteractable(MenuAction.ClearSelection, any);
         return relayout;
+    }
+
+    // Focus is offered only when it changes something: Clear focus while focused on the target,
+    // otherwise Focus only if it would ghost some other geometry.
+    private bool FocusApplies()
+    {
+        if (IsFocusOnTarget())
+            return true;
+        IEnumerable<string> targets = multiMode || groupMode
+            ? manipulationService.GetSelectedLogicalRoots()
+            : targetId != null ? new[] { targetId } : Array.Empty<string>();
+        return manipulationService.WouldFocusGhostAnything(targets);
     }
 
     // Focus is "on" the target when every target object is inside the current focus.
@@ -620,11 +645,6 @@ public class CADContextMenu : MonoBehaviour
 
     // ---------------- Actions ----------------
 
-    // The target itself if it is an assembly, else the assembly that logically contains it.
-    private string ResetAssemblyTarget() =>
-        manipulationService.HasCadChildren(targetId) ? targetId
-            : manipulationService.GetLogicalParentId(targetId);
-
     private void OnAction(MenuAction action)
     {
         string id = targetId;
@@ -634,7 +654,8 @@ public class CADContextMenu : MonoBehaviour
 
         // Object menu: every action closes it (most change selection, scope or pose anyway).
         // Picking menu: stays open for Focus / Reset; model menu for its resets.
-        bool keepOpen = (multiMode && (action == MenuAction.ResetSelected || action == MenuAction.FocusSelection)) ||
+        bool keepOpen = (multiMode && (action == MenuAction.ResetSelected || action == MenuAction.ResetAssembly ||
+                action == MenuAction.FocusSelection)) ||
             (modelMode && (action == MenuAction.ResetModel || action == MenuAction.ResetScale));
         if (!keepOpen)
             Hide($"action {action}");
@@ -647,13 +668,24 @@ public class CADContextMenu : MonoBehaviour
                 else manipulationService.Focus(id);
                 break;
             case MenuAction.DetachOrReattach:
-                if (detached) manipulationService.Reattach(id);
-                else manipulationService.Detach(id);
+                if (detached)
+                    manipulationService.Reattach(id);
+                else if (manipulationService.Detach(id) && !manipulationService.IsAtRootScope)
+                {
+                    // The part no longer belongs to the assembly being worked in: step out one
+                    // level (which clears the selection) and keep the detached part selected.
+                    manipulationService.ExitScope();
+                    manipulationService.Select(id);
+                }
                 break;
-            case MenuAction.ResetObject: manipulationService.ResetObject(id); break;
+            case MenuAction.ResetObject:
+                // An assembly resets with everything in it.
+                if (manipulationService.HasCadChildren(id)) manipulationService.ResetAssembly(id);
+                else manipulationService.ResetObject(id);
+                break;
             case MenuAction.ResetAssembly:
-                string assemblyId = ResetAssemblyTarget();
-                if (assemblyId != null) manipulationService.ResetAssembly(assemblyId);
+                if (!manipulationService.IsAtRootScope)
+                    manipulationService.ResetAssembly(manipulationService.CurrentScopeId);
                 break;
             case MenuAction.MultiSelect: manipulationService.BeginMultiSelect(); break; // Selection menu opens next frame.
             case MenuAction.MainMenu:
@@ -669,7 +701,7 @@ public class CADContextMenu : MonoBehaviour
             case MenuAction.EditSelection: manipulationService.BeginMultiSelect(); break; // Picking menu opens next frame.
             case MenuAction.ClearSelection: manipulationService.EndMultiSelect(clearSelection: true); break;
             case MenuAction.ModelDone: manipulationService.EndModelManipulation(); break;
-            case MenuAction.ResetScale: manipulationService.ResetModelScale(); break;
+            case MenuAction.ResetScale: manipulationService.ResetAllScales(); break;
             case MenuAction.ResetModel: manipulationService.ResetModel(); break;
             case MenuAction.ExitAssembly: manipulationService.ExitScope(); break;
         }
