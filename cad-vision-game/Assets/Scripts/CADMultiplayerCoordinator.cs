@@ -26,7 +26,10 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
     private const int MaxPacketBytes = 2 * 1024 * 1024;
     private const float PoseInterval = 0.05f;
     private const float HeartbeatInterval = 1f;
-    private const int PackageChunkBytes = 16 * 1024;
+    // Model transfer: 64 KB chunks, up to ChunkWindow requested ahead (not one round trip per
+    // chunk), so a large model arrives in seconds rather than minutes over the relay.
+    private const int PackageChunkBytes = 64 * 1024;
+    private const int ChunkWindow = 8;
     private const int MaxModelBytes = 100 * 1024 * 1024;
     private const int MaxMetadataBytes = 10 * 1024 * 1024;
     // Join handshake: the guest repeats hello until the host answers (the first one can be lost
@@ -82,6 +85,7 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
     private byte[] incomingJson;
     private string incomingPackageId;
     private int incomingOffset;
+    private int requestedOffset;      // Next chunk offset to request (ahead of incomingOffset).
     private bool importingPackage;
     private bool awaitingHost;        // Guest: hello repeats until the host answers.
     private float awaitingHostSince;
@@ -105,8 +109,12 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
         foreach (CADObject obj in service.GetRegisteredObjects())
             if (!string.IsNullOrEmpty(obj.id)) byId[obj.id] = obj;
         leases = new CADMultiplayerLeaseTable(id => byId.ContainsKey(id), service.GetLogicalParentId);
-        if (roomActive && State == RoomState.Ready)
-            SetError("The CAD model changed. Leave and create a new room.");
+        // The guest loading the host's model is expected; any other model change breaks the shared
+        // state, so the room ends with a clear reason (a host's error also reaches the guest).
+        if (roomActive && !importingPackage && State != RoomState.Connecting && State != RoomState.Error)
+            SetError(IsHost
+                ? "A new CAD model was loaded, so the room ended. Leave and host again to share it."
+                : "This headset loaded a different CAD model, so it left the shared one. Leave and join again.");
     }
 
     private void EnsureNetworkManager()
@@ -158,6 +166,9 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
             return false;
         }
         EnsureNetworkManager();
+        // A room that was just left may still be shutting down; hosting/joining waits for it.
+        for (int i = 0; i < 100 && network.ShutdownInProgress; i++)
+            await Task.Delay(50);
         Status = "Connecting to Unity services";
         await WithTimeout(UnityServices.InitializeAsync(), "Connecting to Unity services");
         if (!AuthenticationService.Instance.IsSignedIn)
@@ -257,6 +268,8 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
         try
         {
             if (!await PrepareAsync(false) || current != operationGeneration) return;
+            await WaitForLocalModelLoad(); // So it can't replace the host's model mid-join.
+            if (current != operationGeneration) return;
             Status = "Joining room";
             session = await WithTimeout(MultiplayerService.Instance.JoinSessionByCodeAsync(code,
                 new JoinSessionOptions { Type = SessionType }), "Joining the room");
@@ -270,6 +283,21 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
         {
             Debug.LogException(e);
             SetError(ExplainFailure(e, joining: true));
+        }
+    }
+
+    // A guest joining right after startup waits for this headset's own model load (the
+    // auto-loader) to finish, so that load can't land on top of the host's model later.
+    private async Task WaitForLocalModelLoad()
+    {
+        CadModelLoader loader = FindAnyObjectByType<CadModelLoader>();
+        if (loader == null) return;
+        Status = "Waiting for this headset's CAD model to finish loading";
+        for (float waited = 0; waited < ModelLoadWait; waited += 0.1f)
+        {
+            bool startupSettled = HasShareableModel || Time.realtimeSinceStartup > 15f;
+            if (!loader.IsLoading && startupSettled) return;
+            await Task.Delay(100);
         }
     }
 
@@ -527,16 +555,29 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
         incomingGlb = new byte[message.glbLength];
         incomingJson = new byte[message.jsonLength];
         incomingPackageId = message.packageId;
-        incomingOffset = 0;
         lastChunkTime = Time.unscaledTime;
         Status = "Receiving host CAD";
-        RequestPackageChunk("glb");
+        StartReceiving("glb");
     }
 
-    private void RequestPackageChunk(string file)
+    private void StartReceiving(string file)
     {
-        Send(new CADRoomWire { kind = "package-next", file = file,
-            offset = incomingOffset, packageId = incomingPackageId }, NetworkManager.ServerClientId);
+        incomingOffset = 0;
+        requestedOffset = 0;
+        RequestAhead(file);
+    }
+
+    // Keeps up to ChunkWindow chunk requests outstanding. Replies arrive in order (one reliable,
+    // sequenced stream), so each is appended at incomingOffset.
+    private void RequestAhead(string file)
+    {
+        int length = file == "glb" ? incomingGlb.Length : incomingJson.Length;
+        while (requestedOffset < length && requestedOffset - incomingOffset < ChunkWindow * PackageChunkBytes)
+        {
+            Send(new CADRoomWire { kind = "package-next", file = file,
+                offset = requestedOffset, packageId = incomingPackageId }, NetworkManager.ServerClientId);
+            requestedOffset += PackageChunkBytes;
+        }
     }
 
     private void ReceivePackageChunk(CADRoomWire message)
@@ -559,10 +600,9 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
         int received = (message.file == "glb" ? 0 : incomingGlb.Length) + incomingOffset;
         Status = $"Receiving host CAD ({100 * received / Math.Max(1, incomingGlb.Length + incomingJson.Length)}%)";
         if (incomingOffset < target.Length)
-        { RequestPackageChunk(message.file); return; }
-        incomingOffset = 0;
-        if (message.file == "glb") RequestPackageChunk("json");
-        else ImportHostPackageAsync();
+        { RequestAhead(message.file); return; }
+        if (message.file == "glb") StartReceiving("json");
+        else { incomingOffset = 0; ImportHostPackageAsync(); }
     }
 
     private async void ImportHostPackageAsync()
@@ -594,18 +634,23 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
         finally { importingPackage = false; }
     }
 
-    private void Send(CADRoomWire message, ulong peer)
+    private bool Send(CADRoomWire message, ulong peer)
     {
-        if (network == null || !network.IsListening || network.CustomMessagingManager == null) return;
+        if (network == null || !network.IsListening || network.CustomMessagingManager == null) return false;
         message.protocol = CADPackageIdentity.Protocol;
         if (message.kind != "package-next") message.packageId = CADPackageIdentity.Current;
         byte[] bytes = Encoding.UTF8.GetBytes(JsonUtility.ToJson(message));
-        if (bytes.Length > MaxPacketBytes) { SetError("CAD room message is too large"); return; }
+        if (bytes.Length > MaxPacketBytes)
+        {
+            Debug.LogWarning($"[CAD room] '{message.kind}' message too large ({bytes.Length} bytes); not sent.");
+            return false;
+        }
         using var writer = new FastBufferWriter(bytes.Length + 8, Allocator.Temp);
         writer.WriteValueSafe(bytes.Length);
         writer.WriteBytesSafe(bytes);
         network.CustomMessagingManager.SendNamedMessage(MessageName, peer, writer,
             NetworkDelivery.ReliableFragmentedSequenced);
+        return true;
     }
 
     private void Broadcast(CADRoomWire message)
@@ -614,13 +659,27 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
             Send(message, peer);
     }
 
+    // Both headsets load the identical package, so every part starts at the same original pose:
+    // the snapshot carries only the parts that differ from it (moved, scaled or detached), which
+    // keeps it small for large assemblies. The guest resets to the originals before applying it.
     private void SendSnapshot(ulong peer)
     {
         if (!FrameReady) return;
         var model = CaptureModel();
-        Send(new CADRoomWire { kind = "snapshot", revision = revision,
-            position = model.position, rotation = model.rotation, scale = model.scale,
-            parts = accepted.Values.OrderBy(p => Depth(p.id)).ToArray() }, peer);
+        CADRoomPart[] changed = accepted.Values.Where(p => !AtOriginal(p)).OrderBy(p => Depth(p.id)).ToArray();
+        if (!Send(new CADRoomWire { kind = "snapshot", revision = revision,
+                position = model.position, rotation = model.rotation, scale = model.scale,
+                parts = changed }, peer))
+            SendError(peer, "Too many parts have been moved to share this room. Reset the model on the host and try again.");
+    }
+
+    private bool AtOriginal(CADRoomPart part)
+    {
+        if (part.detached) return false;
+        if (!byId.TryGetValue(part.id, out CADObject obj) || obj == null) return true; // Gone: nothing to send.
+        return (part.position - obj.OriginalPosition).sqrMagnitude < 1e-12f &&
+            Quaternion.Angle(part.rotation, obj.OriginalRotation) < 1e-3f &&
+            (part.scale - obj.OriginalScale).sqrMagnitude < 1e-12f;
     }
 
     private void ApplySnapshot(CADRoomWire message)
@@ -631,6 +690,7 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
         { SetError("Shared CAD snapshot is invalid"); return; }
         applyingNetworkState = true;
         accepted.Clear();
+        service.ResetAllObjects(); // The snapshot lists only the parts that differ from the originals.
         ApplyModel(message);
         foreach (CADRoomPart part in message.parts.OrderBy(p => Depth(p.id)))
         {
@@ -638,8 +698,9 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
             { applyingNetworkState = false; SetError("Shared CAD hierarchy differs"); return; }
             service.ApplyAcceptedPartState(part.id, part.detached,
                 part.position, part.rotation, part.scale);
-            accepted[part.id] = Copy(part);
         }
+        foreach (string id in byId.Keys)
+            if (byId[id] != null) accepted[id] = CapturePart(id);
         acceptedModel = CaptureModel();
         receivedRevision = message.revision;
         applyingNetworkState = false;
@@ -940,7 +1001,12 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
             try { await old.LeaveAsync(); }
             catch (Exception e) { Debug.LogWarning("[CAD room] Leave: " + e.Message); }
         }
-        if (network != null && network.IsListening) network.Shutdown();
+        if (network != null && network.IsListening)
+        {
+            network.Shutdown();
+            for (int i = 0; i < 100 && network != null && network.ShutdownInProgress; i++)
+                await Task.Delay(50);
+        }
         leases?.Clear();
         readyClients.Clear();
         waitingForAnchor.Clear();
