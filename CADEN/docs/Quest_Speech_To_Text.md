@@ -14,7 +14,7 @@ STT is independent of `ELEVENLABS_ENABLED`, which controls spoken output. A real
 
 Microphone capture starts before connection setup to retain first words. Chunks are at most 100 ms, downmixed to mono PCM16 at the actual capture sample rate. The socket uses manual commit, with a short silence tail. Gemini receives only the committed transcript. Empty/near-silent input does not invoke Gemini. Connection, send and final-transcript waits are bounded and cancellation-aware. Unsupported rates fail explicitly.
 
-When TTS is enabled, Unity now requests streamed PCM audio, buffers 200 ms and starts playback during the HTTP download. A bounded FIFO handles split samples and backpressure. The audio callback fills temporary underflow with silence without dropping samples. Completion waits for the FIFO and DSP output queue to drain; cancellation interrupts immediately. Desktop retains its existing buffered audio adapter.
+When TTS is enabled, Unity now requests streamed PCM audio, buffers 500 ms and starts playback during the HTTP download. A bounded FIFO handles split samples and backpressure. The audio callback fills temporary underflow with silence without dropping samples. Completion waits for the FIFO and DSP output queue to drain; cancellation interrupts immediately. Desktop retains its existing buffered audio adapter.
 
 Sources:
 - https://elevenlabs.io/docs/api-reference/speech-to-text/v-1-speech-to-text-realtime
