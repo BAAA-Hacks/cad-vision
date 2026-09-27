@@ -33,6 +33,7 @@ public sealed class CADGrabSession
     }
 
     private CADVisionManipulationService manipulationService;
+    private CADMultiplayerCoordinator multiplayer;
     private readonly List<Member> members = new();
     private Vector3 lastPointerPosition;
     private Quaternion lastPointerRotation;
@@ -71,7 +72,8 @@ public sealed class CADGrabSession
         Vector3? grabPointWorld = null)
     {
         manipulationService = service;
-        members.Clear();
+        End();
+        multiplayer = service.GetComponent<CADMultiplayerCoordinator>();
 
         foreach (CADObject cadObject in targets)
             members.Add(new Member { Id = cadObject.id, Transform = cadObject.transform });
@@ -95,6 +97,7 @@ public sealed class CADGrabSession
                 grabPoint = VisualCenter(target);
         }
         grabPointLocal = targetTransform.InverseTransformPoint(grabPoint);
+        multiplayer?.RequestLease(GrabbedIds);
 
         return $"{(members.Count > 1 ? $"group of {members.Count}; " : "")}holding {(fromHit ? "selection hit point" : "visual center")} at " +
             $"{Vector3.Distance(pointer.position, grabPoint):F2} m";
@@ -108,7 +111,8 @@ public sealed class CADGrabSession
     public string BeginModel(CADVisionManipulationService service, Pose pointer, Vector3 grabPointWorld)
     {
         manipulationService = service;
-        members.Clear();
+        End();
+        multiplayer = service.GetComponent<CADMultiplayerCoordinator>();
 
         Transform root = service.ModelRoot;
         if (root == null)
@@ -117,6 +121,7 @@ public sealed class CADGrabSession
         members.Add(new Member { IsModel = true, Transform = root });
         Rebase(pointer);
         grabPointLocal = root.InverseTransformPoint(grabPointWorld);
+        multiplayer?.RequestLease(new[] { CADMultiplayerLeaseTable.ModelId });
         return $"holding model at {Vector3.Distance(pointer.position, grabPointWorld):F2} m";
     }
 
@@ -149,6 +154,13 @@ public sealed class CADGrabSession
     {
         if (!IsActive || !IsStillGrabbable())
             return false;
+        if (multiplayer != null && multiplayer.IsInRoom &&
+            !multiplayer.HasLease(IsModel
+                ? new[] { CADMultiplayerLeaseTable.ModelId } : GrabbedIds))
+        {
+            Rebase(pointer);
+            return true;
+        }
 
         Vector3 pointerPosition = pointer.position;
         Quaternion pointerRotation = pointer.rotation;
@@ -199,7 +211,13 @@ public sealed class CADGrabSession
         return true;
     }
 
-    public void End() => members.Clear();
+    public void End()
+    {
+        if (members.Count > 0 && multiplayer != null)
+            multiplayer.ReleaseLease(IsModel
+                ? new[] { CADMultiplayerLeaseTable.ModelId } : GrabbedIds);
+        members.Clear();
+    }
 
     // World center of the object's active, enabled renderers; its origin if it has none.
     public static Vector3 VisualCenter(CADObject cadObject)

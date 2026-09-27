@@ -57,13 +57,16 @@ public class CADMainMenu : MonoBehaviour
     private CADMenuPanel panel;
     private GameObject panelRoot; // panel.Root.
     private Text title; // Plain header text; also a grab region of the border drag.
-    private Text scopeSection, cadenSection, viewSection, modelSection, interfaceSection;
+    private Text scopeSection, roomSection, roomStatus, cadenSection, viewSection, modelSection, interfaceSection;
     private Text scopeText, displayLabel, outlineLabel, scaleLabel, scaleValue;
     private readonly Dictionary<CADDisplayMode, Button> displayButtons = new();
-    private Button scopeButton, cadenButton, outlineButton;
+    private Button scopeButton, hostRoomButton, joinRoomButton, leaveRoomButton;
+    private Button cadenButton, outlineButton;
     private Button manipulateButton, resetButton, resetObjectButton, resetScaleButton, resetAssemblyButton, resetModelButton;
     private Button scaleDownButton, scaleUpButton, closeButton;
     private bool resetExpanded;
+    private CADMultiplayerCoordinator multiplayer;
+    private TouchScreenKeyboard roomCodeKeyboard;
 
 
     public bool IsOpen => panel != null && panel.IsOpen;
@@ -77,6 +80,8 @@ public class CADMainMenu : MonoBehaviour
     {
         manipulationService = GetComponent<CADVisionManipulationService>();
         settings = GetComponent<CADUISettings>();
+        multiplayer = GetComponent<CADMultiplayerCoordinator>();
+        if (multiplayer == null) multiplayer = gameObject.AddComponent<CADMultiplayerCoordinator>();
         pointerInteraction = GetComponent<CADPointerInteraction>();
         BuildPanel();
         panel.Hide();
@@ -120,6 +125,13 @@ public class CADMainMenu : MonoBehaviour
 
     private void LateUpdate()
     {
+        if (roomCodeKeyboard != null && roomCodeKeyboard.status != TouchScreenKeyboard.Status.Visible)
+        {
+            string code = roomCodeKeyboard.status == TouchScreenKeyboard.Status.Done
+                ? roomCodeKeyboard.text : null;
+            roomCodeKeyboard = null;
+            if (!string.IsNullOrWhiteSpace(code)) multiplayer.JoinRoom(code);
+        }
         if (!IsOpen)
             return;
 
@@ -150,6 +162,14 @@ public class CADMainMenu : MonoBehaviour
     public void Refresh()
     {
         SetText(scopeText, $"Scope: {manipulationService.CurrentScopeDisplayName}");
+        SetText(roomStatus, multiplayer.IsInRoom
+            ? $"Room: {multiplayer.RoomCode} ({multiplayer.ParticipantCount}/2)\n{multiplayer.Status}"
+            : $"Room: {multiplayer.Status}");
+        CADMenuPanel.SetInteractable(hostRoomButton, !multiplayer.IsInRoom &&
+            multiplayer.State != CADMultiplayerCoordinator.RoomState.Connecting);
+        CADMenuPanel.SetInteractable(joinRoomButton, !multiplayer.IsInRoom &&
+            multiplayer.State != CADMultiplayerCoordinator.RoomState.Connecting);
+        CADMenuPanel.SetInteractable(leaveRoomButton, multiplayer.IsInRoom);
 
         // Exit inside an assembly; else Enter (enabled only for one selected assembly).
         bool atRoot = manipulationService.IsAtRootScope;
@@ -171,12 +191,12 @@ public class CADMainMenu : MonoBehaviour
         panel.SetSelected(manipulateButton, modelMode);
 
         CADMenuPanel.SetLabel(resetButton, resetExpanded ? "Reset ▲" : "Reset ▼");
-        CADMenuPanel.SetInteractable(resetObjectButton, manipulationService.GetSelectedIds().Count > 0);
-        CADMenuPanel.SetInteractable(resetScaleButton, modelMode
+        CADMenuPanel.SetInteractable(resetObjectButton, !multiplayer.IsInRoom && manipulationService.GetSelectedIds().Count > 0);
+        CADMenuPanel.SetInteractable(resetScaleButton, !multiplayer.IsInRoom && (modelMode
             ? manipulationService.ModelRoot != null
-            : manipulationService.GetSelectedIds().Count > 0);
-        CADMenuPanel.SetInteractable(resetAssemblyButton, ResetAssemblyTarget() != null);
-        CADMenuPanel.SetInteractable(resetModelButton, manipulationService.ModelRoot != null);
+            : manipulationService.GetSelectedIds().Count > 0));
+        CADMenuPanel.SetInteractable(resetAssemblyButton, !multiplayer.IsInRoom && ResetAssemblyTarget() != null);
+        CADMenuPanel.SetInteractable(resetModelButton, !multiplayer.IsInRoom && manipulationService.ModelRoot != null);
 
         SetText(scaleValue, $"{Mathf.RoundToInt(settings.UiScale * 100f)}%");
         CADMenuPanel.SetInteractable(scaleDownButton, settings.UiScale > CADUISettings.MinUiScale + 1e-4f);
@@ -215,6 +235,15 @@ public class CADMainMenu : MonoBehaviour
             manipulationService.ExitScope();
         else if (manipulationService.TryGetEnterableSelection(out string assemblyId))
             manipulationService.EnterScope(assemblyId);
+    }
+
+    private void PromptJoinRoom()
+    {
+        roomCodeKeyboard = TouchScreenKeyboard.Open(string.Empty,
+            TouchScreenKeyboardType.Default, false, false, false, false,
+            "Enter the code from the host headset");
+        if (roomCodeKeyboard == null)
+            Debug.LogWarning("[CAD room] On-screen keyboard unavailable on this device.");
     }
 
     private void ToggleReset()
@@ -297,6 +326,15 @@ public class CADMainMenu : MonoBehaviour
         scopeButton = AddButton("Enter assembly", OnScopeButton,
             "Enter the selected assembly, or go back up one level.");
 
+        roomSection = Section("Shared room");
+        roomStatus = panel.CreateText("Room status", "Room: Offline");
+        hostRoomButton = AddButton("Host", multiplayer.HostRoom,
+            "Create a room and show its code to the second headset.");
+        joinRoomButton = AddButton("Join", PromptJoinRoom,
+            "Type the code shown on the host headset.");
+        leaveRoomButton = AddButton("Leave", multiplayer.LeaveRoom,
+            "Disconnect from the shared room.");
+
         cadenSection = Section("CADEN");
         cadenButton = AddButton("CADEN: Off", settings.ToggleCaden, "CADEN design assistant (placeholder toggle).");
 
@@ -361,6 +399,10 @@ public class CADMainMenu : MonoBehaviour
             new(SectionHeight, scopeSection),
             new(TextHeight, scopeText),
             new(ButtonHeight, SectionSpacing, scopeButton),
+
+            new(SectionHeight, roomSection),
+            new(TextHeight * 2f, roomStatus),
+            new(ButtonHeight, SectionSpacing, hostRoomButton, joinRoomButton, leaveRoomButton),
 
             new(SectionHeight, cadenSection),
             new(ButtonHeight, SectionSpacing, cadenButton),

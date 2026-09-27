@@ -21,6 +21,7 @@ namespace CADVision
 
         private IEnumerator Start()
         {
+            CADPackageIdentity.Clear();
             // Allow headset tracking to update before placing the model in front of the viewer.
             yield return null;
             string glbUrl;
@@ -74,6 +75,7 @@ namespace CADVision
             if (load.IsFaulted) Debug.LogException(load.Exception.GetBaseException());
             else if (!load.IsCanceled)
             {
+                CADPackageIdentity.SetBundled(model.downloadHandler.data, metadata.downloadHandler.data);
                 var metadataState = GetComponent<CADVisionRuntime>().Metadata;
                 Debug.Log(metadataState.HasVerifiedNodeMapping
                     ? "CAD auto-load: loaded Assets/CadFiles pair."
