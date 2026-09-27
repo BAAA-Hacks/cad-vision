@@ -354,23 +354,18 @@ public class CADMainMenuTests
     public void UiScaleClampsAndScalesOnlyTheMenu()
     {
         menu.ShowMainMenu();
-        Assert.That(ScaleText(), Is.EqualTo("100%"));
+        Assert.That(Labels(), Has.No.Member("+").And.No.Member("-"), "corner resizing replaced the scale buttons");
 
-        for (int i = 0; i < 20; i++)
-            Button("+").onClick.Invoke();
+        settings.SetUiScale(5f);
+        menu.Refresh();
         Assert.That(settings.UiScale, Is.EqualTo(CADUISettings.MaxUiScale).Within(1e-4f));
-        Assert.That(ScaleText(), Is.EqualTo("150%"));
-        Assert.That(Button("+").interactable, Is.False);
-        Assert.That(menu.PanelTransform.localScale.x, Is.EqualTo(1.5f).Within(1e-4f));
+        Assert.That(menu.PanelTransform.localScale.x, Is.EqualTo(1.6f).Within(1e-4f));
 
-        for (int i = 0; i < 20; i++)
-            Button("-").onClick.Invoke();
+        settings.SetUiScale(0.1f);
         Assert.That(settings.UiScale, Is.EqualTo(CADUISettings.MinUiScale).Within(1e-4f));
-        Assert.That(ScaleText(), Is.EqualTo("70%"));
-        Assert.That(Button("-").interactable, Is.False);
 
         settings.SetUiScale(1.04f);
-        Assert.That(settings.UiScale, Is.EqualTo(1f).Within(1e-4f), "snaps to 10% steps");
+        Assert.That(settings.UiScale, Is.EqualTo(1.04f).Within(1e-4f), "continuous (corner resizing)");
 
         var contextRoot = (GameObject)Get(context, "panelRoot");
         Assert.That(contextRoot.transform.localScale, Is.EqualTo(Vector3.one), "context menus unaffected");
@@ -517,7 +512,7 @@ public class CADMainMenuTests
 
         Button[] buttons = menu.PanelTransform.GetComponentsInChildren<Button>(true);
         Assert.That(buttons.Select(CADMenuPanel.GetLabel),
-            Is.SupersetOf(new[] { "Reset selected", "Reset assembly", "Reset everything", "Shaded", "Edges", "Wireframe", "+", "-" }));
+            Is.SupersetOf(new[] { "Reset selected", "Reset assembly", "Reset everything", "Shaded", "Edges", "Wireframe" }));
         foreach (Button button in buttons)
         {
             Assert.That(button.colors, Is.EqualTo(reference), $"'{CADMenuPanel.GetLabel(button)}' uses the context-menu button");

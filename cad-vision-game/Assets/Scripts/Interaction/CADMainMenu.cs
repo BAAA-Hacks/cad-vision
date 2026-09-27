@@ -6,7 +6,8 @@ using UnityEngine.UI;
 /// The application's single global menu: Scope (current scope + one context-aware
 /// Enter/Exit Assembly button), CADEN (show/hide the assistant), View (display mode buttons,
 /// outline toggle), Model (Manipulate model / Stop manipulating, and the Reset options shown
-/// under "Reset ▼": selected, assembly, all sizes, everything), Interface (UI scale), Close. Buttons carry
+/// under "Reset ▼": selected, assembly, all sizes, everything), Close. Its corners resize it
+/// (the UI scale, CADUISettings.UiScale). Buttons carry
 /// hover tooltips (CADMenuPanel).
 ///
 /// Rendering and input are CADMenuPanel, the same construction the object/assembly context
@@ -60,12 +61,12 @@ public class CADMainMenu : MonoBehaviour
     private GameObject panelRoot; // panel.Root.
     private RectTransform header; // Logo + wordmark + subtitle; also a grab region of the border drag.
     private Text title;           // "CADVision" wordmark.
-    private Text scopeSection, cadenSection, viewSection, modelSection, interfaceSection;
-    private Text scopeText, displayLabel, outlineLabel, scaleLabel, scaleValue;
+    private Text scopeSection, cadenSection, viewSection, modelSection;
+    private Text scopeText, displayLabel, outlineLabel;
     private readonly Dictionary<CADDisplayMode, Button> displayButtons = new();
     private Button scopeButton, cadenButton, outlineButton;
     private Button manipulateButton, resetButton, resetObjectButton, resetScaleButton, resetAssemblyButton, resetModelButton;
-    private Button scaleDownButton, scaleUpButton, closeButton;
+    private Button closeButton;
     private bool resetExpanded;
 
 
@@ -181,10 +182,6 @@ public class CADMainMenu : MonoBehaviour
         CADMenuPanel.SetInteractable(resetAssemblyButton, ResetAssemblyTarget() != null);
         CADMenuPanel.SetInteractable(resetModelButton, manipulationService.ModelRoot != null);
 
-        SetText(scaleValue, $"{Mathf.RoundToInt(settings.UiScale * 100f)}%");
-        CADMenuPanel.SetInteractable(scaleDownButton, settings.UiScale > CADUISettings.MinUiScale + 1e-4f);
-        CADMenuPanel.SetInteractable(scaleUpButton, settings.UiScale < CADUISettings.MaxUiScale - 1e-4f);
-
         Vector3 scale = Vector3.one * settings.UiScale;
         if (panelRoot.transform.localScale != scale)
             panelRoot.transform.localScale = scale;
@@ -265,6 +262,12 @@ public class CADMainMenu : MonoBehaviour
         panel = new CADMenuPanel("CAD Main Menu", PanelWidth, CADMenuStyle.Default);
         panelRoot = panel.Root;
         panel.CloseRequested = HideMainMenu; // Another menu opened (single-menu rule).
+        // Corner resize sets the UI scale (applied at once so the opposite corner stays put).
+        panel.EnableResize(() => settings.UiScale, size =>
+        {
+            settings.SetUiScale(size);
+            panelRoot.transform.localScale = Vector3.one * settings.UiScale;
+        });
 
         BuildHeader();
 
@@ -305,12 +308,6 @@ public class CADMainMenu : MonoBehaviour
             "Put the assembly you're in and all its parts back: original positions, rotations and sizes.");
         resetModelButton = AddButton("Reset everything", ResetModelAction,
             "Undo every change: all parts back in place, the model back in front of you at its original size.");
-
-        interfaceSection = Section("Interface");
-        scaleLabel = Label("UI scale");
-        scaleDownButton = AddButton("-", () => settings.StepUiScale(-1), "Make the main menu smaller.");
-        scaleValue = panel.CreateText("Scale Value", "100%", CADMenuPanel.FontSize, FontStyle.Bold);
-        scaleUpButton = AddButton("+", () => settings.StepUiScale(1), "Make the main menu larger.");
 
         closeButton = AddButton("Close", HideMainMenu);
 
@@ -404,8 +401,6 @@ public class CADMainMenu : MonoBehaviour
             rows.Add(new(ButtonHeight, resetScaleButton));
             rows.Add(new(ButtonHeight, SectionSpacing, resetModelButton));
         }
-        rows.Add(new(SectionHeight, interfaceSection));
-        rows.Add(new(ButtonHeight, SectionSpacing, scaleLabel, scaleDownButton, scaleValue, scaleUpButton));
         rows.Add(new(ButtonHeight, closeButton));
 
         panel.Stack(rows);

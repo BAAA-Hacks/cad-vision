@@ -1891,6 +1891,173 @@ public class CADInteractionPolishTests
         Assert.That(canvas.gameObject.activeSelf, Is.True);
     }
 
+    // ================= Window resize =================
+
+    [Test]
+    public void CornersResizeTheWindowAroundTheOppositeCorner()
+    {
+        menu.Panel.EnableBorderDrag(pointer);
+        svc.EnterScope("A");
+        OpenObjectMenu("P1");
+        CADWindowFrame frame = menu.Panel.Frame;
+        Transform panel = PanelOf(menu);
+        RectTransform canvas = CanvasOf(menu.Panel);
+        Rect r = canvas.rect;
+        Vector3 corner = canvas.TransformPoint(new Vector3(r.xMax + 20f, r.yMin - 20f, 0f)); // Bottom right.
+        Vector3 anchor = canvas.TransformPoint(new Vector3(r.xMin, r.yMax, 0f));             // Top left.
+
+        Assert.That(frame.IsResizePoint(corner, out int pressed), Is.True);
+        Assert.That(pressed, Is.EqualTo(2));
+        foreach (Vector3 other in new[]
+                 {
+                     canvas.TransformPoint(new Vector3(r.xMin - 20f, r.yMax + 20f, 0f)),
+                     canvas.TransformPoint(new Vector3(r.xMax + 20f, r.yMax + 20f, 0f)),
+                     canvas.TransformPoint(new Vector3(r.xMin - 20f, r.yMin - 20f, 0f)),
+                 })
+            Assert.That(frame.IsResizePoint(other, out _), Is.True, "all four corners");
+        Assert.That(frame.IsResizePoint(BorderPoint(menu.Panel, left: true), out _), Is.False, "mid-edge moves instead");
+
+        // Handles: hidden until a ray comes near, lit on the corner.
+        Assert.That(frame.HandleVisibility(2, out _), Is.EqualTo(0f));
+        RaisePointer(menu.Panel, 4, Oculus.Interaction.PointerEventType.Hover, corner);
+        menu.Panel.UpdateGrabGlow(0.02f);
+        Assert.That(frame.HandleVisibility(2, out bool lit), Is.EqualTo(1f).Within(1e-3f));
+        Assert.That(lit, Is.True);
+        Assert.That(frame.HandleVisibility(0, out _), Is.EqualTo(0f), "far corners stay hidden");
+        RaisePointer(menu.Panel, 4, Oculus.Interaction.PointerEventType.Unhover, corner);
+
+        // Press the corner and drag it outward along the diagonal: 125%, top-left corner fixed.
+        Vector3 eye = head.position;
+        rightController.Pose = new Pose(eye, Quaternion.LookRotation(corner - eye));
+        PressUi(rightController, corner);
+        Tick();
+        Assert.That(menu.Panel.IsResizing, Is.True);
+        Assert.That(menu.Panel.IsDragging, Is.False, "corners win over moving");
+        Vector3 diagonal = corner - anchor;
+        rightController.Pose = new Pose(eye, Quaternion.LookRotation(anchor + diagonal * 1.25f - eye));
+        Tick();
+        Assert.That(panel.localScale.x, Is.EqualTo(1.25f).Within(0.01f));
+        Assert.That(Vector3.Distance(canvas.TransformPoint(new Vector3(r.xMin, r.yMax, 0f)), anchor), Is.LessThan(Eps),
+            "the opposite corner stays put");
+
+        rightController.Pose = new Pose(eye, Quaternion.LookRotation(anchor + diagonal * 5f - eye));
+        Tick();
+        Assert.That(panel.localScale.x, Is.EqualTo(1.6f).Within(1e-4f), "largest size");
+        rightController.Pose = new Pose(eye, Quaternion.LookRotation(anchor + diagonal * 0.1f - eye));
+        Tick();
+        Assert.That(panel.localScale.x, Is.EqualTo(0.6f).Within(1e-4f), "smallest size");
+        rightController.Pose = new Pose(eye, Quaternion.LookRotation(anchor + diagonal * 1.2f - eye));
+        Tick();
+        Release(rightController);
+        Tick();
+        Assert.That(menu.Panel.IsResizing, Is.False);
+        float kept = panel.localScale.x;
+
+        OpenObjectMenu("P2");
+        Assert.That(panel.localScale.x, Is.EqualTo(kept).Within(1e-4f), "the next context menu keeps the size");
+    }
+
+    [Test]
+    public void ResizingTheMainMenuSetsTheUiScale()
+    {
+        mainMenu.ShowMainMenu();
+        mainMenu.Panel.EnableBorderDrag(pointer);
+        CADWindowFrame frame = mainMenu.Panel.Frame;
+        RectTransform canvas = CanvasOf(mainMenu.Panel);
+        Rect r = canvas.rect;
+        Vector3 corner = canvas.TransformPoint(new Vector3(r.xMin - 20f, r.yMin - 20f, 0f)); // Bottom left.
+        Vector3 anchor = canvas.TransformPoint(new Vector3(r.xMax, r.yMax, 0f));
+        Vector3 eye = head.position;
+        rightController.Pose = new Pose(eye, Quaternion.LookRotation(corner - eye));
+        PressUi(rightController, corner);
+        Call(mainMenu, "LateUpdate");
+        Assert.That(mainMenu.Panel.IsResizing, Is.True);
+
+        rightController.Pose = new Pose(eye, Quaternion.LookRotation(anchor + (corner - anchor) * 0.8f - eye));
+        Call(mainMenu, "LateUpdate");
+        Assert.That(settings.UiScale, Is.EqualTo(0.8f).Within(0.01f));
+        Assert.That(mainMenu.PanelTransform.localScale.x, Is.EqualTo(settings.UiScale).Within(1e-4f));
+        Assert.That(Vector3.Distance(canvas.TransformPoint(new Vector3(r.xMax, r.yMax, 0f)), anchor), Is.LessThan(Eps));
+        Release(rightController);
+        Call(mainMenu, "LateUpdate");
+        Assert.That(frame.IsResizing, Is.False);
+    }
+
+    [Test]
+    public void CadenPanelResizesButItsLogoDoesNot()
+    {
+        var go = Track(new GameObject("CADEN resize test"));
+        var caden = go.AddComponent<CadenPanel>();
+        Call(caden, "Awake");
+        typeof(CadenPanel).GetField("trackingReady", Any).SetValue(caden, true);
+        Call(caden, "Recenter");
+        var frame = (CADWindowFrame)Get(caden, "frame");
+        var canvas = (RectTransform)Get(caden, "canvasRect");
+        var window = ((GameObject)Get(caden, "expanded")).transform;
+        var surface = (BoxCollider)Get(caden, "surfaceBox");
+        Assert.That(frame.CanResize, Is.True);
+
+        Call(caden, "SetSize", 1.3f);
+        Assert.That(window.localScale.x, Is.EqualTo(1.3f).Within(1e-4f));
+        Assert.That(surface.size.x, Is.EqualTo(CADWindowFrame.SurfaceSize(720f, 820f).x * 1.3f).Within(1e-5f));
+        Vector3 windowCenter = window.TransformPoint(((RectTransform)window).rect.center);
+        Assert.That(Vector3.Distance(surface.transform.TransformPoint(surface.center), windowCenter), Is.LessThan(1e-3f),
+            "the ray surface stays centered on the resized panel");
+        Assert.That(canvas.localScale.x, Is.EqualTo(CADMenuPanel.CanvasScale).Within(1e-7f), "the logo tile keeps its size");
+    }
+
+    // ================= CADEN hand voice =================
+
+    [Test]
+    public void MiddlePinchDrivesCadenVoiceLikeY()
+    {
+        var pinch = new CadenPinchToTalk();
+        const CadenPinchToTalk.Action none = CadenPinchToTalk.Action.None;
+        const CadenPinchToTalk.Action press = CadenPinchToTalk.Action.Press;
+        const CadenPinchToTalk.Action release = CadenPinchToTalk.Action.Release;
+        float t = 0f;
+        CadenPinchToTalk.Action Step(bool tracked, bool middle, bool index = false, bool enabled = true, bool busy = false)
+        {
+            t += 0.05f;
+            return pinch.Update(tracked, middle, index, enabled, busy, t);
+        }
+
+        Assert.That(Step(true, true), Is.EqualTo(none), "held when tracking starts: ignored");
+        Assert.That(Step(true, false), Is.EqualTo(none));
+
+        // Hold to talk / quick pinch: the voice decides from the timing (same as Y).
+        Assert.That(Step(true, true), Is.EqualTo(press));
+        Assert.That(Step(true, true), Is.EqualTo(none));
+        Assert.That(Step(true, false), Is.EqualTo(release));
+        t += 1f;
+
+        // A fist (index pinching too), a busy left hand or CADEN off never counts.
+        Assert.That(Step(true, true, index: true), Is.EqualTo(none));
+        Assert.That(Step(true, true), Is.EqualTo(none), "still ignored until the pinch opens");
+        Assert.That(Step(true, false), Is.EqualTo(none));
+        Assert.That(Step(true, true, busy: true), Is.EqualTo(none));
+        Assert.That(Step(true, false), Is.EqualTo(none));
+        Assert.That(Step(true, true, enabled: false), Is.EqualTo(none));
+        Assert.That(Step(true, false), Is.EqualTo(none));
+
+        // Tracking lost while holding: keep recording (no release); the next pinch sends.
+        t += 1f;
+        Assert.That(Step(true, true), Is.EqualTo(press));
+        Assert.That(Step(false, false), Is.EqualTo(none), "no release on tracking loss");
+        Assert.That(pinch.IsHeld, Is.False);
+        Assert.That(Step(true, true), Is.EqualTo(none), "back with the pinch still closed: ignored");
+        Assert.That(Step(true, false), Is.EqualTo(none));
+        t += 1f;
+        Assert.That(Step(true, true), Is.EqualTo(press), "the next pinch (sends the recording)");
+        Assert.That(Step(true, false), Is.EqualTo(release));
+
+        // Two pinches closer than MinInterval: the second doesn't count.
+        t += 1f;
+        Assert.That(Step(true, true), Is.EqualTo(press));
+        Assert.That(Step(true, false), Is.EqualTo(release));
+        Assert.That(Step(true, true), Is.EqualTo(none), "too soon after the last pinch");
+    }
+
     // ================= Helpers =================
 
     private void AssertBeside(Bounds bounds, string what) => AssertBesidePanel(menu.Panel, bounds, what);

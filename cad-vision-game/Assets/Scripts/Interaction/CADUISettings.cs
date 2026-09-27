@@ -11,7 +11,8 @@ public enum CADDisplayMode { Shaded, Edges, Wireframe }
 /// - DisplayMode / DisplayModeChanged: Shaded (surfaces only), Edges (shaded + CAD edge
 ///   overlay; the default) or Wireframe, rendered by CADDisplayModeController.
 /// - OutlineEnabled: drives CADSelectionOutline.ShowOutlines (selection is never touched).
-/// - UiScale / UiScaleChanged: main menu scale (never the CAD model, the rig or context menus).
+/// - UiScale / UiScaleChanged: main menu size, set by resizing it from a corner (never the
+///   CAD model, the rig or context menus).
 /// - CadenEnabled / CadenEnabledChanged: the Main Menu's CADEN toggle (on by default). While
 ///   off, no CADEN element shows (CadenPanel and its head-locked logo, CadenStatusPanel) and
 ///   CADEN's controller shortcuts do nothing. Nothing here references CADEN.
@@ -20,9 +21,8 @@ public enum CADDisplayMode { Shaded, Edges, Wireframe }
 [RequireComponent(typeof(CADVisionManipulationService))]
 public class CADUISettings : MonoBehaviour
 {
-    public const float MinUiScale = 0.7f;
-    public const float MaxUiScale = 1.5f;
-    public const float UiScaleStep = 0.1f;
+    public const float MinUiScale = 0.6f;
+    public const float MaxUiScale = 1.6f;
 
     // Default: shaded surfaces with the CAD edge overlay. A session starts here; the user's
     // choice then persists across model replacement.
@@ -62,16 +62,13 @@ public class CADUISettings : MonoBehaviour
         if (!float.IsFinite(scale))
             return;
 
-        // Snap to the step so repeated +/- never drifts (0.7, 0.8 ... 1.5).
-        float snapped = Mathf.Clamp(Mathf.Round(scale / UiScaleStep) * UiScaleStep, MinUiScale, MaxUiScale);
-        if (Mathf.Approximately(snapped, UiScale))
+        float clamped = Mathf.Clamp(scale, MinUiScale, MaxUiScale);
+        if (Mathf.Approximately(clamped, UiScale))
             return;
 
-        UiScale = snapped;
-        UiScaleChanged?.Invoke(snapped);
+        UiScale = clamped;
+        UiScaleChanged?.Invoke(clamped);
     }
-
-    public void StepUiScale(int steps) => SetUiScale(UiScale + steps * UiScaleStep);
 
     public void SetCadenEnabled(bool enabled)
     {

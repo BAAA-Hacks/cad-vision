@@ -728,6 +728,9 @@ public class CADContextMenu : MonoBehaviour
     {
         panel = new CADMenuPanel("CAD Context Menu", PanelWidth, CADMenuStyle.Default);
         panelRoot = panel.Root;
+        // Corner resize: one size for every context menu (the panel is reused), kept for the session.
+        panel.EnableResize(() => panelRoot.transform.localScale.x,
+            size => panelRoot.transform.localScale = Vector3.one * size);
         panel.CloseRequested = () => Hide("another menu opened");
 
         // Header: title, then the quiet scope line (the hierarchy section starts here).

@@ -286,6 +286,17 @@ public sealed class CADMenuPanel
     /// <summary>A new target: forget the hand placement so the owner places the panel automatically.</summary>
     public void ForgetMove() => frame.ForgetMove();
 
+    /// <summary>
+    /// Corner resize (Quest style): get/set the panel's size factor; the owner applies it
+    /// (usually Root's scale) and the frame keeps the opposite corner in place.
+    /// </summary>
+    public void EnableResize(Func<float> getScale, Action<float> setScale) => frame.EnableResize(getScale, setScale);
+
+    public bool IsResizing => frame.IsResizing;
+
+    /// <summary>The shared window frame (resize handles, glow, drag), for tests and owners.</summary>
+    public CADWindowFrame Frame => frame;
+
     private void TrackHover(PointerEvent evt) => frame.TrackHover(evt);
 
     private void LogPointerEvent(PointerEvent evt)

@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Linq;
+using CADEN.Unity;
 using CADVision;
 using Core;
 using Oculus.Interaction;
@@ -54,6 +55,13 @@ public sealed class CadenPanel : MonoBehaviour
     private bool minimized;
     private float openness = 1;
     private Image microphoneFace;
+    // Voice feedback that works without looking at the panel (hands have no button to feel):
+    // a listening pulse on the logo, a hint beside the collapsed logo, and a click on start/stop.
+    private CanvasGroup voiceHint;
+    private Text voiceHintText;
+    private AudioSource clickSource;
+    private AudioClip startClick, stopClick;
+    private bool wasRecording;
     private GameObject microphoneSlash;
     private bool microphonePreview;
 
@@ -76,6 +84,9 @@ public sealed class CadenPanel : MonoBehaviour
 
     // Shared window frame and movement; CADEN on/off from the Main Menu.
     private CADWindowFrame frame;
+    // Window size from corner resizing (1 = normal), kept for the session. The head-locked logo
+    // tile keeps its own size.
+    private float size = 1f;
     private CADPointerInteraction pointer;
     private CADUISettings settings;
 
@@ -112,7 +123,7 @@ public sealed class CadenPanel : MonoBehaviour
         {
             displayedVoiceError = voice.LastError;
             AddMessage("VOICE ERROR", voice.LastError, false);
-            feedback.text = "Voice failed. See the error above; press Y to retry.";
+            feedback.text = "Voice failed. See the error above; tap the mic, Y or pinch to retry.";
         }
         if (!voiceFailed) displayedVoiceError = null;
         bool processing = (host.IsBusy && !microphonePreview) || host.Status.StartsWith("Loading", StringComparison.Ordinal);
@@ -123,6 +134,40 @@ public sealed class CadenPanel : MonoBehaviour
                 ? Color.Lerp(Card, Cyan, 0.5f + 0.5f * Mathf.Sin(Time.unscaledTime * 7f)) : Card;
         if (microphoneSlash != null) microphoneSlash.SetActive(!microphonePreview);
         AnimateLogo(host.IsBusy && !microphonePreview);
+        UpdateVoiceFeedback(voice);
+    }
+
+    // Hint beside the collapsed logo while CADEN listens or thinks; a click when listening
+    // starts and stops.
+    private void UpdateVoiceFeedback(CadenVoiceInput voice)
+    {
+        bool recording = voice != null && voice.Recording;
+        if (recording != wasRecording && IsShowing && clickSource != null)
+            clickSource.PlayOneShot(recording ? startClick : stopClick);
+        wasRecording = recording;
+
+        string hint = recording ? "Listening… release, or tap again, to send"
+            : voice != null && voice.Busy ? "Transcribing…"
+            : host.IsBusy ? "CADEN is thinking…"
+            : null;
+        bool show = hint != null && openness < 0.5f;
+        if (show && voiceHintText.text != hint) voiceHintText.text = hint;
+        voiceHint.alpha = Mathf.MoveTowards(voiceHint.alpha, show ? 1 : 0, Time.unscaledDeltaTime / 0.15f);
+    }
+
+    private static AudioClip Click(string name, float frequency)
+    {
+        const int rate = 24000;
+        int samples = rate * 45 / 1000;
+        var data = new float[samples];
+        for (int i = 0; i < samples; i++)
+        {
+            float t = (float)i / rate;
+            data[i] = 0.25f * Mathf.Sin(2 * Mathf.PI * frequency * t) * Mathf.Exp(-t * 90f);
+        }
+        var clip = AudioClip.Create(name, samples, 1, rate, false);
+        clip.SetData(data, 0);
+        return clip;
     }
 
     private void AnimateLogo(bool working)
@@ -130,7 +175,10 @@ public sealed class CadenPanel : MonoBehaviour
         bool speaking = host.IsSpeaking;
         if (speaking) lastSpokeAt = Time.unscaledTime;
         // Glow follows speech loudness; it eases out between sentences instead of flickering.
-        float target = speaking ? 0.55f + 0.45f * Mathf.Clamp01(host.SpeechLevel * 6f) : 0;
+        // Listening: a slow pulse, so it's clear CADEN hears you (hands have no button to feel).
+        float target = speaking ? 0.55f + 0.45f * Mathf.Clamp01(host.SpeechLevel * 6f)
+            : microphonePreview ? 0.45f + 0.25f * (0.5f + 0.5f * Mathf.Sin(Time.unscaledTime * 6f))
+            : 0;
         glow = Mathf.Lerp(glow, target, 1 - Mathf.Exp(-12f * Time.unscaledDeltaTime));
         logoGlow.color = new Color(Cyan.r, Cyan.g, Cyan.b, glow * 0.8f);
         logoGlow.rectTransform.localScale = Vector3.one * (0.9f + 0.2f * glow);
@@ -257,6 +305,7 @@ public sealed class CadenPanel : MonoBehaviour
         frame = new CADWindowFrame(transform, p, CADMenuStyle.Default,
             () => IsShowing && !minimized && openness >= 1f);
         frame.AddGrabRegion(Rect("Header grab region", p, 0, 0, W, 104)); // Like the Main Menu's header.
+        frame.EnableResize(() => size, SetSize);
         Image("Brand accent", p, 28, 22, 5, 58, Cyan);
         Label("Brand", p, 120, 25, 270, 30, "CADVision", 27, Color.white, true);
         Label("Subtitle", p, 120, 58, 300, 24, "CADEN · Assembly chat", 18, Muted);
@@ -318,7 +367,7 @@ public sealed class CadenPanel : MonoBehaviour
         var surfaceObject = new GameObject("CADEN ray surface"); surfaceObject.layer = 2;
         surfaceObject.transform.SetParent(transform, false);
         surfaceBox = surfaceObject.AddComponent<BoxCollider>();
-        surfaceBox.size = CADWindowFrame.SurfaceSize(W, H); // Includes the grab band and margin.
+        surfaceBox.size = ExpandedSurfaceSize(); // Includes the grab band and margin.
         var pointable = canvasRect.gameObject.AddComponent<PointableCanvas>(); pointable.InjectAllPointableCanvas(canvas);
         var surface = surfaceObject.AddComponent<ColliderSurface>(); surface.InjectAllColliderSurface(surfaceBox);
         var ray = surfaceObject.AddComponent<RayInteractable>(); ray.InjectAllRayInteractable(surface);
@@ -347,6 +396,18 @@ public sealed class CadenPanel : MonoBehaviour
         var colors = button.colors; colors.highlightedColor = new Color(0.8f, 0.97f, 1); colors.pressedColor = new Color(0.6f, 0.85f, 0.9f);
         button.colors = colors; button.navigation = new Navigation { mode = Navigation.Mode.None };
         button.onClick.AddListener(() => SetMinimized(!minimized));
+
+        // Voice hint beside the collapsed logo (head-locked with it); not a ray target.
+        var hintCard = Image("Voice hint", canvasRect, TileX + TileSize + 10, TileY + 22, 300, 38, Navy);
+        hintCard.raycastTarget = false;
+        voiceHint = hintCard.gameObject.AddComponent<CanvasGroup>();
+        voiceHint.alpha = 0; voiceHint.blocksRaycasts = false; voiceHint.interactable = false;
+        voiceHintText = Label("Hint", hintCard.rectTransform, 14, 0, 280, 38, "", 17, Cyan);
+
+        clickSource = gameObject.AddComponent<AudioSource>();
+        clickSource.playOnAwake = false; clickSource.spatialBlend = 0; clickSource.volume = 0.6f;
+        startClick = Click("CADEN listen start", 1320f);
+        stopClick = Click("CADEN listen stop", 880f);
     }
 
     private void BuildGlow()
@@ -378,10 +439,10 @@ public sealed class CadenPanel : MonoBehaviour
         if (!value) expanded.SetActive(true);
         expandedGroup.interactable = expandedGroup.blocksRaycasts = !value;
         // Shrink the ray collider to the logo tile so the collapsed panel doesn't block the scene.
-        surfaceBox.size = value ? new Vector3(TileSize * Scale, TileSize * Scale, 0.004f) : CADWindowFrame.SurfaceSize(W, H);
+        surfaceBox.size = value ? new Vector3(TileSize * Scale, TileSize * Scale, 0.004f) : ExpandedSurfaceSize();
         surfaceBox.center = value
             ? new Vector3((TileX + TileSize / 2 - W / 2) * Scale, (H / 2 - TileY - TileSize / 2) * Scale, 0)
-            : Vector3.zero;
+            : surfaceBox.center; // Set with the size (ExpandedSurfaceSize).
     }
 
     private void AnimateMinimize()
@@ -390,12 +451,30 @@ public sealed class CadenPanel : MonoBehaviour
         if (openness == target) return;
         openness = Mathf.MoveTowards(openness, target, Time.unscaledDeltaTime / MinimizeSeconds);
         float e = Mathf.SmoothStep(0, 1, openness);
-        expanded.transform.localScale = Vector3.one * Mathf.Lerp(TileSize / W, 1, e);
+        expanded.transform.localScale = Vector3.one * Mathf.Lerp(TileSize / W, size, e);
         // Content fades out early on collapse; the logo tile fades in as the panel reaches it.
         expandedGroup.alpha = Mathf.SmoothStep(0, 1, Mathf.InverseLerp(0.2f, 1, openness));
         minimizedTile.alpha = Mathf.SmoothStep(0, 1, Mathf.InverseLerp(0.4f, 0, openness));
         ApplyPose(e);
         if (openness == 0) expanded.SetActive(false);
+    }
+
+    // Corner resize: the open panel zooms (it is pivoted at the logo; the frame keeps the
+    // opposite corner in place). The collapsed tile is unaffected.
+    private void SetSize(float value)
+    {
+        size = value;
+        if (!minimized) expanded.transform.localScale = Vector3.one * size;
+        if (!minimized) surfaceBox.size = ExpandedSurfaceSize();
+    }
+
+    // The ray surface of the open panel, centered on it at any size: the panel is pivoted at the
+    // logo, so a resized panel's center moves away from the root.
+    private Vector3 ExpandedSurfaceSize()
+    {
+        Vector3 full = CADWindowFrame.SurfaceSize(W, H);
+        surfaceBox.center = new Vector3((W / 2 - LogoCenter.x) * Scale * (size - 1f), -(H / 2 - LogoCenter.y) * Scale * (size - 1f), 0f);
+        return new Vector3(full.x * size, full.y * size, full.z);
     }
 
     private void PlaceAtLogo()
@@ -521,10 +600,13 @@ public sealed class CadenPanel : MonoBehaviour
             pixels[y * size + x] = new Color(1, 1, 1, Mathf.Clamp01(31.5f - Vector2.Distance(new Vector2(x, y), new Vector2(31.5f, 31.5f))));
         circleTexture.SetPixels(pixels); circleTexture.Apply();
         circle = Sprite.Create(circleTexture, new Rect(0, 0, size, size), new Vector2(0.5f, 0.5f));
-        microphoneFace = Image("Microphone status (use left Y)", parent, 28, 634, 64, 64, Card);
+        microphoneFace = Image("Microphone (tap, left Y, or middle-finger pinch)", parent, 28, 634, 64, 64, Card);
         microphoneFace.sprite = circle; microphoneFace.type = UnityEngine.UI.Image.Type.Simple;
-        // Status indicator only; left-controller Y is hold-to-talk or tap-to-toggle (CadenVoiceInput.Press/Release).
-        microphoneFace.raycastTarget = false;
+        // Tap: start listening, tap again to send, tap while working to cancel (like tapping Y).
+        var micButton = microphoneFace.gameObject.AddComponent<Button>();
+        micButton.targetGraphic = microphoneFace;
+        micButton.navigation = new Navigation { mode = Navigation.Mode.None };
+        micButton.onClick.AddListener(() => host.ToggleVoice());
         Image("Mic capsule", microphoneFace.transform, 25, 13, 14, 25, Color.white).raycastTarget = false;
         Image("Mic left", microphoneFace.transform, 19, 27, 3, 14, Color.white).raycastTarget = false;
         Image("Mic right", microphoneFace.transform, 42, 27, 3, 14, Color.white).raycastTarget = false;
@@ -561,5 +643,6 @@ public sealed class CadenPanel : MonoBehaviour
         if (rounded != null) Destroy(rounded); if (roundedTexture != null) Destroy(roundedTexture);
         if (circle != null) Destroy(circle); if (circleTexture != null) Destroy(circleTexture);
         if (glowSprite != null) Destroy(glowSprite); if (glowTexture != null) Destroy(glowTexture);
+        if (startClick != null) Destroy(startClick); if (stopClick != null) Destroy(stopClick);
     }
 }

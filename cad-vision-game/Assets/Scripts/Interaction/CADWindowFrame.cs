@@ -22,7 +22,12 @@ using UnityEngine.UI;
 ///   (windows sit about 1 m away, so the boost is always on), and the window stays between
 ///   MinDistance and MaxDistance from the head;
 /// - glow: while a ray hovers a grab point (or drags), the part of the border nearest the ray
-///   lights up.
+///   lights up;
+/// - resize (Quest style, once the owner calls EnableResize): a corner handle outside each of
+///   the four corners fades in as a ray comes near and turns cyan on it. Pressing a corner and
+///   dragging zooms the whole window (content included) between MinScale and MaxScale, the
+///   opposite corner staying put: the pressed point follows the ray on the window's plane.
+///   Corners win over moving.
 ///
 /// The owner builds the canvas, window rect and ray surface; it forwards the surface's pointer
 /// events to TrackHover, calls UpdateDrag each frame while the window shows, and sizes the
@@ -58,6 +63,29 @@ public sealed class CADWindowFrame
     public float MinDistance = 0.4f;
     /// <summary>Farthest a dragged window goes from the head (m).</summary>
     public float MaxDistance = 3f;
+
+    // Resize: corner zones (canvas units: from the window corner outward to the end of the grab
+    // margin, and CornerInside inward), handle look, and the drag state.
+    private const float CornerInside = 18f;
+    private const float HandleLength = 30f, HandleThickness = 6f, HandleGap = 7f;
+    private const float HandleShowDistance = 40f, HandleFadeDistance = 60f;
+    private readonly RectTransform[] handles = new RectTransform[4];
+    private readonly Image[][] handleBars = new Image[4][];
+    private readonly Color handleRest, handleHot;
+    private Func<float> scaleGetter;
+    private Action<float> scaleSetter;
+    private ICADPointerSource resizeSource;
+    private int resizeCorner = -1;
+    private Vector3 resizeAnchorLocal, resizeAnchorWorld, resizeNormal, resizeDiagonal;
+    private float resizePressProjection, resizeStartScale;
+
+    /// <summary>Smallest and largest window size (× its normal size).</summary>
+    public float MinScale = 0.6f;
+    public float MaxScale = 1.6f;
+    /// <summary>A resize ended at this size (owners remember it).</summary>
+    public event Action<float> Resized;
+    public bool CanResize => scaleGetter != null && scaleSetter != null;
+    public bool IsResizing => resizeSource != null;
 
     /// <summary>Padding strip just inside the window that also grabs (canvas units).</summary>
     public float InnerGrabInset = CADMenuPanel.Padding - 2f;
@@ -110,6 +138,12 @@ public sealed class CADWindowFrame
         edgeGlow.Radius = CADMenuPanel.RoundedCorners ? PanelRadius : 0f;
         edgeGlow.GlowSize = GlowSize;
         Stretch((RectTransform)glowObject.transform, 0f);
+
+        // Corner resize handles, hidden until EnableResize and a ray comes near.
+        handleRest = style.SecondaryTextColor;
+        handleHot = style.SelectedButtonColor;
+        for (int corner = 0; corner < 4; corner++)
+            BuildHandle(corner);
 
         // Behind everything the owner adds (or already added).
         glowObject.transform.SetAsFirstSibling();
@@ -201,7 +235,11 @@ public sealed class CADWindowFrame
 
     private void OnUiPressed(ICADPointerSource source, Vector3 hitPoint)
     {
-        if (canInteract() && dragSource == null && IsGrabPoint(hitPoint))
+        if (!canInteract() || dragSource != null || resizeSource != null)
+            return;
+        if (CanResize && IsResizePoint(hitPoint, out int corner))
+            BeginResize(source, hitPoint, corner);
+        else if (IsGrabPoint(hitPoint))
             BeginDrag(source, hitPoint);
     }
 
@@ -222,6 +260,7 @@ public sealed class CADWindowFrame
     /// </summary>
     public void UpdateDrag()
     {
+        UpdateResize();
         UpdateGrabGlow(Time.unscaledDeltaTime);
         if (dragSource == null)
             return;
@@ -274,6 +313,7 @@ public sealed class CADWindowFrame
     public void Reset()
     {
         EndDrag();
+        EndResize();
         WasMoved = false;
         hoverPoints.Clear();
         SetGrabGlow(0f);
@@ -299,10 +339,11 @@ public sealed class CADWindowFrame
         }
     }
 
-    /// <summary>Fades the glow toward on (a ray on a grab point, or dragging) or off.</summary>
+    /// <summary>Fades the glow toward on (a ray on a grab point, dragging or resizing) or off.</summary>
     public void UpdateGrabGlow(float deltaTime)
     {
-        bool hot = IsDragging;
+        UpdateHandles();
+        bool hot = IsDragging || IsResizing;
         foreach (Vector3 point in hoverPoints.Values)
         {
             if (IsGrabPoint(point))
@@ -324,6 +365,194 @@ public sealed class CADWindowFrame
         // window isn't pivoted at its center (e.g. the CADEN panel, pivoted at its logo).
         Vector3 local = edgeGlow.rectTransform.InverseTransformPoint(spotPoint);
         edgeGlow.SetState(glow, new Vector2(local.x, local.y));
+    }
+
+    // ---------------- Resize ----------------
+
+    /// <summary>
+    /// Lets the corners resize the window: get/set its size factor (1 = normal). The owner
+    /// applies the factor (scaling the window about any point); the frame keeps the opposite
+    /// corner in place by moving the root.
+    /// </summary>
+    public void EnableResize(Func<float> getScale, Action<float> setScale)
+    {
+        scaleGetter = getScale;
+        scaleSetter = setScale;
+    }
+
+    // Corners 0..3: top-left, top-right, bottom-right, bottom-left.
+    private static Vector2 CornerSign(int corner) => corner switch
+    {
+        0 => new Vector2(-1f, 1f),
+        1 => new Vector2(1f, 1f),
+        2 => new Vector2(1f, -1f),
+        _ => new Vector2(-1f, -1f),
+    };
+
+    private Vector3 CornerLocal(int corner)
+    {
+        Rect r = window.rect;
+        Vector2 sign = CornerSign(corner);
+        return new Vector3(sign.x < 0 ? r.xMin : r.xMax, sign.y < 0 ? r.yMin : r.yMax, 0f);
+    }
+
+    /// <summary>True if a world point (a ray hit) is on a corner resize handle (see the class summary).</summary>
+    public bool IsResizePoint(Vector3 worldPoint, out int corner)
+    {
+        corner = -1;
+        Vector3 local = window.InverseTransformPoint(worldPoint);
+        if (Mathf.Abs(local.z) > 30f)
+            return false;
+
+        float reach = BorderWidth + 2f + GrabMargin;
+        for (int c = 0; c < 4; c++)
+        {
+            Vector3 cornerLocal = CornerLocal(c);
+            Vector2 sign = CornerSign(c);
+            // Outward along each axis up to the end of the grab margin, inward CornerInside.
+            float dx = (local.x - cornerLocal.x) * sign.x;
+            float dy = (local.y - cornerLocal.y) * sign.y;
+            if (dx >= -CornerInside && dx <= reach && dy >= -CornerInside && dy <= reach &&
+                (dx >= 0f || dy >= 0f || !IsOnControl(worldPoint)))
+            {
+                corner = c;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void BeginResize(ICADPointerSource source, Vector3 hitPoint, int corner)
+    {
+        resizeCorner = corner;
+        resizeAnchorLocal = CornerLocal((corner + 2) % 4); // The opposite corner stays put.
+        resizeAnchorWorld = window.TransformPoint(resizeAnchorLocal);
+        resizeNormal = window.forward;
+        resizeDiagonal = window.TransformPoint(CornerLocal(corner)) - resizeAnchorWorld;
+        resizePressProjection = Vector3.Dot(hitPoint - resizeAnchorWorld, resizeDiagonal);
+        resizeStartScale = scaleGetter();
+        if (resizePressProjection <= 1e-8f)
+            return;
+        resizeSource = source;
+        DragStarted?.Invoke();
+        Debug.Log($"[CADWindowFrame] '{root.name}' resized with {source.SourceId}.");
+    }
+
+    // The pressed point follows the ray on the window's plane (fixed at the press), measured
+    // along the diagonal from the anchor corner: its distance ratio is the size ratio.
+    private void UpdateResize()
+    {
+        if (resizeSource == null)
+            return;
+
+        if (!canInteract() || !CanResize || !resizeSource.IsAvailable || !resizeSource.IsSelecting)
+        {
+            EndResize();
+            return;
+        }
+
+        Pose pose = resizeSource.Pose;
+        Vector3 direction = pose.rotation * Vector3.forward;
+        float denominator = Vector3.Dot(direction, resizeNormal);
+        if (Mathf.Abs(denominator) < 1e-4f)
+            return; // Ray parallel to the window: keep the size.
+        float distance = Vector3.Dot(resizeAnchorWorld - pose.position, resizeNormal) / denominator;
+        if (distance <= 0f)
+            return;
+
+        Vector3 onPlane = pose.position + direction * distance;
+        float ratio = Vector3.Dot(onPlane - resizeAnchorWorld, resizeDiagonal) / resizePressProjection;
+        float size = Mathf.Clamp(resizeStartScale * ratio, MinScale, Mathf.Max(MinScale, MaxScale));
+        scaleSetter(size);
+        root.position += resizeAnchorWorld - window.TransformPoint(resizeAnchorLocal);
+        WasMoved = true;
+    }
+
+    public void EndResize()
+    {
+        if (resizeSource == null)
+            return;
+        resizeSource = null;
+        resizeCorner = -1;
+        if (CanResize)
+            Resized?.Invoke(scaleGetter());
+    }
+
+    // An L around each corner, in the grab margin just outside the border.
+    private void BuildHandle(int corner)
+    {
+        Vector2 sign = CornerSign(corner);
+        var go = new GameObject($"Resize Handle {corner}", typeof(RectTransform));
+        go.transform.SetParent(window, false);
+        var rect = (RectTransform)go.transform;
+        rect.anchorMin = rect.anchorMax = new Vector2(sign.x < 0 ? 0f : 1f, sign.y < 0 ? 0f : 1f);
+        rect.sizeDelta = Vector2.zero;
+        float offset = BorderWidth + 2f + HandleGap;
+        rect.anchoredPosition = sign * offset;
+
+        float along = HandleLength * 0.5f - HandleThickness * 0.5f;
+        Image horizontal = HandleBar(rect, new Vector2(HandleLength, HandleThickness), new Vector2(-sign.x * along, 0f));
+        Image vertical = HandleBar(rect, new Vector2(HandleThickness, HandleLength), new Vector2(0f, -sign.y * along));
+        handles[corner] = rect;
+        handleBars[corner] = new[] { horizontal, vertical };
+        go.SetActive(false);
+    }
+
+    private Image HandleBar(RectTransform parent, Vector2 size, Vector2 center)
+    {
+        var go = new GameObject("Bar", typeof(RectTransform));
+        go.transform.SetParent(parent, false);
+        var image = go.AddComponent<Image>();
+        image.raycastTarget = false;
+        CADMenuPanel.MakeRounded(image, HandleThickness * 0.5f);
+        var rect = (RectTransform)go.transform;
+        rect.anchorMin = rect.anchorMax = new Vector2(0.5f, 0.5f);
+        rect.sizeDelta = size;
+        rect.anchoredPosition = center;
+        return image;
+    }
+
+    // Each handle fades in as a ray comes near its corner, turns cyan on it or while resizing
+    // from it.
+    private void UpdateHandles()
+    {
+        for (int corner = 0; corner < 4; corner++)
+        {
+            float visibility = 0f;
+            bool hot = corner == resizeCorner;
+            if (CanResize && canInteract())
+            {
+                Vector3 cornerLocal = CornerLocal(corner);
+                foreach (Vector3 point in hoverPoints.Values)
+                {
+                    Vector3 local = window.InverseTransformPoint(point);
+                    float near = Vector2.Distance(new Vector2(local.x, local.y), new Vector2(cornerLocal.x, cornerLocal.y));
+                    visibility = Mathf.Max(visibility, 1f - Mathf.Clamp01((near - HandleShowDistance) / HandleFadeDistance));
+                    if (IsResizePoint(point, out int onCorner) && onCorner == corner)
+                        hot = true;
+                }
+                if (hot)
+                    visibility = 1f;
+            }
+
+            bool show = visibility > 0f;
+            if (handles[corner].gameObject.activeSelf != show)
+                handles[corner].gameObject.SetActive(show);
+            if (!show)
+                continue;
+            Color color = hot ? handleHot : handleRest;
+            color.a *= visibility;
+            foreach (Image bar in handleBars[corner])
+                bar.color = color;
+        }
+    }
+
+    /// <summary>Tests: how visible a corner's handle is (0 hidden .. 1) and whether it is lit.</summary>
+    public float HandleVisibility(int corner, out bool lit)
+    {
+        Image bar = handleBars[corner][0];
+        lit = handles[corner].gameObject.activeSelf && bar.color.r == handleHot.r && bar.color.g == handleHot.g;
+        return handles[corner].gameObject.activeSelf ? bar.color.a / Mathf.Max(handleRest.a, 1e-4f) : 0f;
     }
 
     // ---------------- Helpers ----------------
