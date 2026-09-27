@@ -34,6 +34,9 @@ public partial class CADVisionManipulationService : MonoBehaviour
     public string CurrentScopeId { get; private set; }
     public event Action ScopeChanged;
 
+    /// <summary>Raised after ReplaceImportedModel registered a new (or cleared) runtime model.</summary>
+    public event Action ModelReplaced;
+
     // True when visibility was set by Isolate(id)/scope exit, so ExitScope/ResetScope restore
     // the matching view. Explicit visibility calls (ShowAll, IsolateMany) clear it.
     private bool viewFollowsScope;
@@ -225,6 +228,7 @@ public partial class CADVisionManipulationService : MonoBehaviour
         ClearSelection();
         EndMultiSelect();
         EndModelManipulation();
+        ClearFocus(); // Focus targets are IDs of the outgoing model.
 
         foreach (string id in importedIds)
         {
@@ -273,6 +277,7 @@ public partial class CADVisionManipulationService : MonoBehaviour
         Debug.Log(importedIds.Count > 0
             ? $"Imported {importedIds.Count} runtime CAD objects under {root.name}."
             : "No runtime CAD model; imported objects cleared.");
+        ModelReplaced?.Invoke();
     }
 
     // -------------------------
@@ -374,6 +379,16 @@ public partial class CADVisionManipulationService : MonoBehaviour
         selectedIds.Clear();
         selectionPointId = null;
         ClearHighlights();
+    }
+
+    /// <summary>Every registered CAD object that still exists (scene-placed and imported).</summary>
+    public IEnumerable<CADObject> GetRegisteredObjects()
+    {
+        foreach (CADObject cadObject in objects.Values)
+        {
+            if (cadObject != null)
+                yield return cadObject;
+        }
     }
 
     public IEnumerable<CADObject> GetSelectedObjects()
@@ -804,6 +819,32 @@ public partial class CADVisionManipulationService : MonoBehaviour
     // -------------------------
     // Interaction Scope
     // -------------------------
+
+    public bool IsAtRootScope => CurrentScopeId == null;
+
+    // Readable scope name for UI: "Full model" at the root, else the scope object's name.
+    public string CurrentScopeDisplayName => CurrentScopeId == null ? "Full model" : GetDisplayName(CurrentScopeId);
+
+    // Display name of a CAD object (its imported object name); the ID if it has none.
+    public string GetDisplayName(string id) =>
+        TryGetLiveObject(id, out CADObject cadObject) && !string.IsNullOrWhiteSpace(cadObject.name)
+            ? cadObject.name
+            : id;
+
+    /// <summary>
+    /// The assembly EnterScope would enter from the current selection: exactly one selected
+    /// object that has CAD children and isn't already the scope.
+    /// </summary>
+    public bool TryGetEnterableSelection(out string id)
+    {
+        id = null;
+        List<string> selected = GetSelectedIds();
+        if (selected.Count != 1 || !HasCadChildren(selected[0]) || selected[0] == CurrentScopeId)
+            return false;
+
+        id = selected[0];
+        return true;
+    }
 
     // Makes id's direct CAD children the selectable level. Does not change visibility.
     public void EnterScope(string id)

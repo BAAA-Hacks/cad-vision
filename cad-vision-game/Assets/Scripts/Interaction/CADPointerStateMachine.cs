@@ -77,6 +77,19 @@ public sealed class CADPointerStateMachine
         return Intent.None;
     }
 
+    /// <summary>
+    /// Promotes a pending press on CAD to a drag without waiting for movement (a second pointer
+    /// joined to scale). No click can follow: the release is an EndDrag.
+    /// </summary>
+    public Intent BeginDragNow()
+    {
+        if (Current != State.Pressed || PressKind != CADPointerTargetKind.Cad)
+            return Intent.None;
+
+        Current = State.Dragging;
+        return Intent.BeginDrag;
+    }
+
     public Intent Up(float time)
     {
         State previous = Current;

@@ -217,7 +217,7 @@ public class CADMultiSelectTests
         svc.AddToSelection("S1"); // Nested one level deeper, under S.
         Tick();
 
-        MenuButton("Isolate Selected").onClick.Invoke();
+        svc.IsolateSelected();
 
         Assert.That(t["P1"].gameObject.activeInHierarchy, Is.True, "10: selected P1 visible");
         Assert.That(t["S1"].gameObject.activeInHierarchy, Is.True, "10: selected S1 visible");
@@ -225,7 +225,7 @@ public class CADMultiSelectTests
         Assert.That(t["P2"].gameObject.activeInHierarchy, Is.False, "unselected sibling hidden");
         Assert.That(t["P3"].gameObject.activeInHierarchy, Is.False);
 
-        MenuButton("Show All").onClick.Invoke();
+        svc.ShowAll();
 
         Assert.That(t.Values.All(x => x.gameObject.activeInHierarchy), Is.True, "12: everything visible again");
     }
@@ -306,8 +306,9 @@ public class CADMultiSelectTests
         Handle(machine.Up(0.1f));
         Assert.That(Selected(), Is.EquivalentTo(new[] { "P1", "P2" }));
 
-        MenuButton("Show All").onClick.Invoke();
+        MenuButton("Focus Selection").onClick.Invoke();
         Assert.That(Selected(), Is.EquivalentTo(new[] { "P1", "P2" }));
+        Assert.That(svc.IsFocusActive, Is.True);
     }
 
     // 16

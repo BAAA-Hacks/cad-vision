@@ -1107,6 +1107,10 @@ GameObject:
   - component: {fileID: 191370964}
   - component: {fileID: 191370965}
   - component: {fileID: 191370966}
+  - component: {fileID: 191370968}
+  - component: {fileID: 191370967}
+  - component: {fileID: 191370969}
+  - component: {fileID: 191370970}
   m_Layer: 0
   m_Name: ManipulationManager
   m_TagString: Untagged
@@ -1142,6 +1146,8 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::CADVisionManipulationService
   modelRoot: {fileID: 720663854}
+  minModelScaleRatio: 0.05
+  maxModelScaleRatio: 20
   highlightColor: {r: 1, g: 0.92156863, b: 0.015686275, a: 1}
 --- !u!114 &191370957
 MonoBehaviour:
@@ -1185,6 +1191,10 @@ MonoBehaviour:
   reachDistance: 0.5
   maxExtraGain: 4
   decayRate: 1.5
+  leftControllerAnchor: {fileID: 0}
+  minimumScaleSeparation: 0.08
+  minimumScaleRatio: 0.1
+  maximumScaleRatio: 10
 --- !u!114 &191370960
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -1226,6 +1236,10 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::CADRuntimeBridge
   runtime: {fileID: 737639394}
+  placeInFrontOfUser: 1
+  placementGap: 0.8
+  placementDrop: 0.2
+  headTrackingTimeout: 5
 --- !u!114 &191370963
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -1251,7 +1265,12 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 238c7c1ce9a64f540b289ef6b5f26f04, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::CADPointerInteraction
-  handedness: 1
+  useRightController: 1
+  useLeftController: 1
+  useRightHand: 1
+  useLeftHand: 1
+  alwaysShowHandRay: 1
+  handRayVisualLength: 1.5
   dragDistance: 0.03
   dragAngle: 6
   dragDelay: 0.15
@@ -1260,6 +1279,9 @@ MonoBehaviour:
   reachDistance: 0.5
   maxExtraGain: 4
   decayRate: 1.5
+  minimumScaleSeparation: 0.08
+  minimumScaleRatio: 0.1
+  maximumScaleRatio: 10
 --- !u!114 &191370965
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -1272,10 +1294,6 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 6a4c15d1f5ef47e4ba7a32aed9058fd4, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::CADContextMenu
-  offsetTowardHead: 0.15
-  verticalOffset: 0.05
-  minHeadDistance: 0.45
-  maxHeadDistance: 1.2
   refaceHeadMovement: 0.4
   panelColor: {r: 0.1, g: 0.11, b: 0.14, a: 0.96}
   borderColor: {r: 0.55, g: 0.85, b: 1, a: 1}
@@ -1295,6 +1313,68 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::CADSelectionOutline
   outlineColor: {r: 0, g: 0.9, b: 1, a: 1}
   outlineWidth: 0.004
+--- !u!114 &191370967
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 191370954}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 3bbd8245793bd774cab8f051fd3b888d, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::CADMainMenu
+  spawnDistance: 0.7
+  spawnDrop: 0.12
+  startVisible: 0
+--- !u!114 &191370968
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 191370954}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: d571129fcaf5f8349847cf6885ccf24d, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::CADUISettings
+--- !u!114 &191370969
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 191370954}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0fcd3a6fbf334273acb6649854f5f896, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::CADMainMenuInput
+  leftHandMenuGesture: 0
+  verboseLogging: 1
+--- !u!114 &191370970
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 191370954}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: edf0f3a57a62ba741afd5017e1ffff54, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::CADDisplayModeController
+  creaseAngle: 30
+  edgeColor: {r: 0.08, g: 0.09, b: 0.11, a: 1}
+  wireEdgeColor: {r: 0.1, g: 0.16, b: 0.24, a: 1}
+  hiddenEdgeColor: {r: 0.1, g: 0.16, b: 0.24, a: 0.25}
+  wireSurfaceColor: {r: 0.86, g: 0.89, b: 0.93, a: 1}
+  wireSurfaceOpacity: 0.15
+  ghostSurfaceColor: {r: 0.78, g: 0.82, b: 0.88, a: 1}
+  ghostSurfaceOpacity: 0.08
+  ghostEdgeColor: {r: 0.45, g: 0.5, b: 0.58, a: 0.35}
 --- !u!1 &212617061
 GameObject:
   m_ObjectHideFlags: 0

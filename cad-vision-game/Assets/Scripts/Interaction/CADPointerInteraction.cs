@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using Oculus.Interaction;
 using UnityEngine;
 
@@ -16,10 +17,15 @@ using UnityEngine;
 ///
 /// Arbitration: the first source to press owns the interaction until it releases or loses
 /// tracking; presses from other sources meanwhile never click, select or steal the drag. The
-/// one exception is scaling: while the owner drags, a source of the other hand pressing on the
-/// held object/model starts two-pointer scaling (the shared CADScaleGesture). A source that
-/// appears (e.g. hands replacing controllers) with select already held is ignored until it
-/// releases, so switching never clicks.
+/// one exception is scaling: a source of the other hand pressing on the same logical target
+/// (the held object, any member of the held group, any geometry of the held assembly, any
+/// model geometry in model mode) joins as the scale partner (the shared CADScaleGesture), both
+/// while the owner drags and while its press is still pending (Pressed, not yet a drag): then
+/// the pending press is promoted to a drag at the current pose, so both hands can grab at about
+/// the same time with no wait and no click. If the owner releases first, the partner is
+/// promoted to owner and keeps dragging. A source that appears (e.g. hands replacing
+/// controllers) with select already held is ignored until it releases, so switching never
+/// clicks.
 ///
 /// While the service's whole-model manipulation mode is active, a drag on any CAD geometry
 /// holds the model root (at the pressed point) instead of an object; clicks leave selection
@@ -32,13 +38,21 @@ public class CADPointerInteraction : MonoBehaviour
     /// <summary>True while an enabled instance owns ray selection (legacy adapters defer).</summary>
     public static bool Active { get; private set; }
 
+    // Left and right are symmetric: every source feeds the same state machine, session, scaling
+    // and UI path, and whichever presses first owns the interaction.
     [Header("Pointer Sources")]
     [Tooltip("Controller rays: trigger = select.")]
     [SerializeField] private bool useRightController = true;
-    [SerializeField] private bool useLeftController = false;
+    [SerializeField] private bool useLeftController = true;
     [Tooltip("Hand rays: index pinch = select.")]
     [SerializeField] private bool useRightHand = true;
     [SerializeField] private bool useLeftHand = true;
+
+    [Header("Hand Ray Visual")]
+    [Tooltip("Show the hand ray whenever the hand is pointing, not only over something interactive (easier aiming).")]
+    [SerializeField] private bool alwaysShowHandRay = true;
+    [Tooltip("Drawn length of the hand ray (m). The rig default is a 0.25 m stub.")]
+    [SerializeField, Min(0.1f)] private float handRayVisualLength = 1.5f;
 
     // Renamed from dragStartDistance/dragStartAngle so existing scene values (1.5 cm / 2.5°,
     // too sensitive to the trigger-squeeze jolt) don't override the new defaults.
@@ -65,6 +79,12 @@ public class CADPointerInteraction : MonoBehaviour
 
     /// <summary>The selected CAD object was activated again (menu hook; no visual yet).</summary>
     public event Action<CADContextMenuRequest> ContextMenuRequested;
+
+    /// <summary>
+    /// A source pressed on UI at a world point (e.g. a panel's title bar). Listeners may follow
+    /// that source's pose while it stays selected; the press is otherwise a normal UI press.
+    /// </summary>
+    public event Action<ICADPointerSource, Vector3> UiPressed;
 
     public bool IsManipulating => session.IsActive;
     public bool IsManipulatingModel => session.IsModel;
@@ -163,7 +183,36 @@ public class CADPointerInteraction : MonoBehaviour
             if (sources.Any(src => src is CADRayPointerSource known && known.Ray == ray))
                 continue;
             if (CADRayPointerSource.TryCreate(ray, out CADRayPointerSource source) && IsWanted(source))
+            {
                 RegisterSource(source);
+                if (source.Kind == CADPointerSourceKind.Hand && alwaysShowHandRay)
+                    ConfigureHandRayVisual(ray);
+            }
+        }
+    }
+
+    // The rig's hand ray visual hides unless it's over an interactable and is only 0.25 m long.
+    // RayInteractorRayVisual exposes no setters for those, so its two serialized fields are
+    // set directly (the SDK still hides the ray whenever the hand isn't in a pointing pose).
+    private void ConfigureHandRayVisual(RayInteractor ray)
+    {
+        const BindingFlags Fields = BindingFlags.Instance | BindingFlags.NonPublic;
+        FieldInfo interactorField = typeof(RayInteractorRayVisual).GetField("_rayInteractor", Fields);
+        FieldInfo hideField = typeof(RayInteractorRayVisual).GetField("_hideWhenNoInteractable", Fields);
+        FieldInfo lengthField = typeof(RayInteractorRayVisual).GetField("_maxRayVisualLength", Fields);
+        if (interactorField == null || hideField == null || lengthField == null)
+        {
+            Debug.LogWarning("[CADPointer] RayInteractorRayVisual fields changed in this SDK version; hand ray visual left as is.");
+            return;
+        }
+
+        foreach (RayInteractorRayVisual visual in FindObjectsByType<RayInteractorRayVisual>(FindObjectsInactive.Include))
+        {
+            if (!ReferenceEquals(interactorField.GetValue(visual), ray))
+                continue;
+            hideField.SetValue(visual, false);
+            lengthField.SetValue(visual, handRayVisualLength);
+            Debug.Log($"[CADPointer] Hand ray visual on '{ray.name}': always shown, {handRayVisualLength:F1} m.");
         }
     }
 
@@ -226,7 +275,7 @@ public class CADPointerInteraction : MonoBehaviour
             return;
         }
 
-        if (TryBeginPointerScale(source))
+        if (TryBeginPointerScale(source) || TryJoinPendingPress(source))
             return;
 
         Debug.Log($"[CADPointer] {source.SourceId} press ignored: {owner.SourceId} owns the interaction.");
@@ -242,6 +291,17 @@ public class CADPointerInteraction : MonoBehaviour
 
         if (source != owner)
             return; // An ignored press ends: nothing to do (never a click).
+
+        // Two-pointer gesture and the owner lets go first: the partner keeps the drag.
+        if (scalePartner != null && session.IsActive && scalePartner.IsAvailable && scalePartner.IsSelecting)
+        {
+            ICADPointerSource partner = scalePartner;
+            EndPointerScale($"{source.SourceId} released; {partner.SourceId} continues");
+            owner = partner;
+            session.Rebase(partner.Pose);
+            scaledLastFrame = false;
+            return;
+        }
 
         EndPointerScale($"{source.SourceId} released");
         owner = null;
@@ -289,14 +349,66 @@ public class CADPointerInteraction : MonoBehaviour
         return true;
     }
 
+    // The owner's press is still pending (not yet a drag) and the other hand presses the same
+    // logical target far enough away: start the owner's drag now, at its current pose, and join
+    // as the scale partner. Checked before anything changes, so an invalid second press leaves
+    // the pending press (and its click) exactly as it was.
+    private bool TryJoinPendingPress(ICADPointerSource source)
+    {
+        if (machine.Current != CADPointerStateMachine.State.Pressed || machine.PressKind != CADPointerTargetKind.Cad ||
+            source.Handedness == owner.Handedness || scalePartner != null)
+        {
+            return false;
+        }
+
+        if (source.Classify(out string cadId, out _) != CADPointerTargetKind.Cad)
+            return false;
+
+        float distance = Vector3.Distance(owner.Pose.position, source.Pose.position);
+        if (!(distance >= Mathf.Max(0.01f, minimumScaleSeparation)) || !WouldHoldTarget(cadId))
+            return false;
+
+        Handle(machine.BeginDragNow(), null, owner.Pose);
+        if (!session.IsActive)
+            return false; // The drag was refused (e.g. grip fallback holding); nothing to scale.
+
+        Debug.Log($"[CADPointer] {source.SourceId} joined {owner.SourceId}'s press: drag started for two-pointer scaling.");
+        return TryBeginPointerScale(source);
+    }
+
+    // What BeginManipulation would hold for the owner's pending press contains cadId: any CAD in
+    // model mode; the selection's transform roots for a group drag; else the pressed object.
+    private bool WouldHoldTarget(string cadId)
+    {
+        if (manipulationService.IsModelManipulationActive)
+            return manipulationService.ModelRoot != null;
+
+        bool picking = manipulationService.IsMultiSelectActive;
+        bool pressedSelected = pressedResolvedId != null && manipulationService.IsSelected(pressedResolvedId);
+        HashSet<string> held;
+        if (picking || (pressedSelected && manipulationService.GetSelectedIds().Count > 1))
+        {
+            held = new HashSet<string>(manipulationService.GetSelectedTransformRoots());
+            if (picking && !pressedSelected && pressedResolvedId != null)
+                held.Add(pressedResolvedId);
+        }
+        else
+        {
+            if (pressedResolvedId == null)
+                return false;
+            held = new HashSet<string> { pressedResolvedId };
+        }
+
+        return IsUnder(cadId, held);
+    }
+
     // The hit belongs to what the session holds: any CAD in model mode; otherwise the hit or
     // one of its logical ancestors (up to the first detached unit) is a held object.
-    private bool IsOnHeldTarget(string cadId)
-    {
-        if (session.IsModel)
-            return true;
+    private bool IsOnHeldTarget(string cadId) =>
+        session.IsModel || IsUnder(cadId, new HashSet<string>(session.GrabbedIds));
 
-        var held = new HashSet<string>(session.GrabbedIds);
+    private bool IsUnder(string cadId, HashSet<string> held)
+    {
         for (string id = cadId; id != null; id = manipulationService.GetLogicalParentId(id))
         {
             if (held.Contains(id))
@@ -369,6 +481,8 @@ public class CADPointerInteraction : MonoBehaviour
             pressedSelectedTarget = manipulationService.IsSelected(pressedResolvedId);
 
         machine.Down(kind, cadId, hitPoint, pose, time);
+        if (kind == CADPointerTargetKind.Ui && hitPoint.HasValue)
+            UiPressed?.Invoke(source, hitPoint.Value);
         Debug.Log($"[CADPointer] {source.SourceId} down on {kind}{(cadId != null ? $" '{cadId}'" : "")}" +
             $"{(pressedSelectedTarget ? " (already selected)" : "")}.");
     }
