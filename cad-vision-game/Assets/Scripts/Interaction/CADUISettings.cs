@@ -12,10 +12,9 @@ public enum CADDisplayMode { Shaded, Edges, Wireframe }
 ///   overlay; the default) or Wireframe, rendered by CADDisplayModeController.
 /// - OutlineEnabled: drives CADSelectionOutline.ShowOutlines (selection is never touched).
 /// - UiScale / UiScaleChanged: main menu scale (never the CAD model, the rig or context menus).
-/// - CadenEnabled / CadenEnabledChanged: PLACEHOLDER. CADEN integration attaches here: its
-///   Unity host subscribes to CadenEnabledChanged on the ManipulationManager's CADUISettings
-///   (or reads CadenEnabled) to start/stop listening. Nothing here references CADEN, and the
-///   toggle works with no listener.
+/// - CadenEnabled / CadenEnabledChanged: the Main Menu's CADEN toggle (on by default). While
+///   off, no CADEN element shows (CadenPanel and its head-locked logo, CadenStatusPanel) and
+///   CADEN's controller shortcuts do nothing. Nothing here references CADEN.
 /// </summary>
 [DisallowMultipleComponent]
 [RequireComponent(typeof(CADVisionManipulationService))]
@@ -36,7 +35,7 @@ public class CADUISettings : MonoBehaviour
     public float UiScale { get; private set; } = 1f;
     public event Action<float> UiScaleChanged;
 
-    public bool CadenEnabled { get; private set; }
+    public bool CadenEnabled { get; private set; } = true;
     public event Action<bool> CadenEnabledChanged;
 
     public void SetDisplayMode(CADDisplayMode mode)

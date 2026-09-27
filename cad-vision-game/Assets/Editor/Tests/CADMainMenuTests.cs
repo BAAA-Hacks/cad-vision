@@ -243,12 +243,14 @@ public class CADMainMenuTests
         var events = new List<bool>();
         settings.CadenEnabledChanged += events.Add;
 
-        Button("CADEN: Off").onClick.Invoke();
-        Assert.That(settings.CadenEnabled, Is.True);
+        Assert.That(settings.CadenEnabled, Is.True, "CADEN is on by default");
         Assert.That(menu.Panel.IsSelected(Button("CADEN: On")), Is.True);
         Button("CADEN: On").onClick.Invoke();
         Assert.That(settings.CadenEnabled, Is.False);
-        Assert.That(events, Is.EqualTo(new[] { true, false }));
+        Assert.That(menu.Panel.IsSelected(Button("CADEN: Off")), Is.False);
+        Button("CADEN: Off").onClick.Invoke();
+        Assert.That(settings.CadenEnabled, Is.True);
+        Assert.That(events, Is.EqualTo(new[] { false, true }));
         Assert.That(svc.IsSelected("P1"), Is.True, "selection untouched");
         Assert.That(svc.CurrentScopeId, Is.Null, "scope untouched");
     }

@@ -91,11 +91,8 @@ public sealed class CADMenuPanel
     /// </summary>
     public const float GrabMargin = 20f; // 15 mm.
 
-    // Grab affordance (Meta-style edge glow): while a ray hovers the grab band (or drags the
-    // panel) the part of the border nearest the ray lights up in the accent color with a soft
-    // glow outside the window (CADMenuEdgeGlow); nothing is drawn over the window itself.
-    private const float GlowSize = 16f;       // Soft glow outside the border (canvas units).
-    private const float GlowFadeTime = 0.12f; // Seconds to fade fully in or out.
+    // Grab affordance (Meta-style edge glow) and border drag live in CADWindowFrame, shared
+    // with every CADVision window.
 
     /// <summary>
     /// Rounded panels and buttons (a generated 9-slice sprite). Set false before menus are built
@@ -105,7 +102,6 @@ public sealed class CADMenuPanel
 
     /// <summary>Closest any automatically placed menu comes to the user's head (m).</summary>
     public static float MinMenuDistance = 0.8f;
-    private const float PanelRadius = 20f;
     private const float ControlRadius = 12f;
     private const float SpriteRadius = 24f; // Pixels in the generated sprite (also its 9-slice border).
     private static Sprite roundedSprite;
@@ -156,26 +152,17 @@ public sealed class CADMenuPanel
     public RayInteractable Interactable => interactable;
     public CADMenuTooltip Tooltip { get; }
 
-    // Border drag: the pressing pointer and the panel's pose relative to it.
-    private CADPointerInteraction dragPointer;
-    private ICADPointerSource dragSource;
-    private Vector3 dragPositionOffset;
-    private Quaternion dragRotationOffset;
-    private readonly List<RectTransform> grabRegions = new();
-
-    // Grab affordance: ray hit points per hovering pointer, and the current glow (0..1).
-    private readonly Dictionary<int, Vector3> hoverPoints = new();
-    private CADMenuEdgeGlow edgeGlow;
-    private Vector3 spotPoint;
+    // Background, border, grab band, edge glow and border drag (shared with every window).
+    private readonly CADWindowFrame frame;
 
     /// <summary>The edge glow graphic (lit around the pointer, outside the window).</summary>
-    public CADMenuEdgeGlow EdgeGlow => edgeGlow;
+    public CADMenuEdgeGlow EdgeGlow => frame.EdgeGlow;
     /// <summary>Grab-band highlight, 0 (off) to 1 (a ray on the grab band, or dragging).</summary>
-    public float GrabGlow { get; private set; }
+    public float GrabGlow => frame.GrabGlow;
 
-    public bool IsDragging => dragSource != null;
+    public bool IsDragging => frame.IsDragging;
     /// <summary>The user moved the panel since it was last shown (owners then stop auto-placing it).</summary>
-    public bool WasMoved { get; private set; }
+    public bool WasMoved => frame.WasMoved;
     /// <summary>World height of the whole panel including the grab band.</summary>
     public float OuterWorldHeight => (Height + 2 * BorderWidth) * CanvasScale * Root.transform.lossyScale.y;
     /// <summary>World width of the whole panel including the grab band.</summary>
@@ -202,34 +189,10 @@ public sealed class CADMenuPanel
         canvasRect = (RectTransform)canvasObject.transform;
         canvasRect.localScale = Vector3.one * CanvasScale;
 
-        // Opaque navy panel reaching over the grab band, with a thin border outline: readable
-        // over passthrough and models. The band is ordinary panel background (the drag handle).
-        Image border = CreateImage("Border", style.BorderColor, PanelRadius + 2f);
-        Stretch((RectTransform)border.transform, -BorderWidth - 2f);
-        Image background = CreateImage("Background", style.PanelColor, PanelRadius);
-        Stretch((RectTransform)background.transform, -BorderWidth);
-
-        // A short pill in the bottom band, like a system window's grab bar.
-        Color handleColor = style.SecondaryTextColor;
-        handleColor.a = 0.45f;
-        Image handle = CreateImage("Grab Handle", handleColor, 3f);
-        handle.raycastTarget = false;
-        var handleRect = (RectTransform)handle.transform;
-        handleRect.anchorMin = handleRect.anchorMax = new Vector2(0.5f, 0f);
-        handleRect.pivot = new Vector2(0.5f, 0.5f);
-        handleRect.sizeDelta = new Vector2(64f, 6f);
-        handleRect.anchoredPosition = new Vector2(0f, -BorderWidth * 0.5f);
-
-        // Edge glow: only outside the background, only near the pointer.
-        var glowObject = new GameObject("Grab Glow", typeof(RectTransform));
-        glowObject.transform.SetParent(canvasRect, false);
-        edgeGlow = glowObject.AddComponent<CADMenuEdgeGlow>();
-        edgeGlow.raycastTarget = false;
-        edgeGlow.color = style.SelectedButtonColor;
-        edgeGlow.Inset = BorderWidth;
-        edgeGlow.Radius = RoundedCorners ? PanelRadius : 0f;
-        edgeGlow.GlowSize = GlowSize;
-        Stretch((RectTransform)glowObject.transform, 0f);
+        // Background, border, grab handle and edge glow (CADWindowFrame): the look and the
+        // border drag every CADVision window shares.
+        frame = new CADWindowFrame(Root.transform, canvasRect, style, () => IsOpen);
+        frame.DragStarted += () => Tooltip.Hide();
 
         // Ray surface: a thin collider covering the panel, forwarding pointer events to the
         // canvas. Same SDK path as CAD parts, but not under a CADObject, so it counts as UI.
@@ -285,164 +248,45 @@ public sealed class CADMenuPanel
     {
         // Disable the interactable first so a hidden panel can never swallow ray clicks.
         interactable.enabled = false;
-        EndDrag();
-        WasMoved = false; // The next show is placed automatically again.
-        hoverPoints.Clear();
-        SetGrabGlow(0f);
+        frame.Reset(); // No drag or glow; the next show is placed automatically again.
         Tooltip.Hide();
         Root.SetActive(false);
         if (activePanel == this)
             activePanel = null;
     }
 
-    // ---------------- Border drag ----------------
+    // ---------------- Border drag (CADWindowFrame) ----------------
 
     /// <summary>Lets pointer presses on the grab band move this panel.</summary>
-    public void EnableBorderDrag(CADPointerInteraction pointer)
-    {
-        if (pointer == dragPointer)
-            return;
-        DisableBorderDrag();
-        dragPointer = pointer;
-        if (dragPointer != null)
-            dragPointer.UiPressed += OnUiPressed;
-    }
+    public void EnableBorderDrag(CADPointerInteraction pointer) => frame.EnableBorderDrag(pointer);
 
-    public void DisableBorderDrag()
-    {
-        if (dragPointer != null)
-            dragPointer.UiPressed -= OnUiPressed;
-        dragPointer = null;
-        EndDrag();
-    }
+    public void DisableBorderDrag() => frame.DisableBorderDrag();
 
     /// <summary>An extra grab area inside the content (e.g. a title bar).</summary>
-    public void AddGrabRegion(RectTransform region)
-    {
-        if (region != null && !grabRegions.Contains(region))
-            grabRegions.Add(region);
-    }
+    public void AddGrabRegion(RectTransform region) => frame.AddGrabRegion(region);
 
     /// <summary>
     /// True if a world point (a ray hit) is on this panel's grab band: outside the content's
-    /// inner area (padding strip) but within the border, or on an extra grab region. Button
-    /// areas are never grab points.
+    /// inner area (padding strip) but within the border (plus the margin outside it), or on an
+    /// extra grab region. Button areas are never grab points.
     /// </summary>
-    public bool IsGrabPoint(Vector3 worldPoint)
-    {
-        Vector3 local = canvasRect.InverseTransformPoint(worldPoint);
-        if (Mathf.Abs(local.z) > 30f)
-            return false; // Not on this panel's plane.
-
-        Rect content = canvasRect.rect;
-        float reach = BorderWidth + 2f + GrabMargin; // Band, border line and the margin outside.
-        var outer = Rect.MinMaxRect(content.xMin - reach, content.yMin - reach, content.xMax + reach, content.yMax + reach);
-        if (!outer.Contains(local))
-            return false;
-
-        float inset = Padding - 2f; // Buttons start at Padding from the content edge.
-        var inner = Rect.MinMaxRect(content.xMin + inset, content.yMin + inset, content.xMax - inset, content.yMax - inset);
-        if (!inner.Contains(local))
-            return true;
-
-        foreach (RectTransform region in grabRegions)
-        {
-            if (region != null && region.gameObject.activeInHierarchy && Contains(region, worldPoint, 0f))
-                return true;
-        }
-        return false;
-    }
-
-    private void OnUiPressed(ICADPointerSource source, Vector3 hitPoint)
-    {
-        if (IsOpen && dragSource == null && IsGrabPoint(hitPoint))
-            BeginDrag(source);
-    }
-
-    private void BeginDrag(ICADPointerSource source)
-    {
-        Pose pose = source.Pose;
-        Quaternion inverse = Quaternion.Inverse(pose.rotation);
-        Transform root = Root.transform;
-        dragPositionOffset = inverse * (root.position - pose.position);
-        dragRotationOffset = inverse * root.rotation;
-        dragSource = source;
-        Tooltip.Hide();
-        Debug.Log($"[CADMenuPanel] '{Root.name}' moved with {source.SourceId}.");
-    }
+    public bool IsGrabPoint(Vector3 worldPoint) => frame.IsGrabPoint(worldPoint);
 
     /// <summary>
     /// Follows the dragging pointer rigidly (call each frame while open); ends on release or
     /// tracking loss. Also animates the grab-band glow.
     /// </summary>
-    public void UpdateDrag()
-    {
-        UpdateGrabGlow(Time.unscaledDeltaTime);
-        if (dragSource == null)
-            return;
+    public void UpdateDrag() => frame.UpdateDrag();
 
-        if (!IsOpen || !dragSource.IsAvailable || !dragSource.IsSelecting)
-        {
-            EndDrag();
-            return;
-        }
-
-        Pose pose = dragSource.Pose;
-        Root.transform.SetPositionAndRotation(pose.position + pose.rotation * dragPositionOffset,
-            pose.rotation * dragRotationOffset);
-        WasMoved = true;
-    }
-
-    public void EndDrag() => dragSource = null;
-
-    // ---------------- Grab affordance ----------------
-
-    // Ray hit points of the pointers hovering this panel (buttons included; the glow only
-    // reacts to points on the grab band).
-    private void TrackHover(PointerEvent evt)
-    {
-        switch (evt.Type)
-        {
-            case PointerEventType.Hover:
-            case PointerEventType.Move:
-            case PointerEventType.Select:
-            case PointerEventType.Unselect:
-                hoverPoints[evt.Identifier] = evt.Pose.position;
-                break;
-            case PointerEventType.Unhover:
-            case PointerEventType.Cancel:
-                hoverPoints.Remove(evt.Identifier);
-                break;
-        }
-    }
+    public void EndDrag() => frame.EndDrag();
 
     /// <summary>Fades the glow toward on (a ray on the grab band, or dragging) or off.</summary>
-    public void UpdateGrabGlow(float deltaTime)
-    {
-        bool hot = IsDragging;
-        foreach (Vector3 point in hoverPoints.Values)
-        {
-            if (IsGrabPoint(point))
-            {
-                hot = true;
-                spotPoint = point;
-                break;
-            }
-        }
-
-        float target = hot && IsOpen ? 1f : 0f;
-        SetGrabGlow(Mathf.MoveTowards(GrabGlow, target, deltaTime / GlowFadeTime));
-    }
-
-    private void SetGrabGlow(float glow)
-    {
-        GrabGlow = glow;
-        Vector3 local = canvasRect.InverseTransformPoint(spotPoint);
-        edgeGlow.SetState(glow, new Vector2(local.x, local.y));
-    }
+    public void UpdateGrabGlow(float deltaTime) => frame.UpdateGrabGlow(deltaTime);
 
     /// <summary>A new target: forget the hand placement so the owner places the panel automatically.</summary>
-    public void ForgetMove() => WasMoved = false;
+    public void ForgetMove() => frame.ForgetMove();
+
+    private void TrackHover(PointerEvent evt) => frame.TrackHover(evt);
 
     private void LogPointerEvent(PointerEvent evt)
     {
@@ -709,8 +553,7 @@ public sealed class CADMenuPanel
         canvasRect.sizeDelta = new Vector2(width, height);
         // Covers the grab band and the margin outside the window too, so presses there reach
         // the panel (and the drag).
-        float grab = 2 * (BorderWidth + 2f + GrabMargin);
-        surfaceBox.size = new Vector3((width + grab) * CanvasScale, (height + grab) * CanvasScale, 0.004f);
+        surfaceBox.size = CADWindowFrame.SurfaceSize(width, height);
     }
 
     /// <summary>True if a world point (a ray hit) lies on rect, within slack canvas units.</summary>

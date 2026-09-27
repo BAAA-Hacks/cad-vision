@@ -4,7 +4,7 @@ using UnityEngine.UI;
 
 /// <summary>
 /// The application's single global menu: Scope (current scope + one context-aware
-/// Enter/Exit Assembly button), CADEN (placeholder toggle), View (display mode buttons,
+/// Enter/Exit Assembly button), CADEN (show/hide the assistant), View (display mode buttons,
 /// outline toggle), Model (Manipulate model / Stop manipulating, and the Reset options shown
 /// under "Reset ▼": selected, assembly, all sizes, everything), Interface (UI scale), Close. Buttons carry
 /// hover tooltips (CADMenuPanel).
@@ -275,7 +275,7 @@ public class CADMainMenu : MonoBehaviour
             "Enter the selected assembly, or go back up one level.");
 
         cadenSection = Section("CADEN");
-        cadenButton = AddButton("CADEN: Off", settings.ToggleCaden, "CADEN design assistant (placeholder toggle).");
+        cadenButton = AddButton("CADEN: Off", settings.ToggleCaden, "Show or hide the CADEN design assistant.");
 
         viewSection = Section("View");
         displayLabel = Label("Display");

@@ -8,10 +8,14 @@ using UnityEngine.UI;
 
 namespace CADEN.Unity
 {
-    // Optional chat-log viewer; voice input remains active while the viewer is hidden.
+    // Optional chat-log viewer; voice input remains active while the viewer is hidden. With CADEN
+    // off (Main Menu toggle, CADUISettings.CadenEnabled) the viewer is hidden and its buttons do
+    // nothing; turning CADEN back on restores it as it was.
     public sealed class CadenStatusPanel : MonoBehaviour
     {
         private CadenUnityHost host;
+        private CADUISettings settings;
+        private bool shownByUser; // Left-stick toggle state (kept while CADEN is off).
         private Canvas canvas;
 
         private CadenVoiceInput voice;
@@ -95,16 +99,20 @@ namespace CADEN.Unity
             string stage = voice.Busy || !string.IsNullOrEmpty(voice.LastError) ? voice.Status : host == null ? "Waiting for CADEN host" : host.Status;
             progress.text = "CHAT LOGS — left stick click to close\n" + (processing ? "[" + "|/-\\"[(int)(Time.unscaledTime * 8) % 4] + "] " : "") + stage + "\nY: record / send / cancel";
             if (!positioned) Position();
-            if (OVRInput.GetDown(OVRInput.Button.Two, OVRInput.Controller.LTouch))
+            if (settings == null) settings = FindAnyObjectByType<CADUISettings>();
+            bool cadenOn = settings == null || settings.CadenEnabled;
+            if (cadenOn && OVRInput.GetDown(OVRInput.Button.Two, OVRInput.Controller.LTouch))
             {
                 if (voice.Busy && !voice.Recording) voice.Cancel(); else voice.Toggle(host);
             }
-            if (OVRInput.GetDown(OVRInput.Button.PrimaryThumbstick, OVRInput.Controller.LTouch))
+            if (cadenOn && OVRInput.GetDown(OVRInput.Button.PrimaryThumbstick, OVRInput.Controller.LTouch))
             {
-                bool show = !canvas.gameObject.activeSelf;
-                canvas.gameObject.SetActive(show);
-                if (show) Position();
+                shownByUser = !shownByUser;
+                if (shownByUser) Position();
             }
+            bool show = cadenOn && shownByUser;
+            if (canvas.gameObject.activeSelf != show)
+                canvas.gameObject.SetActive(show);
             if (Time.unscaledTime < nextRefresh) return;
             nextRefresh = Time.unscaledTime + 0.5f;
             var found = FindAnyObjectByType<CadenUnityHost>();

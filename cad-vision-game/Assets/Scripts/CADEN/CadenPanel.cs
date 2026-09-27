@@ -10,19 +10,27 @@ using UnityEngine.EventSystems;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 
-/// <summary>World-space CADEN conversation surface, using the same Meta ray bridge as CADContextMenu.</summary>
+/// <summary>
+/// World-space CADEN conversation surface: one of the CADVision windows, with CADEN's purpose.
+/// It shares their frame and movement (CADWindowFrame: grab band, edge glow, border drag with
+/// hands or controllers), scale (CADMenuPanel.CanvasScale) and minimum distance, but it is
+/// exempt from the one-menu rule: it stays open next to the other menus. Collapsed, it is the
+/// head-locked CADVision logo. The Main Menu's CADEN toggle (CADUISettings.CadenEnabled) shows or
+/// hides every part of it.
+/// </summary>
 [RequireComponent(typeof(CadenSessionHost))]
 public sealed class CadenPanel : MonoBehaviour
 {
-    private const float W = 720, H = 820, Scale = 0.001f;
+    private const float W = 720, H = 820, Scale = CADMenuPanel.CanvasScale;
     // Minimized tile framing the logo in the panel's top-left corner.
     private const float TileX = 34, TileY = 12, TileSize = 82, MinimizeSeconds = 0.28f;
     private static readonly Vector2 LogoCenter = new Vector2(TileX + TileSize / 2, TileY + TileSize / 2);
     private static readonly Vector3 LogoLocal = new Vector3((LogoCenter.x - W / 2) * Scale, (H / 2 - LogoCenter.y) * Scale, 0);
     // Head-space position of the minimized logo; it stays pinned to the top-left of view.
     [SerializeField] private Vector3 minimizedLogoOffset = new Vector3(-0.34f, 0.15f, 0.9f);
-    // Distance of the opened panel; it unfolds right and down from the logo's direction.
-    [SerializeField] private float expandedDistance = 1.05f;
+    // Distance of the opened panel (at least CADMenuPanel.MinMenuDistance); it unfolds right and
+    // down from the logo's direction.
+    [SerializeField] private float expandedDistance = 0.9f;
     private Vector3 expandedPosition;
     private Quaternion expandedRotation = Quaternion.identity;
     // Logo feedback: glow while speaking, spin-and-settle cycles while thinking.
@@ -64,24 +72,25 @@ public sealed class CadenPanel : MonoBehaviour
     private string savedTypedDraft;
     private Transform viewer;
 
-    private bool draggingPanel;
-    private int dragPointer;
+    // Shared window frame and movement; CADEN on/off from the Main Menu.
+    private CADWindowFrame frame;
+    private CADPointerInteraction pointer;
+    private CADUISettings settings;
 
-    // Prevent two background hit areas/controllers from grabbing the panel simultaneously.
-    public bool BeginPanelDrag(int pointer)
+    private bool IsShowing => canvasRect != null && canvasRect.gameObject.activeSelf;
+    private bool CadenOn
     {
-        if (draggingPanel) return false;
-        draggingPanel = true; dragPointer = pointer;
+        get
+        {
+            if (settings == null) settings = FindAnyObjectByType<CADUISettings>();
+            return settings == null || settings.CadenEnabled;
+        }
+    }
 
-        return true;
-    }
-    public void EndPanelDrag(int pointer)
-    {
-        if (draggingPanel && pointer == dragPointer) draggingPanel = false;
-    }
     private void LateUpdate()
     {
         if (!positioned) return;
+        if (IsShowing) frame.UpdateDrag();
         microphonePreview = host.Voice != null && host.Voice.Recording;
         var voice = host.Voice;
         if (voice != null && voice.Busy)
@@ -181,6 +190,10 @@ public sealed class CadenPanel : MonoBehaviour
     private void Update()
     {
         if (!positioned && trackingReady) Recenter();
+        bool visible = positioned && CadenOn;
+        if (IsShowing != visible) SetVisible(visible);
+        if (pointer == null) pointer = FindAnyObjectByType<CADPointerInteraction>();
+        frame.EnableBorderDrag(pointer);
         AnimateMinimize();
         if (Time.unscaledTime < nextContextUpdate) return;
         nextContextUpdate = Time.unscaledTime + 0.5f;
@@ -202,22 +215,27 @@ public sealed class CadenPanel : MonoBehaviour
             : Camera.main != null ? Camera.main.transform : null;
         if (head == null) return;
         viewer = head;
-        draggingPanel = false;
+        frame.EndDrag();
 
         PlaceAtLogo();
         ApplyPose(Mathf.SmoothStep(0, 1, openness));
         canvasRect.GetComponent<Canvas>().worldCamera = head.GetComponent<Camera>() ?? Camera.main;
-        canvasRect.gameObject.SetActive(true);
-        surfaceBox.gameObject.SetActive(true);
         positioned = true;
+        SetVisible(CadenOn);
+    }
+
+    // Every CADEN element (panel, logo, ray surface) shows only while CADEN is on.
+    private void SetVisible(bool visible)
+    {
+        canvasRect.gameObject.SetActive(visible);
+        surfaceBox.gameObject.SetActive(visible);
+        if (!visible) frame.Reset();
     }
 
     private void Build()
     {
         MakeRoundedSprite();
-        var events = FindAnyObjectByType<EventSystem>();
-        if (events == null) events = new GameObject("CAD Vision EventSystem").AddComponent<EventSystem>();
-        if (FindAnyObjectByType<PointableCanvasModule>() == null) events.gameObject.AddComponent<PointableCanvasModule>();
+        CADMenuPanel.EnsureCanvasEventSystem();
         canvasRect = Rect("Canvas", transform, 0, 0, W, H);
         canvasRect.anchorMin = canvasRect.anchorMax = canvasRect.pivot = new Vector2(0.5f, 0.5f);
         canvasRect.anchoredPosition = Vector2.zero;
@@ -232,14 +250,17 @@ public sealed class CadenPanel : MonoBehaviour
         // Scale about the logo so the panel collapses into it and grows back out of it.
         p.pivot = new Vector2(LogoCenter.x / W, 1 - LogoCenter.y / H);
         p.anchoredPosition = new Vector2(LogoCenter.x, -LogoCenter.y);
-        Draggable(Image("Outline", p, -2, -2, W + 4, H + 4, new Color32(40, 104, 129, 255)));
-        Draggable(Image("Surface", p, 0, 0, W, H, Navy));
-        Draggable(Image("Brand accent", p, 28, 22, 5, 58, Cyan));
+        // The CADVision window frame: background, border, grab band, edge glow and drag, exactly
+        // as the other menus. Grabs only while the panel is open (not collapsed to the logo).
+        frame = new CADWindowFrame(transform, p, CADMenuStyle.Default,
+            () => IsShowing && !minimized && openness >= 1f);
+        frame.AddGrabRegion(Rect("Header grab region", p, 0, 0, W, 104)); // Like the Main Menu's header.
+        Image("Brand accent", p, 28, 22, 5, 58, Cyan);
         Label("Brand", p, 120, 25, 270, 30, "CADVision", 27, Color.white, true);
         Label("Subtitle", p, 120, 58, 300, 24, "CADEN · Assembly chat", 18, Muted);
         ActionButton("New chat", p, 568, 29, 124, 46, () => host.NewChat());
 
-        Draggable(Image("Context card", p, 28, 116, 664, 46, Card));
+        Image("Context card", p, 28, 116, 664, 46, Card);
         context = Label("Context", p, 44, 125, 632, 28, "Assembly  /  No assembly loaded", 18, Cyan);
         var viewport = Rect("Conversation", p, 28, 182, 664, 420);
         viewport.gameObject.AddComponent<RectMask2D>();
@@ -254,10 +275,9 @@ public sealed class CadenPanel : MonoBehaviour
         layout.childForceExpandHeight = false; layout.childForceExpandWidth = true;
         var fitter = messages.gameObject.AddComponent<ContentSizeFitter>(); fitter.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
         scroll.content = messages;
-        // Empty viewport area moves the panel; message cards bubble drag events to ScrollRect.
+        // Pointer hits on empty conversation space still reach the ScrollRect.
         var empty = Image("Empty conversation space", viewport, 0, 0, 664, 420, new Color(0, 0, 0, 0.001f));
         empty.transform.SetAsFirstSibling();
-        Draggable(empty);
         // The editable composer itself is the speech bubble, not a separate suggested prompt.
         var tail = Image("Composer bubble tail", p, 126, 666, 22, 22, Card);
         tail.rectTransform.pivot = new Vector2(0.5f, 0.5f);
@@ -274,7 +294,7 @@ public sealed class CadenPanel : MonoBehaviour
         input.textComponent = value; input.placeholder = placeholder;
         input.onValueChanged.AddListener(_ => send.interactable = !busy && host.Session != null && !string.IsNullOrWhiteSpace(input.text));
         status = Label("Status", p, 30, 730, 435, 25, "Connect CADEN to begin", 17, Muted);
-        feedback = Label("Feedback", p, 30, 762, 455, 37, "Hold empty space to move the panel.", 14, Muted);
+        feedback = Label("Feedback", p, 30, 762, 455, 37, "Hold the edge to move the panel.", 14, Muted);
         send = ActionButton("Send  >", p, 530, 732, 162, 58, Send, 22, true);
         cancel = ActionButton("Stop", p, 530, 732, 162, 58, () => host.Cancel(), 22);
         cancel.gameObject.SetActive(false);
@@ -296,11 +316,12 @@ public sealed class CadenPanel : MonoBehaviour
         var surfaceObject = new GameObject("CADEN ray surface"); surfaceObject.layer = 2;
         surfaceObject.transform.SetParent(transform, false);
         surfaceBox = surfaceObject.AddComponent<BoxCollider>();
-        surfaceBox.size = new Vector3(W * Scale, H * Scale, 0.004f);
+        surfaceBox.size = CADWindowFrame.SurfaceSize(W, H); // Includes the grab band and margin.
         var pointable = canvasRect.gameObject.AddComponent<PointableCanvas>(); pointable.InjectAllPointableCanvas(canvas);
         var surface = surfaceObject.AddComponent<ColliderSurface>(); surface.InjectAllColliderSurface(surfaceBox);
         var ray = surfaceObject.AddComponent<RayInteractable>(); ray.InjectAllRayInteractable(surface);
         ray.InjectOptionalSelectSurface(surface); ray.InjectOptionalPointableElement(pointable);
+        ray.WhenPointerEventRaised += frame.TrackHover; // Edge glow.
     }
 
     public void ShowPanel() { SetMinimized(false); Recenter(); }
@@ -349,12 +370,13 @@ public sealed class CadenPanel : MonoBehaviour
         if (minimized == value) return;
         // Collapse from wherever the panel was dragged; expand like other menus, in front of the user.
         if (value && openness == 1) { expandedPosition = transform.position; expandedRotation = transform.rotation; }
+        if (value) frame.EndDrag();
         if (!value && viewer != null) PlaceAtLogo();
         minimized = value;
         if (!value) expanded.SetActive(true);
         expandedGroup.interactable = expandedGroup.blocksRaycasts = !value;
         // Shrink the ray collider to the logo tile so the collapsed panel doesn't block the scene.
-        surfaceBox.size = value ? new Vector3(TileSize * Scale, TileSize * Scale, 0.004f) : new Vector3(W * Scale, H * Scale, 0.004f);
+        surfaceBox.size = value ? new Vector3(TileSize * Scale, TileSize * Scale, 0.004f) : CADWindowFrame.SurfaceSize(W, H);
         surfaceBox.center = value
             ? new Vector3((TileX + TileSize / 2 - W / 2) * Scale, (H / 2 - TileY - TileSize / 2) * Scale, 0)
             : Vector3.zero;
@@ -380,7 +402,8 @@ public sealed class CadenPanel : MonoBehaviour
         if (forward.sqrMagnitude < 0.01f) forward = Vector3.forward;
         // Upright like the other menus, with its logo where the pinned logo is, so it opens rightward.
         expandedRotation = Quaternion.LookRotation(forward, Vector3.up);
-        var logoPoint = viewer.position + viewer.rotation * minimizedLogoOffset.normalized * expandedDistance;
+        float distance = Mathf.Max(expandedDistance, CADMenuPanel.MinMenuDistance);
+        var logoPoint = viewer.position + viewer.rotation * minimizedLogoOffset.normalized * distance;
         expandedPosition = logoPoint - expandedRotation * LogoLocal;
     }
 
@@ -410,7 +433,7 @@ public sealed class CadenPanel : MonoBehaviour
             foreach (var message in history.Skip(Math.Max(0, history.Length - 38)))
                 AddMessage(message.Role == "user" ? "YOU" : "CADEN", message.Text, message.Role == "user");
         microphonePreview = false;
-        status.text = host.Status; feedback.text = "Hold empty space to move the panel.";
+        status.text = host.Status; feedback.text = "Hold the edge to move the panel.";
         input.text = ""; SetBusy(false);
     }
     private void SetBusy(bool value)
@@ -429,7 +452,7 @@ public sealed class CadenPanel : MonoBehaviour
             var answer = await host.SendAsync(prompt);
             if (this == null || turn != generation) return;
             AddMessage("YOU", prompt, true); AddMessage("CADEN", answer, false);
-            input.text = ""; feedback.text = "Hold empty space to move the panel.";
+            input.text = ""; feedback.text = "Hold the edge to move the panel.";
         }
         catch (OperationCanceledException) { if (this != null && turn == generation) feedback.text = "Stopped. Your draft is ready to retry."; }
         catch (Exception e)
@@ -488,11 +511,6 @@ public sealed class CadenPanel : MonoBehaviour
         var label = Label("Label", image.transform, 12, 0, width - 24, height, title, fontSize, primary ? Navy : Color.white, primary);
         label.alignment = TextAnchor.MiddleCenter; return button;
     }
-    private void Draggable(Image background)
-    {
-        background.gameObject.AddComponent<CadenPanelDrag>().Panel = transform;
-    }
-
     private void BuildMicrophone(Transform parent)
     {
         const int size = 64;
@@ -538,6 +556,7 @@ public sealed class CadenPanel : MonoBehaviour
     private void OnDestroy()
     {
         generation++; if (host != null) { host.Changed -= ResetConversation; host.Feedback -= ShowFeedback; }
+        frame?.DisableBorderDrag();
         if (rounded != null) Destroy(rounded); if (roundedTexture != null) Destroy(roundedTexture);
         if (circle != null) Destroy(circle); if (circleTexture != null) Destroy(circleTexture);
         if (glowSprite != null) Destroy(glowSprite); if (glowTexture != null) Destroy(glowTexture);

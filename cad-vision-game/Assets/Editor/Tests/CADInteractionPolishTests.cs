@@ -1777,6 +1777,52 @@ public class CADInteractionPolishTests
         Assert.That(svc.IsResized("P1"), Is.False);
     }
 
+    // ================= CADEN panel =================
+
+    [Test]
+    public void CadenPanelIsOneOfOurWindowsAndFollowsTheToggle()
+    {
+        var go = Track(new GameObject("CADEN test"));
+        var caden = go.AddComponent<CadenPanel>();
+        Call(caden, "Awake");
+        typeof(CadenPanel).GetField("trackingReady", Any).SetValue(caden, true);
+        Call(caden, "Recenter");
+        var canvas = (RectTransform)Get(caden, "canvasRect");
+        var surface = (BoxCollider)Get(caden, "surfaceBox");
+        Assert.That(canvas.gameObject.activeSelf, Is.True, "shown while CADEN is on");
+        Assert.That(canvas.localScale.x, Is.EqualTo(CADMenuPanel.CanvasScale).Within(1e-7f), "same scale as the menus");
+        Assert.That(surface.size, Is.EqualTo(CADWindowFrame.SurfaceSize(720f, 820f)), "grab band and margin reach the surface");
+        Assert.That(Vector3.Distance(go.transform.position, head.position),
+            Is.GreaterThanOrEqualTo(CADMenuPanel.MinMenuDistance - 0.3f), "not in the user's face");
+
+        // Same frame as the menus: the edge grabs, the middle doesn't, controls never do.
+        var frame = (CADWindowFrame)Get(caden, "frame");
+        var window = (RectTransform)((GameObject)Get(caden, "expanded")).transform;
+        Rect r = window.rect;
+        Assert.That(frame.IsGrabPoint(window.TransformPoint(new Vector3(r.xMin - CADMenuPanel.BorderWidth * 0.5f, r.center.y, 0f))), Is.True);
+        Assert.That(frame.IsGrabPoint(window.TransformPoint(new Vector3(r.xMin - CADMenuPanel.BorderWidth - 2f - CADMenuPanel.GrabMargin + 2f, r.center.y, 0f))), Is.True, "margin outside");
+        Assert.That(frame.IsGrabPoint(window.TransformPoint(new Vector3(r.center.x, r.center.y, 0f))), Is.False);
+        var newChat = go.GetComponentsInChildren<Button>(true).First(b => b.name == "New chat");
+        Assert.That(frame.IsGrabPoint(newChat.transform.position + newChat.transform.TransformVector(new Vector3(40f, -20f, 0f))), Is.False,
+            "a button in the header grab region still wins");
+        Assert.That(frame.IsGrabPoint(window.TransformPoint(new Vector3(r.xMin + 300f, r.yMax - 50f, 0f))), Is.True, "header grabs");
+
+        // Exempt from the one-menu rule: other menus open beside it.
+        mainMenu.ShowMainMenu();
+        Call(caden, "Update");
+        Assert.That(canvas.gameObject.activeSelf, Is.True);
+        Assert.That(mainMenu.IsOpen, Is.True);
+
+        // The Main Menu's CADEN toggle hides every CADEN element, and brings them back.
+        settings.SetCadenEnabled(false);
+        Call(caden, "Update");
+        Assert.That(canvas.gameObject.activeSelf, Is.False, "panel and head-locked logo hidden");
+        Assert.That(surface.gameObject.activeSelf, Is.False, "nothing left to hit with a ray");
+        settings.SetCadenEnabled(true);
+        Call(caden, "Update");
+        Assert.That(canvas.gameObject.activeSelf, Is.True);
+    }
+
     // ================= Helpers =================
 
     private void AssertBeside(Bounds bounds, string what) => AssertBesidePanel(menu.Panel, bounds, what);
