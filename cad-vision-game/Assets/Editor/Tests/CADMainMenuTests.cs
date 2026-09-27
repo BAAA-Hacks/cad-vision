@@ -255,22 +255,22 @@ public class CADMainMenuTests
 
     // 12
     [Test]
-    public void DisplayModeDefaultsToShadedAndFiresItsEvent()
+    public void DisplayModeDefaultsToEdgesAndFiresItsEvent()
     {
         menu.ShowMainMenu();
-        Assert.That(settings.DisplayMode, Is.EqualTo(CADDisplayMode.Shaded));
-        Assert.That(menu.Panel.IsSelected(Button("Shaded")), Is.True);
+        Assert.That(settings.DisplayMode, Is.EqualTo(CADDisplayMode.Edges));
+        Assert.That(menu.Panel.IsSelected(Button("Edges")), Is.True, "Edges highlighted initially");
 
         var events = new List<CADDisplayMode>();
         settings.DisplayModeChanged += events.Add;
         Button("Wireframe").onClick.Invoke();
-        Button("Edges").onClick.Invoke();
-        Button("Edges").onClick.Invoke(); // No change, no event.
+        Button("Shaded").onClick.Invoke();
+        Button("Shaded").onClick.Invoke(); // No change, no event.
 
-        Assert.That(settings.DisplayMode, Is.EqualTo(CADDisplayMode.Edges));
-        Assert.That(events, Is.EqualTo(new[] { CADDisplayMode.Wireframe, CADDisplayMode.Edges }));
-        Assert.That(menu.Panel.IsSelected(Button("Edges")), Is.True);
-        Assert.That(menu.Panel.IsSelected(Button("Shaded")), Is.False, "segmented: one on");
+        Assert.That(settings.DisplayMode, Is.EqualTo(CADDisplayMode.Shaded));
+        Assert.That(events, Is.EqualTo(new[] { CADDisplayMode.Wireframe, CADDisplayMode.Shaded }));
+        Assert.That(menu.Panel.IsSelected(Button("Shaded")), Is.True);
+        Assert.That(menu.Panel.IsSelected(Button("Edges")), Is.False, "segmented: one on");
     }
 
     // 13
@@ -377,7 +377,7 @@ public class CADMainMenuTests
     {
         menu.ShowMainMenu();
         Transform panel = menu.PanelTransform;
-        var titleBar = (RectTransform)((Button)Get(menu, "titleBar")).transform;
+        var titleBar = ((Text)Get(menu, "title")).rectTransform; // Plain header text, a grab region.
 
         // A press on a button does not drag.
         Press(hand, Button("Close").transform.position + Vector3.zero, hold: true);

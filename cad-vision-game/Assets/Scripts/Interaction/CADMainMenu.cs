@@ -19,8 +19,9 @@ using UnityEngine.UI;
 /// Lifecycle: starts hidden (Inspector: startVisible). ToggleMainMenu / ShowMainMenu /
 /// HideMainMenu are the entry points. Every show respawns it ~0.7 m in front of the head,
 /// a little below eye level, facing the user (never head-locked). While open it stays put,
-/// except that pressing and holding the title bar (a normal panel button) with trigger or
-/// pinch drags it rigidly with the pointer. It stays open across model replacement; all state
+/// except that pressing and holding its border or its header with trigger or pinch drags it
+/// rigidly with the pointer (CADMenuPanel's shared border drag; the plain-text header is an
+/// extra grab region). It stays open across model replacement; all state
 /// is re-read from the service and CADUISettings every frame.
 ///
 /// Activation input lives in CADMainMenuInput (left controller Menu button → ToggleMainMenu);
@@ -43,7 +44,7 @@ public class CADMainMenu : MonoBehaviour
 
     // Layout in canvas units (1 unit = 1 mm at 100% UI scale).
     private const float PanelWidth = 360f;
-    private const float TitleBarHeight = 44f;
+    private const float TitleHeight = 32f;
     private const float SectionHeight = 26f;
     private const float TextHeight = 32f;
     private const float ButtonHeight = 44f;
@@ -55,7 +56,7 @@ public class CADMainMenu : MonoBehaviour
 
     private CADMenuPanel panel;
     private GameObject panelRoot; // panel.Root.
-    private Button titleBar;
+    private Text title; // Plain header text; also a grab region of the border drag.
     private Text scopeSection, cadenSection, viewSection, modelSection, interfaceSection;
     private Text scopeText, displayLabel, outlineLabel, scaleLabel, scaleValue;
     private readonly Dictionary<CADDisplayMode, Button> displayButtons = new();
@@ -64,13 +65,9 @@ public class CADMainMenu : MonoBehaviour
     private Button scaleDownButton, scaleUpButton, closeButton;
     private bool resetExpanded;
 
-    // Title-bar drag: the pressing pointer and the panel's pose relative to it.
-    private ICADPointerSource dragSource;
-    private Vector3 dragPositionOffset;
-    private Quaternion dragRotationOffset;
 
     public bool IsOpen => panel != null && panel.IsOpen;
-    public bool IsDragging => dragSource != null;
+    public bool IsDragging => panel != null && panel.IsDragging;
     public bool IsResetExpanded => resetExpanded;
     public Transform PanelTransform => panelRoot != null ? panelRoot.transform : null;
     /// <summary>The shared panel this menu is built from (same class as the context menu's).</summary>
@@ -87,18 +84,9 @@ public class CADMainMenu : MonoBehaviour
             ShowMainMenu();
     }
 
-    private void OnEnable()
-    {
-        if (pointerInteraction != null)
-            pointerInteraction.UiPressed += OnUiPressed;
-    }
+    private void OnEnable() => panel?.EnableBorderDrag(pointerInteraction);
 
-    private void OnDisable()
-    {
-        if (pointerInteraction != null)
-            pointerInteraction.UiPressed -= OnUiPressed;
-        EndDrag();
-    }
+    private void OnDisable() => panel?.DisableBorderDrag();
 
     private void OnDestroy() => panel?.Destroy();
 
@@ -113,7 +101,7 @@ public class CADMainMenu : MonoBehaviour
     /// <summary>Shows the menu in front of the user; if already open, brings it back in front.</summary>
     public void ShowMainMenu()
     {
-        EndDrag();
+        panel.EndDrag();
         resetExpanded = false;
         ApplyLayout();
         Refresh();
@@ -124,7 +112,6 @@ public class CADMainMenu : MonoBehaviour
 
     public void HideMainMenu()
     {
-        EndDrag();
         resetExpanded = false;
         if (IsOpen)
             Debug.Log("[CADMainMenu] Hidden.");
@@ -136,7 +123,7 @@ public class CADMainMenu : MonoBehaviour
         if (!IsOpen)
             return;
 
-        UpdateDrag();
+        panel.UpdateDrag();
         Refresh();
     }
 
@@ -157,46 +144,6 @@ public class CADMainMenu : MonoBehaviour
         panelRoot.transform.SetPositionAndRotation(position,
             Quaternion.LookRotation(position - head.position, Vector3.up));
     }
-
-    // ---------------- Title-bar drag ----------------
-
-    private void OnUiPressed(ICADPointerSource source, Vector3 hitPoint)
-    {
-        if (IsOpen && dragSource == null &&
-            CADMenuPanel.Contains((RectTransform)titleBar.transform, hitPoint))
-        {
-            BeginDrag(source);
-        }
-    }
-
-    private void BeginDrag(ICADPointerSource source)
-    {
-        Pose pose = source.Pose;
-        Quaternion inverse = Quaternion.Inverse(pose.rotation);
-        Transform root = panelRoot.transform;
-        dragPositionOffset = inverse * (root.position - pose.position);
-        dragRotationOffset = inverse * root.rotation;
-        dragSource = source;
-        Debug.Log($"[CADMainMenu] Moving with {source.SourceId}.");
-    }
-
-    private void UpdateDrag()
-    {
-        if (dragSource == null)
-            return;
-
-        if (!dragSource.IsAvailable || !dragSource.IsSelecting)
-        {
-            EndDrag();
-            return;
-        }
-
-        Pose pose = dragSource.Pose;
-        panelRoot.transform.SetPositionAndRotation(pose.position + pose.rotation * dragPositionOffset,
-            pose.rotation * dragRotationOffset);
-    }
-
-    private void EndDrag() => dragSource = null;
 
     // ---------------- State → UI ----------------
 
@@ -338,10 +285,12 @@ public class CADMainMenu : MonoBehaviour
     {
         panel = new CADMenuPanel("CAD Main Menu", PanelWidth, CADMenuStyle.Default);
         panelRoot = panel.Root;
+        panel.CloseRequested = HideMainMenu; // Another menu opened (single-menu rule).
 
-        // Title bar: a normal panel button; pressing and holding it drags the menu (UiPressed).
-        titleBar = AddButton("Main menu  (hold to move)", null, "Hold here and move the pointer to reposition the menu.");
-        titleBar.GetComponentInChildren<Text>(true).fontStyle = FontStyle.Bold;
+        // Title bar: a normal panel button that is also a grab region of the shared border drag.
+        // Header: plain text (not a button) that, like the border, can be grabbed to move the menu.
+        title = panel.CreateText("Title", "Main menu", CADMenuPanel.FontSize + 2, FontStyle.Bold);
+        panel.AddGrabRegion(title.rectTransform);
 
         scopeSection = Section("Scope");
         scopeText = panel.CreateText("Scope Value", "Scope: Full model");
@@ -407,7 +356,7 @@ public class CADMainMenu : MonoBehaviour
     {
         var rows = new List<CADMenuPanel.Row>
         {
-            new(TitleBarHeight, SectionSpacing, titleBar),
+            new(TitleHeight, CADMenuPanel.RowSpacing, title),
 
             new(SectionHeight, scopeSection),
             new(TextHeight, scopeText),

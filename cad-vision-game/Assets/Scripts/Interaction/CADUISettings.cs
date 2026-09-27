@@ -8,8 +8,8 @@ public enum CADDisplayMode { Shaded, Edges, Wireframe }
 /// the menu calls these setters; whatever implements a feature listens. No menu placement or
 /// visibility state lives here.
 ///
-/// - DisplayMode / DisplayModeChanged: UI state only for now. The Shaded / Edges / Wireframe
-///   renderer isn't implemented yet; it should subscribe to DisplayModeChanged.
+/// - DisplayMode / DisplayModeChanged: Shaded (surfaces only), Edges (shaded + CAD edge
+///   overlay; the default) or Wireframe, rendered by CADDisplayModeController.
 /// - OutlineEnabled: drives CADSelectionOutline.ShowOutlines (selection is never touched).
 /// - UiScale / UiScaleChanged: main menu scale (never the CAD model, the rig or context menus).
 /// - CadenEnabled / CadenEnabledChanged: PLACEHOLDER. CADEN integration attaches here: its
@@ -25,7 +25,9 @@ public class CADUISettings : MonoBehaviour
     public const float MaxUiScale = 1.5f;
     public const float UiScaleStep = 0.1f;
 
-    public CADDisplayMode DisplayMode { get; private set; } = CADDisplayMode.Shaded;
+    // Default: shaded surfaces with the CAD edge overlay. A session starts here; the user's
+    // choice then persists across model replacement.
+    public CADDisplayMode DisplayMode { get; private set; } = CADDisplayMode.Edges;
     public event Action<CADDisplayMode> DisplayModeChanged;
 
     public bool OutlineEnabled { get; private set; } = true;
@@ -43,7 +45,7 @@ public class CADUISettings : MonoBehaviour
             return;
 
         DisplayMode = mode;
-        Debug.Log($"[CADUISettings] Display mode: {mode} (UI state only; no renderer attached yet).");
+        Debug.Log($"[CADUISettings] Display mode: {mode}.");
         DisplayModeChanged?.Invoke(mode);
     }
 

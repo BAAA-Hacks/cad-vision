@@ -61,13 +61,31 @@ public class CADDisplayModeTests
 
     // 1, 2
     [Test]
-    public void DefaultIsShadedWithOriginalMaterials()
+    public void DefaultIsEdgesAndTheFirstModelLoadsWithEdges()
     {
-        Assert.That(settings.DisplayMode, Is.EqualTo(CADDisplayMode.Shaded));
-        Assert.That(display.AppliedMode, Is.EqualTo(CADDisplayMode.Shaded));
-        Assert.That(Materials("P1"), Is.EqualTo(new[] { red }));
+        Assert.That(settings.DisplayMode, Is.EqualTo(CADDisplayMode.Edges), "shaded + edges by default");
+        Assert.That(display.AppliedMode, Is.EqualTo(CADDisplayMode.Edges));
+        Assert.That(Overlay("P1"), Is.Not.Null);
+        Assert.That(Overlay("P1").activeInHierarchy, Is.True, "the first model shows its edges");
+        Assert.That(Materials("P1"), Is.EqualTo(new[] { red }), "surfaces keep their materials");
         Assert.That(Materials("P3"), Is.EqualTo(new[] { green, blue }));
-        Assert.That(Overlay("P1"), Is.Null, "no overlays built until a mode needs them");
+        var fresh = Track(new GameObject("Fresh Session")).AddComponent<CADUISettings>();
+        Assert.That(fresh.DisplayMode, Is.EqualTo(CADDisplayMode.Edges), "a new session starts in Edges");
+    }
+
+    [Test]
+    public void ShadedShowsSurfacesOnlyAndReplacementKeepsTheChoice()
+    {
+        settings.SetDisplayMode(CADDisplayMode.Shaded);
+        Assert.That(Overlay("P1").activeSelf, Is.False, "no edges in Shaded");
+        Assert.That(Materials("P1"), Is.EqualTo(new[] { red }));
+
+        (Transform newRoot, Dictionary<string, Transform> nodes) = BuildModel("2");
+        Object.DestroyImmediate(root.gameObject);
+        svc.ReplaceImportedModel(newRoot, nodes.ToDictionary(kv => "N_" + kv.Key, kv => kv.Value.gameObject));
+        Assert.That(settings.DisplayMode, Is.EqualTo(CADDisplayMode.Shaded), "the user's choice, not the default");
+        Assert.That(nodes["P1"].Find(CADDisplayModeController.OverlayName) == null ||
+            !nodes["P1"].Find(CADDisplayModeController.OverlayName).gameObject.activeSelf, Is.True);
     }
 
     // 3

@@ -16,18 +16,31 @@ using UnityEngine.UI;
 /// controller's trigger, either hand's pinch). It is never a CAD object; CADPointerInteraction
 /// classifies it as UI, so clicking it never deselects.
 ///
-/// Context-aware: the menu only shows what applies to the target right now.
-/// - Part: Focus / Clear Focus, Detach or Reattach (only when possible), Reset Object,
-///   Multi-Select, Main Menu, Close.
-/// - Assembly: Enter Assembly (unless it is the current scope), Focus / Clear Focus, Detach or
-///   Reattach (subassemblies), Reset Assembly, Multi-Select, Main Menu, Close.
-/// - Selection (clicked a member of a multi-selection): Focus Selection / Clear Focus, Reset
-///   Selected, Edit Selection, Clear Selection, Close.
-/// - Picking (multi-select mode): Done, Focus Selection / Clear Focus, Reset Selected, Clear
-///   Selection.
+/// Context-aware: the menu only shows what applies to the target right now. Under the title,
+/// a non-interactive line shows the current interaction scope ("Scope: Full model" /
+/// "Scope: <assembly>", from the service), except in the model menu. The scope line and the
+/// navigation buttons directly below it form the hierarchy section, always at the top and
+/// followed by a gap: Exit Assembly (one logical level up, ExitScope; only when the scope is
+/// not the model root), then Enter Assembly (only for an enterable assembly). Both can show
+/// for a nested assembly: they go in opposite directions.
+/// - Part: [Exit Assembly] | Focus / Clear Focus, Detach or Reattach (only when possible),
+///   Reset Object, Multi-Select, Main Menu, Close.
+/// - Assembly: [Exit Assembly] [Enter Assembly] | Focus / Clear Focus, Detach or Reattach
+///   (subassemblies), Reset Assembly, Multi-Select, Main Menu, Close.
+/// - Selection (clicked a member of a multi-selection): [Exit Assembly] | Focus Selection /
+///   Clear Focus, Reset Selected, Edit Selection, Clear Selection, Close.
+/// - Picking (multi-select mode): [Exit Assembly] | Done, Focus Selection / Clear Focus, Reset
+///   Selected, Clear Selection.
 /// - Model (whole-model manipulation): Done, Reset Scale, Reset Model.
-/// App-wide actions (display, outline, CADEN, UI scale, Manipulate model, scope exit, model
-/// reset outside model mode) live in the Main Menu. Buttons carry hover tooltips.
+/// App-wide actions (display, outline, CADEN, UI scale, Manipulate model, model reset outside
+/// model mode) live in the Main Menu. Buttons carry hover tooltips.
+///
+/// Every variant can be moved by its border (CADMenuPanel's shared border drag); once moved it
+/// stays where it was dropped until it closes, and the next open is placed automatically.
+///
+/// Single-menu rule (CADMenuPanel): opening this closes any other open menu and vice versa.
+/// The picking and model menus open when their mode starts; if another menu (e.g. the Main
+/// Menu) takes over while the mode lasts, they reopen only once no other menu is open.
 ///
 /// Placement: every variant sits above its target's visible bounds (object, selection or
 /// model; never a Transform origin), via CADMenuPanel.PlaceAboveBounds, facing the user.
@@ -40,7 +53,7 @@ public class CADContextMenu : MonoBehaviour
     {
         EnterAssembly, Focus, DetachOrReattach, ResetObject, ResetAssembly, MultiSelect, MainMenu, Close,
         Done, FocusSelection, ResetSelected, EditSelection, ClearSelection,
-        ModelDone, ResetScale, ResetModel,
+        ModelDone, ResetScale, ResetModel, ExitAssembly,
     }
 
     [Header("Placement")]
@@ -56,6 +69,8 @@ public class CADContextMenu : MonoBehaviour
     // Layout in canvas units (1 unit = 1 mm).
     private const float PanelWidth = 260f;
     private const float TitleHeight = 40f;
+    private const float ScopeHeight = 24f;
+    private const float SectionGap = 20f; // Separates the hierarchy section from the actions.
     private const float ButtonHeight = 44f;
 
     private static readonly Dictionary<MenuAction, string> Labels = new()
@@ -76,6 +91,7 @@ public class CADContextMenu : MonoBehaviour
         { MenuAction.ModelDone, "Done" },
         { MenuAction.ResetScale, "Reset Scale" },
         { MenuAction.ResetModel, "Reset Model" },
+        { MenuAction.ExitAssembly, "Exit Assembly" },
     };
 
     private static readonly Dictionary<MenuAction, string> Tooltips = new()
@@ -95,6 +111,7 @@ public class CADContextMenu : MonoBehaviour
         { MenuAction.ModelDone, "Stop manipulating the whole model." },
         { MenuAction.ResetScale, "Restore the original scale without changing position or rotation." },
         { MenuAction.ResetModel, "Restore the whole model and every part to the review pose." },
+        { MenuAction.ExitAssembly, "Go up one assembly level." },
     };
 
     private const string ClearFocusTooltip = "Show the whole model normally again.";
@@ -108,6 +125,7 @@ public class CADContextMenu : MonoBehaviour
     private CADMenuPanel panel;
     private GameObject panelRoot; // panel.Root.
     private Text titleText;
+    private Text scopeText;          // "Scope: ..." under the title (not interactive).
     private bool multiMode;          // Panel shows the multi-select (picking) menu.
     private bool groupMode;          // Panel shows the selection menu for an existing multi-selection.
     private bool modelMode;          // Panel shows the model menu (whole-model manipulation).
@@ -117,6 +135,8 @@ public class CADContextMenu : MonoBehaviour
 
     private string targetId;
     private CADObject target;
+    private bool wasModelMode;       // Mode edges: a mode that just started always shows its menu.
+    private bool wasMultiMode;
     private Vector3 headPositionAtFacing;
 
     public bool IsOpen => panelRoot != null && panelRoot.activeSelf;
@@ -140,12 +160,14 @@ public class CADContextMenu : MonoBehaviour
             pointerInteraction.ContextMenuRequested += Open;
         else
             Debug.LogWarning("[CADContextMenu] No CADPointerInteraction on this object; menu will never open.");
+        panel?.EnableBorderDrag(pointerInteraction);
     }
 
     private void OnDisable()
     {
         if (pointerInteraction != null)
             pointerInteraction.ContextMenuRequested -= Open;
+        panel?.DisableBorderDrag();
         Hide("component disabled");
     }
 
@@ -170,7 +192,8 @@ public class CADContextMenu : MonoBehaviour
             return;
         }
 
-        // A newer request replaces the current menu.
+        // A newer request replaces the current menu (placed automatically again).
+        panel.ForgetMove();
         multiMode = false;
         groupMode = false;
         modelMode = false;
@@ -202,6 +225,7 @@ public class CADContextMenu : MonoBehaviour
 
     private void OpenGroup(CADContextMenuRequest request)
     {
+        panel.ForgetMove();
         multiMode = false;
         groupMode = true;
         modelMode = false;
@@ -229,6 +253,7 @@ public class CADContextMenu : MonoBehaviour
 
     private void OpenModel()
     {
+        panel.ForgetMove();
         multiMode = false;
         groupMode = false;
         modelMode = true;
@@ -244,6 +269,7 @@ public class CADContextMenu : MonoBehaviour
 
     private void OpenMulti()
     {
+        panel.ForgetMove();
         multiMode = true;
         groupMode = false;
         modelMode = false;
@@ -272,6 +298,17 @@ public class CADContextMenu : MonoBehaviour
 
     private void LateUpdate()
     {
+        if (IsOpen)
+            panel.UpdateDrag();
+
+        // A mode that just started shows its menu (closing any other); later, while the mode
+        // lasts, its menu comes back only when no other menu is open (single-menu rule).
+        bool modelStarted = manipulationService.IsModelManipulationActive && !wasModelMode;
+        bool multiStarted = manipulationService.IsMultiSelectActive && !wasMultiMode;
+        wasModelMode = manipulationService.IsModelManipulationActive;
+        wasMultiMode = manipulationService.IsMultiSelectActive;
+        bool otherMenuOpen = CADMenuPanel.ActivePanel != null && CADMenuPanel.ActivePanel != panel;
+
         // Model mode drives the model menu for as long as it lasts, hidden while the model is
         // moved or scaled (it reappears at the model's new position).
         if (manipulationService.IsModelManipulationActive)
@@ -282,7 +319,10 @@ public class CADContextMenu : MonoBehaviour
                     Hide("model is being moved");
             }
             else if (!IsOpen || !modelMode)
-                OpenModel();
+            {
+                if (modelStarted || !otherMenuOpen)
+                    OpenModel();
+            }
             else
                 RefaceIfHeadMoved();
             return;
@@ -304,7 +344,10 @@ public class CADContextMenu : MonoBehaviour
                     Hide("group is being moved");
             }
             else if (!IsOpen || !multiMode)
-                OpenMulti();
+            {
+                if (multiStarted || !otherMenuOpen)
+                    OpenMulti();
+            }
             else
             {
                 UpdateMulti();
@@ -365,9 +408,12 @@ public class CADContextMenu : MonoBehaviour
         RefaceIfHeadMoved();
     }
 
-    // Minimal facing: only after the head has moved noticeably, never every frame.
+    // Minimal facing: only after the head has moved noticeably, never every frame, and never
+    // once the user has placed the menu by hand.
     private void RefaceIfHeadMoved()
     {
+        if (panel.WasMoved)
+            return;
         Transform head = Head();
         if (head != null && Vector3.Distance(head.position, headPositionAtFacing) > refaceHeadMovement)
         {
@@ -389,6 +435,9 @@ public class CADContextMenu : MonoBehaviour
             actions.Add(MenuAction.ResetModel);
             return actions;
         }
+
+        // Hierarchy navigation first, in every non-model variant.
+        AddExitAssembly(actions);
 
         if (multiMode)
         {
@@ -426,6 +475,16 @@ public class CADContextMenu : MonoBehaviour
         return actions;
     }
 
+    private static bool IsNavigation(MenuAction action) =>
+        action == MenuAction.ExitAssembly || action == MenuAction.EnterAssembly;
+
+    // Only inside an assembly: exits exactly one logical level.
+    private void AddExitAssembly(List<MenuAction> actions)
+    {
+        if (!manipulationService.IsAtRootScope)
+            actions.Add(MenuAction.ExitAssembly);
+    }
+
     // Labels / tooltips / enabled states for the current state; re-stacks the panel when the set
     // of actions changed. Returns true if it re-stacked (the caller re-places the panel).
     private bool Refresh(bool forceLayout = false)
@@ -437,10 +496,21 @@ public class CADContextMenu : MonoBehaviour
             shown.Clear();
             shown.AddRange(actions);
             var rows = new List<CADMenuPanel.Row> { new CADMenuPanel.Row(TitleHeight, 0f, titleText) };
-            foreach (MenuAction action in shown)
-                rows.Add(new CADMenuPanel.Row(ButtonHeight, buttons[action]));
+            if (!modelMode)
+                rows.Add(new CADMenuPanel.Row(ScopeHeight, CADMenuPanel.RowSpacing, scopeText));
+            for (int i = 0; i < shown.Count; i++)
+            {
+                // A gap after the last navigation button separates hierarchy from actions.
+                bool endOfNavigation = IsNavigation(shown[i]) && i + 1 < shown.Count && !IsNavigation(shown[i + 1]);
+                rows.Add(new CADMenuPanel.Row(ButtonHeight, endOfNavigation ? SectionGap : CADMenuPanel.RowSpacing,
+                    buttons[shown[i]]));
+            }
             panel.Stack(rows);
         }
+
+        string scope = $"Scope: {manipulationService.CurrentScopeDisplayName}";
+        if (scopeText.text != scope)
+            scopeText.text = scope;
 
         bool focusHere = IsFocusOnTarget();
         SetLabel(MenuAction.Focus, focusHere ? "Clear Focus" : Labels[MenuAction.Focus]);
@@ -497,6 +567,8 @@ public class CADContextMenu : MonoBehaviour
 
     private void PlaceObject(CADContextMenuRequest? request)
     {
+        if (panel.WasMoved)
+            return;
         if (manipulationService.TryGetObjectBounds(targetId, out Bounds bounds))
             PlaceAbove(bounds);
         else if (request.HasValue)
@@ -508,6 +580,8 @@ public class CADContextMenu : MonoBehaviour
     // The selected objects' combined visible bounds; with nothing visible, in front of the head.
     private void PlaceSelection()
     {
+        if (panel.WasMoved)
+            return;
         if (manipulationService.TryGetSelectionBounds(out Bounds bounds))
             PlaceAbove(bounds);
         else
@@ -517,6 +591,8 @@ public class CADContextMenu : MonoBehaviour
     // The model's visible bounds; in front of the head if there is none or it surrounds the head.
     private void PlaceModel()
     {
+        if (panel.WasMoved)
+            return;
         Transform head = Head();
         if (manipulationService.TryGetModelBounds(out Bounds bounds) && (head == null || !bounds.Contains(head.position)))
             PlaceAbove(bounds);
@@ -600,6 +676,7 @@ public class CADContextMenu : MonoBehaviour
             case MenuAction.ModelDone: manipulationService.EndModelManipulation(); break;
             case MenuAction.ResetScale: manipulationService.ResetModelScale(); break;
             case MenuAction.ResetModel: manipulationService.ResetModel(); break;
+            case MenuAction.ExitAssembly: manipulationService.ExitScope(); break;
         }
 
         if (!keepOpen)
@@ -628,8 +705,11 @@ public class CADContextMenu : MonoBehaviour
     {
         panel = new CADMenuPanel("CAD Context Menu", PanelWidth, Style);
         panelRoot = panel.Root;
+        panel.CloseRequested = () => Hide("another menu opened");
 
         titleText = panel.CreateText("Title", "", CADMenuPanel.FontSize, FontStyle.Bold);
+        scopeText = panel.CreateText("Scope", "Scope: Full model", CADMenuPanel.FontSize - 4);
+        scopeText.color = new Color(textColor.r, textColor.g, textColor.b, 0.7f); // Secondary.
         foreach (KeyValuePair<MenuAction, string> entry in Labels)
         {
             MenuAction action = entry.Key;

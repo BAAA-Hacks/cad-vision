@@ -5,7 +5,7 @@ using UnityEngine.UI;
 /// <summary>
 /// Hover tooltip for one CADMenuPanel (on the panel root). Buttons made with a tooltip carry a
 /// CADMenuTooltipTrigger; uGUI pointer enter/exit (sent by PointableCanvasModule for any ray:
-/// controller or hand) report hover here. After hoverDelay the text is shown in a small
+/// controller or hand) report hover here. After HoverDelay (DefaultHoverDelay, 0.3 s) the text is shown in a small
 /// dark box beside the panel, level with the hovered button, never over its label. Built from
 /// the panel's own Image/Text primitives, not raycast targets, and outside the panel's ray
 /// surface, so it can never steal the hover. Hides when hover ends and when the panel hides.
@@ -13,9 +13,10 @@ using UnityEngine.UI;
 [DisallowMultipleComponent]
 public sealed class CADMenuTooltip : MonoBehaviour
 {
-    public const float HoverDelay = 0.5f;
+    /// <summary>Hover time before any menu tooltip appears (s); shared by every menu.</summary>
+    public static float DefaultHoverDelay = 0.3f;
     private const float Width = 250f;
-    private const float Gap = 10f;
+    private const float Gap = CADMenuPanel.BorderWidth + 8f; // Clear of the panel's grab band.
     private const float Padding = 8f;
     private const int FontSize = 16;
 
@@ -74,6 +75,9 @@ public sealed class CADMenuTooltip : MonoBehaviour
         hovered = null;
         HideBox();
     }
+
+    /// <summary>Hover delay for this panel (the shared default).</summary>
+    public float HoverDelay => DefaultHoverDelay;
 
     /// <summary>Shows the hovered button's tooltip once it has been hovered for HoverDelay.</summary>
     public void Tick(float now)

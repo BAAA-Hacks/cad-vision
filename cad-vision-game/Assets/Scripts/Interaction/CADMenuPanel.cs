@@ -48,10 +48,18 @@ public struct CADMenuStyle
 /// - Show/Hide: the ray interactable is disabled before the root is deactivated, so a hidden
 ///   panel never renders, never catches rays and leaves no active collider behind;
 /// - hover tooltips (CADMenuTooltip) for buttons created with tooltip text;
+/// - border drag: a grab band around the content (BorderWidth outside the canvas rect plus the
+///   empty padding inside it; owners may add regions such as a title bar). A semantic pointer
+///   pressing there (CADPointerInteraction.UiPressed) moves the panel rigidly with the pointer
+///   until release; presses on buttons never start it. Owners call EnableBorderDrag once and
+///   UpdateDrag each frame while open; Hide ends any drag;
 /// - PlaceAboveBounds: the one placement rule for target-relative menus (above the target's
 ///   visible bounds, facing the user);
 /// - LogSelectEvents: TEMP diagnostics, logs which interactor (left/right hand/controller
-///   ray) selects or unselects the panel.
+///   ray) selects or unselects the panel;
+/// - the single-menu rule: at most one panel is open app-wide (ActivePanel). Showing a panel
+///   first closes the open one through its owner's CloseRequested (so the owner's own state
+///   stays consistent) and Hide clears the slot, so no menu needs to know any other menu.
 /// </summary>
 public sealed class CADMenuPanel
 {
@@ -59,9 +67,24 @@ public sealed class CADMenuPanel
     public const float Padding = 12f;
     public const float RowSpacing = 8f;
     public const int FontSize = 20;
+    /// <summary>Width of the grab band drawn outside the content (canvas units = mm).</summary>
+    public const float BorderWidth = 12f;
 
     /// <summary>TEMP diagnostics: log select / unselect / cancel on every panel with the interactor's name.</summary>
     public static bool LogSelectEvents = true;
+
+    // The one open floating menu (single-menu rule). May refer to a destroyed or hidden panel;
+    // ActivePanel filters those out, so the slot can never go stale.
+    private static CADMenuPanel activePanel;
+
+    /// <summary>The currently open floating menu panel, if any.</summary>
+    public static CADMenuPanel ActivePanel => activePanel != null && activePanel.IsOpen ? activePanel : null;
+
+    /// <summary>
+    /// The owner's close (e.g. CADContextMenu.Hide, CADMainMenu.HideMainMenu), called when another
+    /// panel opens. Without one the panel just hides.
+    /// </summary>
+    public Action CloseRequested;
 
     /// <summary>One stacked row: its elements share the width equally, left to right.</summary>
     public readonly struct Row
@@ -89,6 +112,19 @@ public sealed class CADMenuPanel
     public GameObject Root { get; }
     public RayInteractable Interactable => interactable;
     public CADMenuTooltip Tooltip { get; }
+
+    // Border drag: the pressing pointer and the panel's pose relative to it.
+    private CADPointerInteraction dragPointer;
+    private ICADPointerSource dragSource;
+    private Vector3 dragPositionOffset;
+    private Quaternion dragRotationOffset;
+    private readonly List<RectTransform> grabRegions = new();
+
+    public bool IsDragging => dragSource != null;
+    /// <summary>The user moved the panel since it was last shown (owners then stop auto-placing it).</summary>
+    public bool WasMoved { get; private set; }
+    /// <summary>World height of the whole panel including the grab band.</summary>
+    public float OuterWorldHeight => (Height + 2 * BorderWidth) * CanvasScale * Root.transform.lossyScale.y;
     public float Width { get; private set; }
     public float Height { get; private set; }
     public bool IsOpen => Root != null && Root.activeSelf;
@@ -111,7 +147,10 @@ public sealed class CADMenuPanel
         canvasRect = (RectTransform)canvasObject.transform;
         canvasRect.localScale = Vector3.one * CanvasScale;
 
-        // Thin border behind the panel for contrast against passthrough and dark scenes.
+        // Grab band around the content (the drag handle), then a thin accent border for contrast
+        // against passthrough and dark scenes, then the background.
+        Image grabBand = CreateImage("Grab Border", Color.Lerp(style.PanelColor, style.BorderColor, 0.25f));
+        Stretch((RectTransform)grabBand.transform, -BorderWidth);
         Image border = CreateImage("Border", style.BorderColor);
         Stretch((RectTransform)border.transform, -3f);
         Image background = CreateImage("Background", style.PanelColor);
@@ -146,17 +185,136 @@ public sealed class CADMenuPanel
 
     public void Show()
     {
+        // Single-menu rule: the open menu closes first (its rays, tooltip and drag go with it).
+        CADMenuPanel previous = ActivePanel;
+        if (previous != null && previous != this)
+            previous.RequestClose();
+
         Root.SetActive(true);
         interactable.enabled = true;
+        activePanel = this;
+    }
+
+    /// <summary>Closes the panel through its owner (keeps the owner's state consistent).</summary>
+    public void RequestClose()
+    {
+        if (!IsOpen)
+            return;
+        CloseRequested?.Invoke();
+        if (IsOpen)
+            Hide(); // Owner didn't hide it (or has none).
     }
 
     public void Hide()
     {
         // Disable the interactable first so a hidden panel can never swallow ray clicks.
         interactable.enabled = false;
+        EndDrag();
+        WasMoved = false; // The next show is placed automatically again.
         Tooltip.Hide();
         Root.SetActive(false);
+        if (activePanel == this)
+            activePanel = null;
     }
+
+    // ---------------- Border drag ----------------
+
+    /// <summary>Lets pointer presses on the grab band move this panel.</summary>
+    public void EnableBorderDrag(CADPointerInteraction pointer)
+    {
+        if (pointer == dragPointer)
+            return;
+        DisableBorderDrag();
+        dragPointer = pointer;
+        if (dragPointer != null)
+            dragPointer.UiPressed += OnUiPressed;
+    }
+
+    public void DisableBorderDrag()
+    {
+        if (dragPointer != null)
+            dragPointer.UiPressed -= OnUiPressed;
+        dragPointer = null;
+        EndDrag();
+    }
+
+    /// <summary>An extra grab area inside the content (e.g. a title bar).</summary>
+    public void AddGrabRegion(RectTransform region)
+    {
+        if (region != null && !grabRegions.Contains(region))
+            grabRegions.Add(region);
+    }
+
+    /// <summary>
+    /// True if a world point (a ray hit) is on this panel's grab band: outside the content's
+    /// inner area (padding strip) but within the border, or on an extra grab region. Button
+    /// areas are never grab points.
+    /// </summary>
+    public bool IsGrabPoint(Vector3 worldPoint)
+    {
+        Vector3 local = canvasRect.InverseTransformPoint(worldPoint);
+        if (Mathf.Abs(local.z) > 30f)
+            return false; // Not on this panel's plane.
+
+        Rect content = canvasRect.rect;
+        var outer = Rect.MinMaxRect(content.xMin - BorderWidth - 2f, content.yMin - BorderWidth - 2f,
+            content.xMax + BorderWidth + 2f, content.yMax + BorderWidth + 2f);
+        if (!outer.Contains(local))
+            return false;
+
+        float inset = Padding - 2f; // Buttons start at Padding from the content edge.
+        var inner = Rect.MinMaxRect(content.xMin + inset, content.yMin + inset, content.xMax - inset, content.yMax - inset);
+        if (!inner.Contains(local))
+            return true;
+
+        foreach (RectTransform region in grabRegions)
+        {
+            if (region != null && region.gameObject.activeInHierarchy && Contains(region, worldPoint, 0f))
+                return true;
+        }
+        return false;
+    }
+
+    private void OnUiPressed(ICADPointerSource source, Vector3 hitPoint)
+    {
+        if (IsOpen && dragSource == null && IsGrabPoint(hitPoint))
+            BeginDrag(source);
+    }
+
+    private void BeginDrag(ICADPointerSource source)
+    {
+        Pose pose = source.Pose;
+        Quaternion inverse = Quaternion.Inverse(pose.rotation);
+        Transform root = Root.transform;
+        dragPositionOffset = inverse * (root.position - pose.position);
+        dragRotationOffset = inverse * root.rotation;
+        dragSource = source;
+        Tooltip.Hide();
+        Debug.Log($"[CADMenuPanel] '{Root.name}' moved with {source.SourceId}.");
+    }
+
+    /// <summary>Follows the dragging pointer rigidly (call each frame while open); ends on release or tracking loss.</summary>
+    public void UpdateDrag()
+    {
+        if (dragSource == null)
+            return;
+
+        if (!IsOpen || !dragSource.IsAvailable || !dragSource.IsSelecting)
+        {
+            EndDrag();
+            return;
+        }
+
+        Pose pose = dragSource.Pose;
+        Root.transform.SetPositionAndRotation(pose.position + pose.rotation * dragPositionOffset,
+            pose.rotation * dragRotationOffset);
+        WasMoved = true;
+    }
+
+    public void EndDrag() => dragSource = null;
+
+    /// <summary>A new target: forget the hand placement so the owner places the panel automatically.</summary>
+    public void ForgetMove() => WasMoved = false;
 
     private void LogPointerEvent(PointerEvent evt)
     {
@@ -174,6 +332,8 @@ public sealed class CADMenuPanel
 
     public void Destroy()
     {
+        if (activePanel == this)
+            activePanel = null;
         if (Root == null)
             return;
         if (Application.isPlaying)
@@ -243,7 +403,7 @@ public sealed class CADMenuPanel
     public void PlaceAboveBounds(Bounds bounds, Transform head, float clearance = 0.05f, float minRise = 0.1f,
         float maxAboveEye = 0.25f, float headBias = 0.08f, float minDistance = 0.45f, float maxDistance = 1.4f)
     {
-        float halfHeight = Height * CanvasScale * Root.transform.lossyScale.y * 0.5f;
+        float halfHeight = OuterWorldHeight * 0.5f;
         Vector3 anchor = bounds.center;
         anchor.y = Mathf.Max(bounds.max.y + clearance, bounds.center.y + minRise);
 
@@ -346,7 +506,8 @@ public sealed class CADMenuPanel
         Width = width;
         Height = height;
         canvasRect.sizeDelta = new Vector2(width, height);
-        surfaceBox.size = new Vector3(width * CanvasScale, height * CanvasScale, 0.004f);
+        // Covers the grab band too, so presses there reach the canvas (and the drag).
+        surfaceBox.size = new Vector3((width + 2 * BorderWidth) * CanvasScale, (height + 2 * BorderWidth) * CanvasScale, 0.004f);
     }
 
     /// <summary>True if a world point (a ray hit) lies on rect, within slack canvas units.</summary>
