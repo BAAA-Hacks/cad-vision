@@ -72,12 +72,12 @@ public class CADPointerInteraction : MonoBehaviour
     [SerializeField, Min(1f)] private float fastDragFactor = 3f;
     [SerializeField, Min(0.05f)] private float clickMaxDuration = 1.0f;
 
-    [Header("Translation Gain (same as CADXRGrab)")]
+    [Header("Translation Gain")]
     [SerializeField, Min(0f)] private float reachDistance = 0.5f;
     [SerializeField, Min(0f)] private float maxExtraGain = 4f;
     [SerializeField, Min(0f)] private float decayRate = 1.5f;
 
-    [Header("Two-Pointer Scaling (same limits as CADXRGrab)")]
+    [Header("Two-Pointer Scaling")]
     [SerializeField, Min(0.01f)] private float minimumScaleSeparation = 0.08f;
     [SerializeField, Range(0.01f, 1f)] private float minimumScaleRatio = 0.1f;
     [SerializeField, Min(1f)] private float maximumScaleRatio = 10f;
@@ -115,7 +115,6 @@ public class CADPointerInteraction : MonoBehaviour
     }
 
     private CADVisionManipulationService manipulationService;
-    private CADXRGrab gripFallback;
     private readonly CADPointerStateMachine machine = new CADPointerStateMachine();
     private readonly CADGrabSession session = new CADGrabSession();
     private readonly CADScaleGesture pointerScale = new CADScaleGesture();
@@ -132,7 +131,6 @@ public class CADPointerInteraction : MonoBehaviour
     private void Awake()
     {
         manipulationService = GetComponent<CADVisionManipulationService>();
-        gripFallback = GetComponent<CADXRGrab>();
     }
 
     private void OnEnable() => Active = true;
@@ -389,7 +387,7 @@ public class CADPointerInteraction : MonoBehaviour
 
         Handle(machine.BeginDragNow(), null, owner.Pose);
         if (!session.IsActive)
-            return false; // The drag was refused (e.g. grip fallback holding); nothing to scale.
+            return false; // The drag was refused; nothing to scale.
 
         Debug.Log($"[CADPointer] {source.SourceId} joined {owner.SourceId}'s press: drag started for two-pointer scaling.");
         return TryBeginPointerScale(source);
@@ -475,11 +473,9 @@ public class CADPointerInteraction : MonoBehaviour
 
     private void UpdateSession(Pose pose)
     {
-        // While two-pointer or grip model scaling runs it owns the held transform: follow its
-        // result instead of applying the held pose, and once more after it ends, so neither
-        // hand snaps it back.
-        bool scaling = pointerScale.IsActive ||
-            (session.IsModel && gripFallback != null && gripFallback.IsScalingModel);
+        // While two-pointer scaling runs it owns the held transform: follow its result instead
+        // of applying the held pose, and once more after it ends, so neither hand snaps it back.
+        bool scaling = pointerScale.IsActive;
         if (session.IsActive && (scaling || scaledLastFrame))
             session.Rebase(pose);
         else if (session.IsActive && !session.Update(pose))
@@ -586,12 +582,6 @@ public class CADPointerInteraction : MonoBehaviour
 
     private void BeginManipulation(Pose pose)
     {
-        if (gripFallback != null && gripFallback.IsGrabbing)
-        {
-            Debug.Log("[CADPointer] Drag ignored: grip fallback is holding an object.");
-            return;
-        }
-
         if (manipulationService.IsModelManipulationActive)
         {
             BeginModelDrag(pose);

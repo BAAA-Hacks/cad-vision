@@ -2,8 +2,8 @@ using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// The one two-hand transform algorithm, shared by the grip fallback (CADXRGrab) and
-/// two-pointer pinch/trigger gestures (CADPointerInteraction). Scale follows the separation of
+/// The one two-hand transform algorithm, used by two-pointer pinch/trigger gestures
+/// (CADPointerInteraction). Scale follows the separation of
 /// the two hands relative to the separation when the gesture began, clamped per gesture,
 /// around a fixed world pivot on visible geometry. Targets are the model root (the service
 /// clamps its absolute scale) or one or more CAD objects (each keeps the pivot fixed in its
@@ -16,7 +16,7 @@ using UnityEngine;
 /// (below ScaleDeadZone / RotationDeadZone a channel stays exactly still; past twice the dead
 /// zone it follows exactly, measured from the gesture start; in between it eases in, so it
 /// never jumps). Two points can't express a roll around the line between the hands.
-/// Update(float) is the scale-only path (grip fallback): no dead zone, no rotation.
+/// Update(float) is a scale-only path: no dead zone, no rotation.
 /// </summary>
 public sealed class CADScaleGesture
 {

@@ -4,7 +4,7 @@ using UnityEngine;
 
 /// <summary>
 /// One rigid "remote pickup" of a CAD object, driven by any pointer pose (controller anchor,
-/// controller ray, later a hand ray). Math moved unchanged from CADXRGrab:
+/// controller ray or hand ray):
 /// the object keeps its grab-start position and rotation relative to the pointer, so it moves
 /// and rotates rigidly; beyond reachDistance only pointer movement toward/away from the held
 /// point is amplified. All poses go through CADVisionManipulationService.SetObjectWorldPose.
