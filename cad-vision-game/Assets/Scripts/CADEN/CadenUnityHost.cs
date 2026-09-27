@@ -30,11 +30,15 @@ namespace CADEN.Unity
         public string ConfigurationDirectory;
         public TextAsset SystemPrompt;
         public UnityEvent<string> AnswerReceived = new UnityEvent<string>();
+        public UnityEvent<string> InputReceived = new UnityEvent<string>();
         public UnityEvent<string> StatusChanged = new UnityEvent<string>();
         public UnityEvent<string> ErrorReceived = new UnityEvent<string>();
         public string Status { get; private set; } = "Waiting for model";
         public ToolRegistry Registry { get; private set; }
         public bool Ready => session != null;
+        public bool IsBusy => turn != null;
+        public string ConfigurationPath => ResolveConfigurationDirectory();
+        public CADVisionRuntime ModelRuntime => runtime;
         private readonly HttpClient http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
         private readonly object logGate = new object();
         private readonly SemaphoreSlim audioGate = new SemaphoreSlim(1, 1);
@@ -176,6 +180,7 @@ namespace CADEN.Unity
             SetStatus("CADEN is thinking");
             try
             {
+                InputReceived.Invoke(prompt);
                 string answer = await current.SendAsync(prompt, pending.Token, voice == null ? null : voice.Receive);
                 pending.Token.ThrowIfCancellationRequested();
                 if (!ReferenceEquals(session, current)) throw new OperationCanceledException();
@@ -187,7 +192,15 @@ namespace CADEN.Unity
                 if (!(ex is OperationCanceledException) && this != null) Report(ex, "unity.send");
                 throw;
             }
-            finally { if (ReferenceEquals(turn, pending)) turn = null; pending.Dispose(); }
+            finally
+            {
+                if (ReferenceEquals(turn, pending))
+                {
+                    turn = null;
+                    if (this != null && ReferenceEquals(session, current)) SetStatus("CADEN ready");
+                }
+                pending.Dispose();
+            }
         }
         public async void SendMessageToCaden(string prompt)
         {

@@ -6,6 +6,7 @@ using Core.Tools.Query;
 using Core.Primitives.Operations.Project;
 
 if (args.Contains("--speech")) { await SpeechChecks.RunAsync(); return; }
+if (args.Contains("--transcription")) { await TranscriptionChecks.RunAsync(); return; }
 if (args.Contains("--streaming")) { await StreamingChecks.RunAsync(); return; }
 
 if (args.Length == 3 && args[0] == "--benchmark") { await PerformanceBenchmarks.Run(args[1], args[2]); return; }
@@ -195,6 +196,7 @@ await ConnectionQueryChecks.RunAsync();
 await PrecomputeChecks.RunAsync();
 await TokenUsageChecks.RunAsync();
 await SpeechChecks.RunAsync();
+await TranscriptionChecks.RunAsync();
 await StreamingChecks.RunAsync();
 await MechanicalQueryChecks.RunAsync();
 await Schema21Checks.RunAsync();
