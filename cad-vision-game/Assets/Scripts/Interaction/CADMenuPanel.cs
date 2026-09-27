@@ -7,23 +7,25 @@ using UnityEngine.Events;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
 
-/// <summary>Colors of a CADMenuPanel (the context menu's Inspector style; defaults are its defaults).</summary>
+/// <summary>Colors of a CADMenuPanel: the CADVision UI style guide palette.</summary>
 [Serializable]
 public struct CADMenuStyle
 {
-    public Color PanelColor;
-    public Color BorderColor;
-    public Color ButtonColor;
-    public Color SelectedButtonColor;
-    public Color TextColor;
+    public Color PanelColor;          // Background #0C1524: panel surfaces; label on cyan.
+    public Color BorderColor;         // Border #286881: thin outline.
+    public Color ButtonColor;         // Surface #172639: secondary buttons, cards.
+    public Color SelectedButtonColor; // Accent #2ADCDB: primary action, active state.
+    public Color TextColor;           // Primary text #FFFFFF.
+    public Color SecondaryTextColor;  // Secondary text #9FB6CD: subtitles, labels, status.
 
     public static CADMenuStyle Default => new CADMenuStyle
     {
-        PanelColor = new Color(0.10f, 0.11f, 0.14f, 0.96f),
-        BorderColor = new Color(0.55f, 0.85f, 1f, 1f),
-        ButtonColor = new Color(0.30f, 0.33f, 0.40f, 1f),
-        SelectedButtonColor = new Color(0.20f, 0.55f, 0.70f, 1f),
+        PanelColor = new Color32(0x0C, 0x15, 0x24, 0xFF),
+        BorderColor = new Color32(0x28, 0x68, 0x81, 0xFF),
+        ButtonColor = new Color32(0x17, 0x26, 0x39, 0xFF),
+        SelectedButtonColor = new Color32(0x2A, 0xDC, 0xDB, 0xFF),
         TextColor = Color.white,
+        SecondaryTextColor = new Color32(0x9F, 0xB6, 0xCD, 0xFF),
     };
 }
 
@@ -38,7 +40,10 @@ public struct CADMenuStyle
 /// - a world-space uGUI Canvas (+ GraphicRaycaster) at 0.001 scale (1 canvas unit = 1 mm),
 ///   no CanvasScaler, no nested canvases, masks, custom materials or shaders (built-in UI
 ///   Images and legacy Text with LegacyRuntime.ttf);
-/// - a border Image behind a background Image;
+/// - the CADVision UI style guide: navy panel with a thin border, navy-surface secondary
+///   buttons, cyan primary / selected buttons with navy labels, white and muted text,
+///   LegacyRuntime.ttf at the guide's sizes, 52-unit controls, rounded corners (one
+///   generated 9-slice sprite; RoundedCorners = false falls back to square Images);
 /// - a "Ray Surface" child on the Ignore Raycast layer: BoxCollider → ColliderSurface →
 ///   RayInteractable (select surface + PointableCanvas as pointable element), so any ray +
 ///   select source (controller trigger, hand pinch) drives the canvas through the scene's
@@ -53,8 +58,9 @@ public struct CADMenuStyle
 ///   pressing there (CADPointerInteraction.UiPressed) moves the panel rigidly with the pointer
 ///   until release; presses on buttons never start it. Owners call EnableBorderDrag once and
 ///   UpdateDrag each frame while open; Hide ends any drag;
-/// - PlaceAboveBounds: the one placement rule for target-relative menus (above the target's
-///   visible bounds, facing the user);
+/// - PlaceBesideBounds: the one placement rule for target-relative menus (beside the target's
+///   visible bounds so the part never blocks them, at least MinMenuDistance away, facing the
+///   user);
 /// - LogSelectEvents: TEMP diagnostics, logs which interactor (left/right hand/controller
 ///   ray) selects or unselects the panel;
 /// - the single-menu rule: at most one panel is open app-wide (ActivePanel). Showing a panel
@@ -64,11 +70,36 @@ public struct CADMenuStyle
 public sealed class CADMenuPanel
 {
     public const float CanvasScale = 0.001f;
-    public const float Padding = 12f;
-    public const float RowSpacing = 8f;
-    public const int FontSize = 20;
-    /// <summary>Width of the grab band drawn outside the content (canvas units = mm).</summary>
+    // Style guide spacing: outer padding ≈ 28 (Padding + the grab band, which is panel
+    // background), 12 between related elements, 24 between sections.
+    public const float Padding = 16f;
+    public const float RowSpacing = 12f;
+    public const float SectionSpacing = 24f;
+    public const float ControlHeight = 52f;
+    // Style guide type sizes (UI units at 0.001 canvas scale).
+    public const int TitleSize = 26;
+    public const int SectionSize = 20;
+    public const int FontSize = 22;       // Body, buttons.
+    public const int SecondarySize = 17;  // Subtitles, labels, status.
+    public const int SmallSize = 15;
+    /// <summary>Width of the grab band around the content (canvas units = mm); drawn as panel background.</summary>
     public const float BorderWidth = 12f;
+
+    /// <summary>
+    /// Rounded panels and buttons (a generated 9-slice sprite). Set false before menus are built
+    /// to fall back to square Images if a device shows rendering problems.
+    /// </summary>
+    public static bool RoundedCorners = true;
+
+    /// <summary>Closest any automatically placed menu comes to the user's head (m).</summary>
+    public static float MinMenuDistance = 0.6f;
+    private const float PanelRadius = 20f;
+    private const float ControlRadius = 12f;
+    private const float SpriteRadius = 24f; // Pixels in the generated sprite (also its 9-slice border).
+    private static Sprite roundedSprite;
+
+    // Button fills sit under a 0.85 tint at rest so hover (full) reads brighter.
+    private const float RestTint = 0.85f;
 
     /// <summary>TEMP diagnostics: log select / unselect / cancel on every panel with the interactor's name.</summary>
     public static bool LogSelectEvents = true;
@@ -125,6 +156,8 @@ public sealed class CADMenuPanel
     public bool WasMoved { get; private set; }
     /// <summary>World height of the whole panel including the grab band.</summary>
     public float OuterWorldHeight => (Height + 2 * BorderWidth) * CanvasScale * Root.transform.lossyScale.y;
+    /// <summary>World width of the whole panel including the grab band.</summary>
+    public float OuterWorldWidth => (Width + 2 * BorderWidth) * CanvasScale * Root.transform.lossyScale.x;
     public float Width { get; private set; }
     public float Height { get; private set; }
     public bool IsOpen => Root != null && Root.activeSelf;
@@ -147,14 +180,12 @@ public sealed class CADMenuPanel
         canvasRect = (RectTransform)canvasObject.transform;
         canvasRect.localScale = Vector3.one * CanvasScale;
 
-        // Grab band around the content (the drag handle), then a thin accent border for contrast
-        // against passthrough and dark scenes, then the background.
-        Image grabBand = CreateImage("Grab Border", Color.Lerp(style.PanelColor, style.BorderColor, 0.25f));
-        Stretch((RectTransform)grabBand.transform, -BorderWidth);
-        Image border = CreateImage("Border", style.BorderColor);
-        Stretch((RectTransform)border.transform, -3f);
-        Image background = CreateImage("Background", style.PanelColor);
-        Stretch((RectTransform)background.transform, 0f);
+        // Opaque navy panel reaching over the grab band, with a thin border outline: readable
+        // over passthrough and models. The band is ordinary panel background (the drag handle).
+        Image border = CreateImage("Border", style.BorderColor, PanelRadius + 2f);
+        Stretch((RectTransform)border.transform, -BorderWidth - 2f);
+        Image background = CreateImage("Background", style.PanelColor, PanelRadius);
+        Stretch((RectTransform)background.transform, -BorderWidth);
 
         // Ray surface: a thin collider covering the panel, forwarding pointer events to the
         // canvas. Same SDK path as CAD parts, but not under a CADObject, so it counts as UI.
@@ -344,29 +375,69 @@ public sealed class CADMenuPanel
 
     // ---------------- Elements ----------------
 
+    /// <summary>Stacked text (white by default; pass SecondaryTextColor for muted labels).</summary>
     public Text CreateText(string name, string value, int size = FontSize, FontStyle fontStyle = FontStyle.Normal,
-        TextAnchor alignment = TextAnchor.MiddleCenter)
+        TextAnchor alignment = TextAnchor.MiddleCenter, Color? color = null)
     {
         Text text = CreateText(name, canvasRect, value, size, fontStyle, alignment);
+        if (color.HasValue)
+            text.color = color.Value;
         elements.Add(text.gameObject);
         return text;
     }
 
-    /// <summary>A panel button; with tooltip text it shows that text after a short ray hover.</summary>
-    public Button CreateButton(string label, UnityAction onClick, string tooltip = null)
+    /// <summary>Text inside a group (not stacked on its own; the group is).</summary>
+    public Text CreateText(RectTransform parent, string name, string value, int size, FontStyle fontStyle,
+        TextAnchor alignment, Color? color = null)
     {
-        Image image = CreateImage(label, style.ButtonColor);
+        Text text = CreateText(name, parent, value, size, fontStyle, alignment);
+        if (color.HasValue)
+            text.color = color.Value;
+        return text;
+    }
+
+    /// <summary>An empty stackable container; lay its children out inside it (e.g. a header).</summary>
+    public RectTransform CreateGroup(string name)
+    {
+        var go = new GameObject(name, typeof(RectTransform));
+        go.transform.SetParent(canvasRect, false);
+        elements.Add(go);
+        return (RectTransform)go.transform;
+    }
+
+    /// <summary>A non-interactive image (e.g. the logo) inside a group; never a raycast target.</summary>
+    public RawImage CreateRawImage(RectTransform parent, string name, Texture texture)
+    {
+        var go = new GameObject(name, typeof(RectTransform));
+        go.transform.SetParent(parent, false);
+        var image = go.AddComponent<RawImage>();
+        image.texture = texture;
+        image.raycastTarget = false;
+        return image;
+    }
+
+    public Color SecondaryTextColor => style.SecondaryTextColor;
+
+    /// <summary>
+    /// A panel button: navy surface with a white label (secondary), or cyan with a bold navy
+    /// label (primary: the one dominant action). With tooltip text it shows that text after a
+    /// short ray hover.
+    /// </summary>
+    public Button CreateButton(string label, UnityAction onClick, string tooltip = null, bool primary = false)
+    {
+        Image image = CreateImage(label, style.ButtonColor, ControlRadius);
         var button = image.gameObject.AddComponent<Button>();
         button.targetGraphic = image;
-        // Tints multiply the button color: normal slightly dimmed so hover (full) reads as brighter.
+        // Tints multiply the base fill: rest slightly dimmed (the base is the palette color
+        // brightened by 1/RestTint, so rest shows the palette color), hover full, pressed darker.
         ColorBlock colors = button.colors;
-        colors.normalColor = new Color(0.75f, 0.75f, 0.75f, 1f);
+        colors.normalColor = new Color(RestTint, RestTint, RestTint, 1f);
         colors.highlightedColor = Color.white;
-        colors.pressedColor = new Color(0.55f, 0.85f, 1f, 1f);
-        colors.selectedColor = new Color(0.75f, 0.75f, 0.75f, 1f);
-        colors.disabledColor = new Color(0.45f, 0.45f, 0.45f, 0.5f);
+        colors.pressedColor = new Color(0.65f, 0.65f, 0.65f, 1f);
+        colors.selectedColor = new Color(RestTint, RestTint, RestTint, 1f);
+        colors.disabledColor = new Color(RestTint, RestTint, RestTint, 0.45f);
         colors.colorMultiplier = 1f;
-        colors.fadeDuration = 0.05f;
+        colors.fadeDuration = 0.08f;
         button.colors = colors;
         button.navigation = new Navigation { mode = Navigation.Mode.None };
         if (onClick != null)
@@ -374,12 +445,27 @@ public sealed class CADMenuPanel
 
         Text text = CreateText("Label", (RectTransform)image.transform, label, FontSize, FontStyle.Normal,
             TextAnchor.MiddleCenter);
-        Stretch((RectTransform)text.transform, 0f);
+        Stretch((RectTransform)text.transform, 8f);
+
+        var state = button.gameObject.AddComponent<CADMenuButtonState>();
+        state.Primary = primary;
+        state.SurfaceBase = AtRest(style.ButtonColor);
+        state.AccentBase = AtRest(style.SelectedButtonColor);
+        state.LabelColor = style.TextColor;
+        state.AccentLabelColor = style.PanelColor;
+        Color dim = style.SecondaryTextColor;
+        state.DisabledLabelColor = new Color(dim.r, dim.g, dim.b, 0.7f);
+        state.Apply(button);
+
         if (!string.IsNullOrEmpty(tooltip))
             SetTooltip(button, tooltip);
         elements.Add(button.gameObject);
         return button;
     }
+
+    // The base fill that shows `color` under the rest tint.
+    private static Color AtRest(Color color) =>
+        new Color(Mathf.Min(1f, color.r / RestTint), Mathf.Min(1f, color.g / RestTint), Mathf.Min(1f, color.b / RestTint), color.a);
 
     /// <summary>Sets or changes a button's tooltip text.</summary>
     public void SetTooltip(Button button, string tooltip)
@@ -393,41 +479,55 @@ public sealed class CADMenuPanel
     // ---------------- Placement ----------------
 
     /// <summary>
-    /// Target-relative placement shared by every contextual menu: the panel's bottom edge sits
-    /// clearance above the top of the target's visible world bounds (never a Transform origin),
-    /// nudged headBias toward the user, facing the user. Tiny targets still get minRise above
-    /// their center; if the top is more than maxAboveEye above eye level (huge assemblies), the
-    /// panel comes down to that height at the side of the bounds nearest the user instead.
-    /// Finally clamped to minDistance..maxDistance from the head.
+    /// Target-relative placement shared by every contextual menu: beside the target's visible
+    /// world bounds (never a Transform origin), so the part never blocks the menu.
+    /// - Side: the one toward the middle of the user's view (a part on the right gets its menu
+    ///   on its left), clear of the bounds' horizontal extent by sideGap.
+    /// - Depth: level with the bounds' face nearest the user (in front of the part, not inside
+    ///   or behind it), never closer than MinMenuDistance nor farther than maxDistance.
+    /// - Height: the part's center height, kept between maxBelowEye below and maxAboveEye above
+    ///   eye level.
+    /// - Huge targets: the menu stays within maxViewAngle of the direction to the target.
+    /// Faces the user.
     /// </summary>
-    public void PlaceAboveBounds(Bounds bounds, Transform head, float clearance = 0.05f, float minRise = 0.1f,
-        float maxAboveEye = 0.25f, float headBias = 0.08f, float minDistance = 0.45f, float maxDistance = 1.4f)
+    public void PlaceBesideBounds(Bounds bounds, Transform head, float sideGap = 0.06f, float maxViewAngle = 35f,
+        float maxAboveEye = 0.1f, float maxBelowEye = 0.4f, float maxDistance = 1.4f)
     {
-        float halfHeight = OuterWorldHeight * 0.5f;
-        Vector3 anchor = bounds.center;
-        anchor.y = Mathf.Max(bounds.max.y + clearance, bounds.center.y + minRise);
-
+        float halfWidth = OuterWorldWidth * 0.5f;
         if (head == null)
         {
-            Root.transform.position = anchor + Vector3.up * halfHeight;
+            Root.transform.position = bounds.center + Vector3.right * (bounds.extents.x + sideGap + halfWidth);
             return;
         }
 
-        if (anchor.y > head.position.y + maxAboveEye)
-        {
-            Vector3 near = bounds.ClosestPoint(head.position);
-            anchor = new Vector3(near.x, head.position.y + maxAboveEye, near.z);
-        }
+        // Horizontal viewing direction to the target, and the side toward the middle of the view.
+        Vector3 toTarget = Vector3.ProjectOnPlane(bounds.center - head.position, Vector3.up);
+        if (toTarget.sqrMagnitude < 1e-6f)
+            toTarget = Vector3.ProjectOnPlane(head.forward, Vector3.up);
+        if (toTarget.sqrMagnitude < 1e-6f)
+            toTarget = Vector3.forward;
+        Vector3 forward = toTarget.normalized;
+        Vector3 right = Vector3.Cross(Vector3.up, forward);
+        Vector3 gazeRight = Vector3.Cross(Vector3.up, Vector3.ProjectOnPlane(head.forward, Vector3.up));
+        float side = Vector3.Dot(toTarget, gazeRight) > 0.02f ? -1f : 1f;
 
-        Vector3 toHead = Vector3.ProjectOnPlane(head.position - anchor, Vector3.up);
-        if (toHead.sqrMagnitude > 1e-6f)
-            anchor += toHead.normalized * headBias;
+        Vector3 e = bounds.extents;
+        float lateralExtent = Mathf.Abs(right.x) * e.x + Mathf.Abs(right.z) * e.z;
+        float depthExtent = Mathf.Abs(forward.x) * e.x + Mathf.Abs(forward.z) * e.z;
 
-        Vector3 position = anchor + Vector3.up * halfHeight;
+        float minDistance = MinMenuDistance;
+        float depth = Mathf.Clamp(Vector3.Dot(bounds.center - head.position, forward) - depthExtent, minDistance, maxDistance);
+        float lateral = Mathf.Min(lateralExtent + sideGap + halfWidth, depth * Mathf.Tan(maxViewAngle * Mathf.Deg2Rad));
+        float height = Mathf.Clamp(bounds.center.y, head.position.y - maxBelowEye, head.position.y + maxAboveEye);
+
+        Vector3 position = head.position + forward * depth + right * (side * lateral);
+        position.y = height;
+
+        // Never closer than the minimum (e.g. a part held right in front of the face).
         Vector3 fromHead = position - head.position;
         float distance = fromHead.magnitude;
-        if (distance > 1e-4f)
-            position = head.position + fromHead / distance * Mathf.Clamp(distance, minDistance, maxDistance);
+        if (distance > 1e-4f && distance < minDistance)
+            position = head.position + fromHead / distance * minDistance;
 
         Root.transform.position = position;
         FaceHead(head);
@@ -452,21 +552,25 @@ public sealed class CADMenuPanel
             text.text = label;
     }
 
+    /// <summary>Enabled / disabled; disabled buttons keep their shape with a dimmed label.</summary>
     public static void SetInteractable(Button button, bool value)
     {
         if (button.interactable != value)
             button.interactable = value;
+        if (button.TryGetComponent(out CADMenuButtonState state))
+            state.Apply(button);
     }
 
-    /// <summary>Selected / "on" state: the button's base color (tints still apply on top).</summary>
+    /// <summary>Selected / "on" state (toggles, segments): cyan fill with a bold navy label.</summary>
     public void SetSelected(Button button, bool selected)
     {
-        Color color = selected ? style.SelectedButtonColor : style.ButtonColor;
-        if (button.targetGraphic.color != color)
-            button.targetGraphic.color = color;
+        if (!button.TryGetComponent(out CADMenuButtonState state))
+            return;
+        state.Selected = selected;
+        state.Apply(button);
     }
 
-    public bool IsSelected(Button button) => button.targetGraphic.color == style.SelectedButtonColor;
+    public bool IsSelected(Button button) => button.TryGetComponent(out CADMenuButtonState state) && state.Selected;
 
     // ---------------- Layout ----------------
 
@@ -541,12 +645,67 @@ public sealed class CADMenuPanel
 
     private static Font LegacyFont => Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
 
-    private Image CreateImage(string name, Color color)
+    /// <summary>Rounds an Image's corners (radius in canvas units) with the shared sprite; no-op when RoundedCorners is off.</summary>
+    public static void MakeRounded(Image image, float radius)
+    {
+        Sprite sprite = RoundedSprite;
+        if (sprite == null || radius <= 0f)
+            return;
+        image.sprite = sprite;
+        image.type = Image.Type.Sliced;
+        image.pixelsPerUnitMultiplier = SpriteRadius / radius;
+    }
+
+    /// <summary>The shared rounded-rect sprite (null when RoundedCorners is off).</summary>
+    public static Sprite RoundedSprite
+    {
+        get
+        {
+            if (!RoundedCorners)
+                return null;
+            if (roundedSprite != null)
+                return roundedSprite;
+
+            // One anti-aliased white rounded rect, 9-sliced; tinted by each Image's color.
+            const int side = 64;
+            var texture = new Texture2D(side, side, TextureFormat.RGBA32, false)
+            {
+                name = "CAD Menu Rounded Rect",
+                wrapMode = TextureWrapMode.Clamp,
+                filterMode = FilterMode.Bilinear,
+                hideFlags = HideFlags.DontSave,
+            };
+            var pixels = new Color32[side * side];
+            float half = side / 2f;
+            for (int y = 0; y < side; y++)
+            {
+                for (int x = 0; x < side; x++)
+                {
+                    float dx = Mathf.Max(Mathf.Abs(x + 0.5f - half) - (half - SpriteRadius), 0f);
+                    float dy = Mathf.Max(Mathf.Abs(y + 0.5f - half) - (half - SpriteRadius), 0f);
+                    float alpha = Mathf.Clamp01(SpriteRadius - Mathf.Sqrt(dx * dx + dy * dy) + 0.5f);
+                    pixels[y * side + x] = new Color32(255, 255, 255, (byte)Mathf.RoundToInt(alpha * 255f));
+                }
+            }
+            texture.SetPixels32(pixels);
+            texture.Apply(false, true);
+
+            roundedSprite = Sprite.Create(texture, new Rect(0, 0, side, side), new Vector2(0.5f, 0.5f), 100f, 0,
+                SpriteMeshType.FullRect, new Vector4(SpriteRadius, SpriteRadius, SpriteRadius, SpriteRadius));
+            roundedSprite.name = "CAD Menu Rounded Rect";
+            roundedSprite.hideFlags = HideFlags.DontSave;
+            return roundedSprite;
+        }
+    }
+
+    private Image CreateImage(string name, Color color, float radius = 0f)
     {
         var go = new GameObject(name, typeof(RectTransform));
         go.transform.SetParent(canvasRect, false);
         var image = go.AddComponent<Image>();
         image.color = color;
+        if (radius > 0f)
+            MakeRounded(image, radius);
         return image;
     }
 

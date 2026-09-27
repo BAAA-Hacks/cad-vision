@@ -74,7 +74,7 @@ public class CADMultiSelectTests
         Click("P1"); // Second click opens the object menu.
         Assert.That(menu.IsOpen, Is.True);
 
-        MenuButton("Multi-Select").onClick.Invoke();
+        MenuButton("Multi-select").onClick.Invoke();
 
         Assert.That(svc.IsMultiSelectActive, Is.True);
         Assert.That(Selected(), Is.EquivalentTo(new[] { "P1" }), "existing selection kept as first member");
@@ -131,7 +131,7 @@ public class CADMultiSelectTests
         Click("P2");
         Tick();
 
-        MenuButton("Clear Selection").onClick.Invoke();
+        MenuButton("Clear selection").onClick.Invoke();
         Tick();
 
         Assert.That(Selected(), Is.Empty);
@@ -174,7 +174,7 @@ public class CADMultiSelectTests
         svc.MoveObject("P2", Vector3.one);
         Tick();
 
-        MenuButton("Reset Selected").onClick.Invoke();
+        MenuButton("Reset selected").onClick.Invoke();
 
         Assert.That(Vector3.Distance(t["P1"].localPosition, p1), Is.LessThan(1e-6f));
         Assert.That(Vector3.Distance(t["P2"].localPosition, p2), Is.LessThan(1e-6f));
@@ -306,7 +306,7 @@ public class CADMultiSelectTests
         Handle(machine.Up(0.1f));
         Assert.That(Selected(), Is.EquivalentTo(new[] { "P1", "P2" }));
 
-        MenuButton("Focus Selection").onClick.Invoke();
+        MenuButton("Focus selection").onClick.Invoke();
         Assert.That(Selected(), Is.EquivalentTo(new[] { "P1", "P2" }));
         Assert.That(svc.IsFocusActive, Is.True);
     }
@@ -375,9 +375,9 @@ public class CADMultiSelectTests
         Assert.That(Selected(), Is.EquivalentTo(new[] { "P1", "P2" }));
         Assert.That(menuRequests, Is.EqualTo(1));
         Assert.That(menu.IsOpen, Is.True);
-        Assert.That(MenuButton("Edit Selection"), Is.Not.Null, "selection menu, not the object menu");
+        Assert.That(MenuButton("Edit selection"), Is.Not.Null, "selection menu, not the object menu");
 
-        MenuButton("Edit Selection").onClick.Invoke();
+        MenuButton("Edit selection").onClick.Invoke();
         Assert.That(svc.IsMultiSelectActive, Is.True, "Edit Selection resumes picking");
         Assert.That(Selected(), Is.EquivalentTo(new[] { "P1", "P2" }));
     }

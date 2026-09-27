@@ -9,7 +9,7 @@ using UnityEngine.UI;
 /// <summary>
 /// Interaction polish pass: left/right parity through the one semantic pointer layer,
 /// two-pointer scaling with controllers and hands (logical targets, no jumps), reset scale,
-/// focus / ghost, context-aware menus, above-bounds menu placement, hover tooltips and model
+/// focus / ghost, context-aware menus, beside-bounds menu placement, hover tooltips and model
 /// replacement. Fake pointer sources stand in for the SDK rays (no device); these tests cannot
 /// prove physical Quest input or rendering.
 /// Model near the user (root at 0, 1.2, 1): Root / A / { P1, P2, P3, S / { S1 }, P4 (origin 5 m
@@ -428,8 +428,8 @@ public class CADInteractionPolishTests
         Assert.That(svc.CurrentScopeId, Is.EqualTo("A"), "scope kept");
 
         OpenObjectMenu("P1");
-        Assert.That(ContextLabels(), Does.Contain("Clear Focus").And.Not.Contain("Focus"), "one context-aware action");
-        ContextButton("Clear Focus").onClick.Invoke();
+        Assert.That(ContextLabels(), Does.Contain("Clear focus").And.Not.Contain("Focus"), "one context-aware action");
+        ContextButton("Clear focus").onClick.Invoke();
         Assert.That(svc.IsFocusActive, Is.False);
         Assert.That(Materials("P2")[0], Is.SameAs(p2), "22: rendering restored");
         Assert.That(Overlay("P2").activeSelf, Is.False, "no edges in Shaded");
@@ -453,13 +453,13 @@ public class CADInteractionPolishTests
         svc.AddToSelection("P1");
         svc.AddToSelection("P2");
         Tick();
-        ContextButton("Focus Selection").onClick.Invoke();
+        ContextButton("Focus selection").onClick.Invoke();
 
         Assert.That(svc.IsInFocus("P1") && svc.IsInFocus("P2"), Is.True);
         Assert.That(Materials("P3")[0].name, Is.EqualTo("CAD Ghost Surface"));
         Assert.That(Materials("P1")[0].name, Is.Not.EqualTo("CAD Ghost Surface"));
         Tick();
-        Assert.That(ContextLabels(), Does.Contain("Clear Focus"));
+        Assert.That(ContextLabels(), Does.Contain("Clear focus"));
         Assert.That(Selected(), Is.EquivalentTo(new[] { "P1", "P2" }));
     }
 
@@ -489,9 +489,9 @@ public class CADInteractionPolishTests
         svc.Focus("P1");
         Call(outline, "LateUpdate");
         Assert.That(t["P2"].GetComponentsInChildren<CADVisualOverlay>(true).Any(o => o.name == "__CADOutline"), Is.True);
-        Assert.That(outline.RenderQueue, Is.GreaterThan(2500), "outline after the see-through ghosts");
+        Assert.That(outline.RenderQueue, Is.InRange(2981, 2999), "highlight after the see-through ghosts, before UI");
         svc.ClearFocus();
-        Assert.That(outline.RenderQueue, Is.EqualTo(2010));
+        Assert.That(outline.RenderQueue, Is.InRange(2981, 2999), "same order without focus");
     }
 
     // ================= Context-aware menus =================
@@ -502,7 +502,7 @@ public class CADInteractionPolishTests
     {
         svc.EnterScope("A");
         OpenObjectMenu("P1");
-        Assert.That(ContextLabels(), Is.EqualTo(new[] { "Exit Assembly", "Focus", "Detach", "Reset Object", "Multi-Select", "Main Menu", "Close" }));
+        Assert.That(ContextLabels(), Is.EqualTo(new[] { "Exit assembly", "Focus", "Detach", "Reset object", "Multi-select", "Main menu", "Close" }));
 
         svc.Detach("P1");
         OpenObjectMenu("P1");
@@ -514,17 +514,17 @@ public class CADInteractionPolishTests
     public void AssemblyMenuShowsAssemblyActions()
     {
         OpenObjectMenu("A");
-        Assert.That(ContextLabels(), Is.EqualTo(new[] { "Enter Assembly", "Focus", "Reset Assembly", "Multi-Select", "Main Menu", "Close" }),
+        Assert.That(ContextLabels(), Is.EqualTo(new[] { "Enter assembly", "Focus", "Reset assembly", "Multi-select", "Main menu", "Close" }),
             "top-level assembly: no parent to detach from");
 
         svc.EnterScope("A");
         OpenObjectMenu("S");
-        Assert.That(ContextLabels(), Does.Contain("Enter Assembly").And.Contain("Detach"));
+        Assert.That(ContextLabels(), Does.Contain("Enter assembly").And.Contain("Detach"));
 
         svc.EnterScope("S");
         svc.Select("S"); // The current scope itself: nothing to enter.
         OpenObjectMenu("S");
-        Assert.That(ContextLabels(), Does.Not.Contain("Enter Assembly"));
+        Assert.That(ContextLabels(), Does.Not.Contain("Enter assembly"));
     }
 
     // 28
@@ -536,19 +536,19 @@ public class CADInteractionPolishTests
         svc.AddToSelection("P1");
         svc.AddToSelection("P2");
         Tick();
-        Assert.That(ContextLabels(), Is.EqualTo(new[] { "Exit Assembly", "Done", "Focus Selection", "Reset Selected", "Clear Selection" }));
+        Assert.That(ContextLabels(), Is.EqualTo(new[] { "Exit assembly", "Done", "Focus selection", "Reset selected", "Clear selection" }));
 
         ContextButton("Done").onClick.Invoke();
         Tick();
         typeof(CADContextMenu).GetMethod("Open", Any).Invoke(menu, new object[] { new CADContextMenuRequest("P1", t["P1"].position, true) });
-        Assert.That(ContextLabels(), Is.EqualTo(new[] { "Exit Assembly", "Focus Selection", "Reset Selected", "Edit Selection", "Clear Selection", "Close" }));
+        Assert.That(ContextLabels(), Is.EqualTo(new[] { "Exit assembly", "Focus selection", "Reset selected", "Edit selection", "Clear selection", "Close" }));
     }
 
     // 29
     [Test]
     public void GlobalActionsAreNotInObjectMenus()
     {
-        string[] global = { "Reset Model", "Manipulate Model", "Show All", "Isolate", "Isolate Selected" };
+        string[] global = { "Reset model", "Manipulate model", "Show all", "Isolate", "Isolate selected" };
         svc.EnterScope("A");
         OpenObjectMenu("P1");
         Assert.That(ContextLabels().Intersect(global), Is.Empty);
@@ -570,7 +570,7 @@ public class CADInteractionPolishTests
         {
             OpenObjectMenu(id);
             svc.TryGetObjectBounds(id, out Bounds bounds);
-            AssertAbove(bounds, id);
+            AssertBeside(bounds, id);
         }
         Assert.That(Vector3.Distance(t["P4"].position, PanelOf(menu).position), Is.GreaterThan(3f),
             "34: P4's far-away origin is ignored");
@@ -586,7 +586,7 @@ public class CADInteractionPolishTests
         svc.AddToSelection("P3");
         Tick();
         svc.TryGetSelectionBounds(out Bounds bounds);
-        AssertAbove(bounds, "selection");
+        AssertBeside(bounds, "selection");
     }
 
     // 33
@@ -596,25 +596,58 @@ public class CADInteractionPolishTests
         svc.BeginModelManipulation();
         Tick();
         svc.TryGetModelBounds(out Bounds bounds);
-        AssertAbove(bounds, "model");
+        AssertBeside(bounds, "model");
     }
 
     // 35
     [Test]
-    public void TinyAndHugeTargetsClampComfortably()
+    public void TinyHugeAndCloseTargetsPlaceComfortably()
     {
+        svc.EnterScope("A");
+        OpenObjectMenu("P1"); // Any open menu: the panel's size is what matters.
         var panel = menu.Panel;
-        panel.PlaceAboveBounds(new Bounds(new Vector3(0f, 1.2f, 0.8f), Vector3.one * 0.002f), head);
-        float bottom = PanelBottom(panel);
-        Assert.That(bottom, Is.GreaterThanOrEqualTo(1.2f + 0.1f - 1e-3f), "tiny: minimum rise above the part");
 
-        // A 4 m assembly: its top is far above the eyes.
+        var tiny = new Bounds(new Vector3(0.2f, 1.5f, 0.9f), Vector3.one * 0.002f);
+        panel.PlaceBesideBounds(tiny, head);
+        AssertBesidePanel(panel, tiny, "tiny");
+
+        // A 4 m assembly: beside it would be far out of view, so the menu stays within 35°.
         var huge = new Bounds(new Vector3(0f, 2f, 3f), new Vector3(4f, 4f, 4f));
-        panel.PlaceAboveBounds(huge, head);
+        panel.PlaceBesideBounds(huge, head);
         Vector3 position = panel.Root.transform.position;
-        Assert.That(PanelBottom(panel), Is.LessThanOrEqualTo(head.position.y + 0.25f + 1e-3f), "not absurdly high");
-        Assert.That(Vector3.Distance(position, head.position), Is.InRange(0.45f - 1e-3f, 1.4f + 1e-3f), "comfortable distance");
-        Assert.That(Vector3.Dot(panel.Root.transform.forward, (position - head.position).normalized), Is.GreaterThan(0.99f), "faces the user");
+        Vector3 flat = Vector3.ProjectOnPlane(position - head.position, Vector3.up);
+        Assert.That(Vector3.Angle(flat, Vector3.forward), Is.LessThanOrEqualTo(35f + 0.1f), "huge: stays in view");
+        Assert.That(position.y, Is.LessThanOrEqualTo(head.position.y + 0.1f + 1e-3f), "not absurdly high");
+        Assert.That(Vector3.Distance(position, head.position), Is.InRange(CADMenuPanel.MinMenuDistance - 1e-3f, 1.6f));
+
+        // A part held right in front of the face: the menu still keeps its distance.
+        var close = new Bounds(new Vector3(0f, 1.6f, 0.25f), Vector3.one * 0.1f);
+        panel.PlaceBesideBounds(close, head);
+        Assert.That(Vector3.Distance(panel.Root.transform.position, head.position),
+            Is.GreaterThanOrEqualTo(CADMenuPanel.MinMenuDistance - 1e-3f), "close: minimum distance");
+    }
+
+    [Test]
+    public void MenuOpensOnTheSideTowardTheMiddleOfTheView()
+    {
+        svc.EnterScope("A");
+        OpenObjectMenu("P3"); // Right of the gaze (x = +0.15): the menu goes on its left.
+        svc.TryGetObjectBounds("P3", out Bounds right);
+        Assert.That(PanelOf(menu).position.x, Is.LessThan(right.min.x), "left of a part on the right");
+
+        Call(menu, "Hide", "test");
+        OpenObjectMenu("P1"); // Left of the gaze: the menu goes on its right.
+        svc.TryGetObjectBounds("P1", out Bounds left);
+        Assert.That(PanelOf(menu).position.x, Is.GreaterThan(left.max.x), "right of a part on the left");
+    }
+
+    [Test]
+    public void MainMenuRespectsTheMinimumDistance()
+    {
+        typeof(CADMainMenu).GetField("spawnDistance", Any).SetValue(mainMenu, 0.4f);
+        mainMenu.ShowMainMenu();
+        Vector3 flat = Vector3.ProjectOnPlane(mainMenu.PanelTransform.position - head.position, Vector3.up);
+        Assert.That(flat.magnitude, Is.GreaterThanOrEqualTo(CADMenuPanel.MinMenuDistance - 1e-3f));
     }
 
     // ================= Tooltips =================
@@ -627,7 +660,7 @@ public class CADInteractionPolishTests
         OpenObjectMenu("P1");
         CADMenuTooltip tooltip = menu.Panel.Tooltip;
         var focus = ContextButton("Focus").GetComponent<CADMenuTooltipTrigger>();
-        var reset = ContextButton("Reset Object").GetComponent<CADMenuTooltipTrigger>();
+        var reset = ContextButton("Reset object").GetComponent<CADMenuTooltipTrigger>();
 
         tooltip.Enter(focus, 10f);
         tooltip.Tick(10.2f);
@@ -681,7 +714,7 @@ public class CADInteractionPolishTests
         svc.EnterScope("A");
         svc.Focus("P1");
         OpenObjectMenu("P1");
-        menu.Panel.Tooltip.Enter(ContextButton("Clear Focus").GetComponent<CADMenuTooltipTrigger>(), 0f);
+        menu.Panel.Tooltip.Enter(ContextButton("Clear focus").GetComponent<CADMenuTooltipTrigger>(), 0f);
         menu.Panel.Tooltip.Tick(1f);
         StartDrag(rightController, "P2");
         int focusEvents = 0;
@@ -713,7 +746,7 @@ public class CADInteractionPolishTests
     {
         OpenObjectMenu("A");
         Assert.That(ScopeLine(), Is.EqualTo("Scope: Full model"));
-        Assert.That(ContextLabels(), Does.Not.Contain("Exit Assembly"), "hidden at the root, not disabled");
+        Assert.That(ContextLabels(), Does.Not.Contain("Exit assembly"), "hidden at the root, not disabled");
         Assert.That(((Text)Get(menu, "scopeText")).raycastTarget, Is.False, "not clickable");
     }
 
@@ -725,14 +758,14 @@ public class CADInteractionPolishTests
         svc.EnterScope("S");
         OpenObjectMenu("S1");
         Assert.That(ScopeLine(), Is.EqualTo("Scope: S"));
-        Assert.That(ContextLabels(), Does.Contain("Exit Assembly"));
+        Assert.That(ContextLabels(), Does.Contain("Exit assembly"));
 
-        ContextButton("Exit Assembly").onClick.Invoke();
+        ContextButton("Exit assembly").onClick.Invoke();
         Assert.That(svc.CurrentScopeId, Is.EqualTo("A"), "one logical level, not the root");
 
         OpenObjectMenu("P1");
         Assert.That(ScopeLine(), Is.EqualTo("Scope: A"));
-        ContextButton("Exit Assembly").onClick.Invoke();
+        ContextButton("Exit assembly").onClick.Invoke();
         Assert.That(svc.CurrentScopeId, Is.Null);
     }
 
@@ -743,14 +776,14 @@ public class CADInteractionPolishTests
         svc.EnterScope("A");
         OpenObjectMenu("S");
         string[] labels = ContextLabels();
-        Assert.That(labels.Take(3), Is.EqualTo(new[] { "Exit Assembly", "Enter Assembly", "Focus" }),
+        Assert.That(labels.Take(3), Is.EqualTo(new[] { "Exit assembly", "Enter assembly", "Focus" }),
             "navigation at the top: Exit, then Enter, then the actions");
-        float exitY = ((RectTransform)ContextButton("Exit Assembly").transform).anchoredPosition.y;
-        float enterY = ((RectTransform)ContextButton("Enter Assembly").transform).anchoredPosition.y;
+        float exitY = ((RectTransform)ContextButton("Exit assembly").transform).anchoredPosition.y;
+        float enterY = ((RectTransform)ContextButton("Enter assembly").transform).anchoredPosition.y;
         float focusY = ((RectTransform)ContextButton("Focus").transform).anchoredPosition.y;
         Assert.That(enterY - focusY, Is.GreaterThan(exitY - enterY), "a gap separates navigation from the actions");
 
-        ContextButton("Enter Assembly").onClick.Invoke();
+        ContextButton("Enter assembly").onClick.Invoke();
         Assert.That(svc.CurrentScopeId, Is.EqualTo("S"));
     }
 
@@ -764,7 +797,7 @@ public class CADInteractionPolishTests
         svc.AddToSelection("P2");
         Tick();
         Assert.That(ScopeLine(), Is.EqualTo("Scope: A"));
-        ContextButton("Exit Assembly").onClick.Invoke();
+        ContextButton("Exit assembly").onClick.Invoke();
         Assert.That(svc.CurrentScopeId, Is.Null, "no need to pick a single object to go back up");
     }
 
@@ -775,7 +808,7 @@ public class CADInteractionPolishTests
         svc.BeginModelManipulation();
         Tick();
         Assert.That(((Text)Get(menu, "scopeText")).gameObject.activeSelf, Is.False);
-        Assert.That(ContextLabels(), Does.Not.Contain("Exit Assembly"));
+        Assert.That(ContextLabels(), Does.Not.Contain("Exit assembly"));
     }
 
     // ================= Movable menus =================
@@ -790,7 +823,7 @@ public class CADInteractionPolishTests
         OpenObjectMenu("P1");
         AssertGrabBand(menu.Panel, ContextButton("Focus"), "object menu");
         OpenObjectMenu("S");
-        AssertGrabBand(menu.Panel, ContextButton("Enter Assembly"), "assembly menu");
+        AssertGrabBand(menu.Panel, ContextButton("Enter assembly"), "assembly menu");
 
         svc.BeginMultiSelect();
         svc.AddToSelection("P1");
@@ -861,12 +894,12 @@ public class CADInteractionPolishTests
         Call(menu, "Hide", "test");
         OpenObjectMenu("P3");
         svc.TryGetObjectBounds("P3", out Bounds bounds);
-        AssertAbove(bounds, "reopened for another target");
+        AssertBeside(bounds, "reopened for another target");
 
         DragMenuBorder(menu.Panel, new Vector3(0.5f, 0.4f, 0f));
         OpenObjectMenu("P1"); // Replacing an open, moved menu also re-places it.
         svc.TryGetObjectBounds("P1", out bounds);
-        AssertAbove(bounds, "replaced while open");
+        AssertBeside(bounds, "replaced while open");
     }
 
     // 19
@@ -926,7 +959,7 @@ public class CADInteractionPolishTests
         svc.Select("N_A");
         typeof(CADContextMenu).GetMethod("Open", Any).Invoke(menu, new object[] { new CADContextMenuRequest("N_A", nodes["A"].position, true) });
         svc.TryGetObjectBounds("N_A", out Bounds bounds);
-        AssertAbove(bounds, "new model");
+        AssertBeside(bounds, "new model");
     }
 
     // ================= Tooltip delay =================
@@ -1243,7 +1276,7 @@ public class CADInteractionPolishTests
     {
         svc.EnterScope("A");
         OpenObjectMenu("P1");
-        ContextButton("Multi-Select").onClick.Invoke();
+        ContextButton("Multi-select").onClick.Invoke();
         Tick();
         Assert.That(menu.IsOpen, Is.True);
         Assert.That(ContextLabels(), Does.Contain("Done"), "the picking menu");
@@ -1269,7 +1302,7 @@ public class CADInteractionPolishTests
         Tick();
         Call(mainMenu, "LateUpdate");
         Assert.That(menu.IsOpen, Is.True);
-        Assert.That(ContextLabels(), Is.EqualTo(new[] { "Done", "Reset Scale", "Reset Model" }));
+        Assert.That(ContextLabels(), Is.EqualTo(new[] { "Done", "Reset scale", "Reset model" }));
         Assert.That(mainMenu.IsOpen, Is.False);
         Assert.That(OpenMenuCount(), Is.EqualTo(1));
 
@@ -1320,21 +1353,121 @@ public class CADInteractionPolishTests
 
     private int OpenMenuCount() => (menu.IsOpen ? 1 : 0) + (mainMenu.IsOpen ? 1 : 0);
 
+    // ================= Style guide =================
+
+    [Test]
+    public void MenusUseTheStyleGuidePalette()
+    {
+        CADMenuStyle style = CADMenuStyle.Default;
+        Assert.That((Color32)style.PanelColor, Is.EqualTo(new Color32(0x0C, 0x15, 0x24, 0xFF)), "Background");
+        Assert.That((Color32)style.ButtonColor, Is.EqualTo(new Color32(0x17, 0x26, 0x39, 0xFF)), "Surface");
+        Assert.That((Color32)style.SelectedButtonColor, Is.EqualTo(new Color32(0x2A, 0xDC, 0xDB, 0xFF)), "Accent");
+        Assert.That((Color32)style.BorderColor, Is.EqualTo(new Color32(0x28, 0x68, 0x81, 0xFF)), "Border");
+        Assert.That((Color32)style.SecondaryTextColor, Is.EqualTo(new Color32(0x9F, 0xB6, 0xCD, 0xFF)), "Secondary text");
+
+        svc.EnterScope("A");
+        OpenObjectMenu("P1");
+        var background = PanelOf(menu).GetComponentsInChildren<Image>(true).First(i => i.name == "Background");
+        Assert.That((Color32)background.color, Is.EqualTo((Color32)style.PanelColor));
+        Assert.That(((Text)Get(menu, "scopeText")).color, Is.EqualTo(style.SecondaryTextColor), "scope line is quiet");
+        Assert.That(((Text)Get(menu, "titleText")).fontSize, Is.EqualTo(CADMenuPanel.TitleSize));
+        Button focus = ContextButton("Focus");
+        Assert.That(focus.GetComponentInChildren<Text>().color, Is.EqualTo(Color.white), "secondary: white label");
+        Assert.That(((RectTransform)focus.transform).rect.height, Is.EqualTo(CADMenuPanel.ControlHeight), "52-unit target");
+    }
+
+    [Test]
+    public void PrimarySelectedAndDisabledButtonsLookDistinct()
+    {
+        svc.EnterScope("A");
+        svc.BeginMultiSelect();
+        Tick();
+        Button done = ContextButton("Done");
+        Text label = done.GetComponentInChildren<Text>();
+        Assert.That(done.GetComponent<CADMenuButtonState>().Primary, Is.True, "Done is the primary action");
+        Assert.That(label.color, Is.EqualTo(CADMenuStyle.Default.PanelColor), "navy label on cyan");
+        Assert.That(label.fontStyle, Is.EqualTo(FontStyle.Bold));
+
+        Button reset = ContextButton("Reset selected"); // Nothing selected yet: disabled.
+        Assert.That(reset.interactable, Is.False);
+        Assert.That(reset.GetComponentInChildren<Text>().color.a, Is.LessThan(1f), "disabled label dimmed but legible");
+
+        mainMenu.ShowMainMenu();
+        Button edges = MainButton("Edges");
+        Assert.That(mainMenu.Panel.IsSelected(edges), Is.True);
+        Assert.That(edges.GetComponentInChildren<Text>().color, Is.EqualTo(CADMenuStyle.Default.PanelColor),
+            "selected segment: navy on cyan");
+        Assert.That(MainButton("Shaded").GetComponentInChildren<Text>().color, Is.EqualTo(Color.white));
+    }
+
+    [Test]
+    public void MainMenuHeaderShowsTheLogoWordmarkAndSubtitle()
+    {
+        mainMenu.ShowMainMenu();
+        var header = (RectTransform)Get(mainMenu, "header");
+        RawImage logo = header.GetComponentInChildren<RawImage>();
+        Assert.That(logo, Is.Not.Null, "original CADVision logo");
+        Assert.That(logo.texture.name, Is.EqualTo("CADVisionLogo"));
+        Rect r = logo.rectTransform.rect;
+        Assert.That(r.width / r.height, Is.EqualTo((float)logo.texture.width / logo.texture.height).Within(1e-3f),
+            "proportions preserved");
+        Assert.That(logo.raycastTarget, Is.False, "decoration never takes input");
+        string[] texts = header.GetComponentsInChildren<Text>().Select(x => x.text).ToArray();
+        Assert.That(texts, Is.EquivalentTo(new[] { "CADVision", "Main menu" }));
+        Assert.That(mainMenu.Panel.IsGrabPoint(logo.rectTransform.TransformPoint(r.center)), Is.True, "header moves the menu");
+    }
+
+    [Test]
+    public void RoundedCornersCanBeSwitchedOff()
+    {
+        Assert.That(CADMenuPanel.RoundedSprite, Is.Not.Null);
+        CADMenuPanel.RoundedCorners = false;
+        try
+        {
+            Assert.That(CADMenuPanel.RoundedSprite, Is.Null, "square fallback");
+            var panel = new CADMenuPanel("Square Panel", 200f, CADMenuStyle.Default);
+            Button button = panel.CreateButton("Test", null);
+            Assert.That(((Image)button.targetGraphic).sprite, Is.Null);
+            panel.Destroy();
+        }
+        finally
+        {
+            CADMenuPanel.RoundedCorners = true;
+        }
+    }
+
     // ================= Helpers =================
 
-    private void AssertAbove(Bounds bounds, string what)
+    private void AssertBeside(Bounds bounds, string what) => AssertBesidePanel(menu.Panel, bounds, what);
+
+    // Beside the target (clear of it sideways, or at the 35° view limit for huge ones), not
+    // behind its near face, at least the minimum distance away, facing the user.
+    private void AssertBesidePanel(CADMenuPanel menuPanel, Bounds bounds, string what)
     {
-        Transform panel = PanelOf(menu);
-        float bottom = PanelBottom(menu.Panel);
-        Assert.That(bottom, Is.GreaterThanOrEqualTo(bounds.max.y - 1e-3f), $"{what}: panel bottom above the target top");
-        Vector2 flat = new Vector2(panel.position.x - bounds.center.x, panel.position.z - bounds.center.z);
-        Assert.That(flat.magnitude, Is.LessThan(bounds.extents.magnitude + 0.2f), $"{what}: over the target, not elsewhere");
+        Transform panel = menuPanel.Root.transform;
+        Vector3 forward = Vector3.ProjectOnPlane(bounds.center - head.position, Vector3.up).normalized;
+        Vector3 right = Vector3.Cross(Vector3.up, forward);
+        Vector3 e = bounds.extents;
+        float lateralExtent = Mathf.Abs(right.x) * e.x + Mathf.Abs(right.z) * e.z;
+        float depthExtent = Mathf.Abs(forward.x) * e.x + Mathf.Abs(forward.z) * e.z;
+        float halfWidth = menuPanel.OuterWorldWidth * 0.5f;
+
+        float lateral = Mathf.Abs(Vector3.Dot(panel.position - bounds.center, right));
+        float depth = Vector3.Dot(panel.position - head.position, forward);
+        bool clear = lateral >= lateralExtent + halfWidth - 1e-3f;
+        bool atViewLimit = Mathf.Abs(Mathf.Atan2(lateral, depth) * Mathf.Rad2Deg - 35f) < 0.5f;
+        Assert.That(clear || atViewLimit, Is.True, $"{what}: beside the target, not in front of it");
+        Assert.That(lateral, Is.LessThan(lateralExtent + halfWidth + 0.15f), $"{what}: next to the target, not elsewhere");
+
+        float nearFace = Vector3.Dot(bounds.center - head.position, forward) - depthExtent;
+        Assert.That(depth, Is.LessThanOrEqualTo(Mathf.Max(nearFace, CADMenuPanel.MinMenuDistance) + 1e-3f),
+            $"{what}: not behind the part's near face");
+        Assert.That(Vector3.Distance(panel.position, head.position), Is.GreaterThanOrEqualTo(CADMenuPanel.MinMenuDistance - 1e-3f),
+            $"{what}: minimum distance");
         Assert.That(Vector3.Dot(panel.forward, (panel.position - head.position).normalized), Is.GreaterThan(0.99f),
             $"{what}: faces the user");
     }
 
-    private static float PanelBottom(CADMenuPanel panel) =>
-        panel.Root.transform.position.y - panel.OuterWorldHeight * 0.5f; // Including the grab band.
 
     private static Transform PanelOf(CADContextMenu contextMenu) => ((GameObject)Get(contextMenu, "panelRoot")).transform;
 

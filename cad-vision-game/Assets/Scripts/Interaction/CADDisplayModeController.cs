@@ -10,9 +10,8 @@ using UnityEngine.Rendering;
 /// - Wireframe: surfaces swapped to one shared see-through material (originals kept and
 ///   restored exactly), strong edges, and the edges hidden behind surfaces drawn faintly.
 ///   The see-through surfaces still write depth (so the nearest face hides the faces behind
-///   it); they, the wireframe edges and — while Wireframe is on — the selection outline hull
-///   draw after the sky and before UI canvases, so the outline keeps its rim and menus are
-///   never painted over. Colliders and renderers stay enabled, so interaction is unchanged.
+///   it); they and the wireframe edges draw after the sky and before the selection highlight
+///   and UI canvases, so menus are never painted over. Colliders and renderers stay enabled, so interaction is unchanged.
 ///
 /// Edge overlays: one child "__CADEdges" per MeshRenderer (CADVisualOverlay, no collider),
 /// drawing a MeshTopology.Lines mesh of the source mesh's feature edges: boundary edges,
@@ -62,8 +61,8 @@ public class CADDisplayModeController : MonoBehaviour
     [Tooltip("Ghost edges (alpha = strength).")]
     [SerializeField] private Color ghostEdgeColor = new Color(0.45f, 0.5f, 0.58f, 0.35f);
 
-    // Wireframe draw order: surfaces 2980 (shader), outline hull, edges, hidden edges; UI is 3000.
-    private const int WireOutlineQueue = (int)RenderQueue.Transparent - 17;
+    // Wireframe draw order: surfaces 2980 (shader), edges, hidden edges, then the selection
+    // highlight (2990, CADSelectionOutline); UI is 3000.
     private const int WireEdgeQueue = (int)RenderQueue.Transparent - 15;
     private const int HiddenEdgeQueue = (int)RenderQueue.Transparent - 14;
 
@@ -87,7 +86,6 @@ public class CADDisplayModeController : MonoBehaviour
 
     private CADVisionManipulationService manipulationService;
     private CADUISettings settings;
-    private CADSelectionOutline selectionOutline;
     private Material edgeMaterial, wireEdgeMaterial, hiddenEdgeMaterial, surfaceMaterial;
     private Material ghostSurfaceMaterial, ghostEdgeMaterial;
     private Material[] edgeMaterials, wireMaterials, ghostEdgeMaterials;
@@ -120,7 +118,6 @@ public class CADDisplayModeController : MonoBehaviour
     {
         manipulationService = GetComponent<CADVisionManipulationService>();
         settings = GetComponent<CADUISettings>();
-        selectionOutline = GetComponent<CADSelectionOutline>();
 
         Shader edgeShader = Resources.Load<Shader>(EdgeShaderResource);
         Shader surfaceShader = Resources.Load<Shader>(SurfaceShaderResource);
@@ -280,10 +277,6 @@ public class CADDisplayModeController : MonoBehaviour
         }
         GhostedRendererCount = ghosted;
 
-        // See-through surfaces (Wireframe, ghosts) draw after opaque geometry: the outline hull
-        // must follow them to find their depth.
-        if (selectionOutline != null)
-            selectionOutline.RenderQueue = mode == CADDisplayMode.Wireframe || ghosted > 0 ? WireOutlineQueue : -1;
 
         if (mode != applied || mode != CADDisplayMode.Shaded)
             Debug.Log($"[CADDisplayMode] {mode}: {entries.Count} renderers, {OverlayCount} edge overlays, " +

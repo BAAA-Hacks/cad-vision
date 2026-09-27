@@ -136,12 +136,34 @@ public class CADDisplayModeTests
 
         int outlineQueue = outline.RenderQueue;
         Material[] edges = Overlay("P1").GetComponent<MeshRenderer>().sharedMaterials;
-        Assert.That(outlineQueue, Is.GreaterThan(surface.renderQueue), "outline hull after the surfaces' depth");
-        Assert.That(edges.All(e => e.renderQueue > outlineQueue && e.renderQueue < 3000), Is.True,
-            "edges after surfaces and outline, before UI");
+        Assert.That(edges.All(e => e.renderQueue > surface.renderQueue), Is.True, "edges after the surfaces' depth");
+        Assert.That(edges.All(e => e.renderQueue < outlineQueue), Is.True, "selection highlight over the edges");
+        Assert.That(outlineQueue, Is.LessThan(3000), "before UI");
 
         settings.SetDisplayMode(CADDisplayMode.Edges);
-        Assert.That(outline.RenderQueue, Is.EqualTo(2010), "outline back at its shader queue (Geometry+10)");
+        Assert.That(outline.RenderQueue, Is.EqualTo(outlineQueue), "one fixed order in every mode");
+    }
+
+    [Test]
+    public void SelectionOutlineIsAStencilMaskedRimAroundTheWholeSelection()
+    {
+        svc.Select("A"); // A whole assembly: one outline around all its parts.
+        Call(outline, "LateUpdate");
+        var overlays = t["A"].GetComponentsInChildren<CADVisualOverlay>(true).Where(o => o.name == "__CADOutline").ToList();
+        Assert.That(overlays.Count, Is.EqualTo(3), "every part with a mesh takes part (P4 has none)");
+
+        Material[] materials = overlays[0].GetComponent<MeshRenderer>().sharedMaterials;
+        Assert.That(materials.Select(m => m.shader.name), Is.EqualTo(new[] { "CADVision/SelectionMask", "CADVision/SelectionOutline" }));
+        Assert.That(materials[0].renderQueue, Is.LessThan(materials[1].renderQueue),
+            "the whole selection's mask is complete before any rim is drawn");
+        Assert.That(materials[1].renderQueue, Is.EqualTo(outline.RenderQueue).And.LessThan(3000), "before UI");
+        Assert.That(overlays.All(o => o.GetComponent<MeshRenderer>().sharedMaterials[0] == materials[0]), Is.True,
+            "one shared mask material for the whole selection");
+        Assert.That(overlays[0].GetComponent<Collider>(), Is.Null, "never intercepts rays");
+
+        Mesh shell = overlays[0].GetComponent<MeshFilter>().sharedMesh;
+        Mesh source = overlays[0].transform.parent.GetComponent<MeshFilter>().sharedMesh;
+        Assert.That(shell.GetIndexCount(0), Is.EqualTo(source.triangles.Length), "the part's own triangles");
     }
 
     // 6, 17
