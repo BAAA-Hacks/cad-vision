@@ -37,6 +37,7 @@ public sealed class CADScaleGesture
     }
 
     private CADVisionManipulationService service;
+    private CADMultiplayerCoordinator multiplayer;
     private readonly List<ObjectTarget> objects = new();
     private Transform modelRoot;
     private Vector3 modelPivotLocal;
@@ -62,6 +63,8 @@ public sealed class CADScaleGesture
             return false;
 
         service = manipulationService;
+        multiplayer = service.GetComponent<CADMultiplayerCoordinator>();
+        multiplayer?.RequestLease(new[] { CADMultiplayerLeaseTable.ModelId });
         modelRoot = root;
         initialModelRatio = manipulationService.ModelScaleRatio;
         initialModelRotation = root.rotation;
@@ -105,6 +108,8 @@ public sealed class CADScaleGesture
             return false;
 
         service = manipulationService;
+        multiplayer = service.GetComponent<CADMultiplayerCoordinator>();
+        multiplayer?.RequestLease(objects.ConvertAll(target => target.Id));
         return Start(handDistance, pivotWorld);
     }
 
@@ -139,6 +144,24 @@ public sealed class CADScaleGesture
     {
         if (!IsActive)
             return false;
+        if (multiplayer != null && multiplayer.IsInRoom &&
+            !multiplayer.HasLease(modelRoot != null
+                ? new[] { CADMultiplayerLeaseTable.ModelId }
+                : objects.ConvertAll(target => target.Id)))
+        {
+            initialDistance = handDistance;
+            if (modelRoot != null)
+                initialModelRatio = service.ModelScaleRatio;
+            else
+                for (int i = 0; i < objects.Count; i++)
+                {
+                    ObjectTarget target = objects[i];
+                    if (target.Transform == null) return false;
+                    target.InitialScale = target.Transform.localScale;
+                    objects[i] = target;
+                }
+            return true;
+        }
 
         float distance = Vector3.Distance(first, second);
         if (!float.IsFinite(distance))
@@ -209,6 +232,10 @@ public sealed class CADScaleGesture
 
     public void End()
     {
+        if (modelRoot != null)
+            multiplayer?.ReleaseLease(new[] { CADMultiplayerLeaseTable.ModelId });
+        else if (objects.Count > 0)
+            multiplayer?.ReleaseLease(objects.ConvertAll(target => target.Id));
         IsActive = false;
         objects.Clear();
         modelRoot = null;

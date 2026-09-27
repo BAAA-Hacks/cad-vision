@@ -75,6 +75,7 @@ namespace CADVision
                 Place(root);
                 root.SetActive(true);
                 runtime.PublishImportedModel(metadata, root, instantiator.Nodes, importer);
+                CADPackageIdentity.SetLoaded(glb, json);
                 root = null;
                 importer = null; // Runtime owns meshes/materials until replacement or clear.
             }

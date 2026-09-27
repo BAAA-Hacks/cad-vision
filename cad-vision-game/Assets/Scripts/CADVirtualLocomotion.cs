@@ -15,8 +15,8 @@ public sealed class CADVirtualLocomotion : MonoBehaviour
     private Vector3 roomPosition;
     private Quaternion roomRotation;
     private bool virtualMode;
+    private bool roomActive;
     private bool inputArmed;
-    private bool turnArmed = true;
     private float nextTurnTime;
     private bool aiming;
     private bool validDestination;
@@ -100,13 +100,20 @@ public sealed class CADVirtualLocomotion : MonoBehaviour
         }
         virtualMode = enabled;
         inputArmed = false;
-        turnArmed = true;
+        nextTurnTime = 0f;
+        CancelTeleport();
+    }
+
+    public void SetRoomActive(bool active)
+    {
+        roomActive = active;
+        inputArmed = false;
         CancelTeleport();
     }
 
     private void LateUpdate()
     {
-        if (!virtualMode || rig == null || floor == null) return;
+        if (!virtualMode || roomActive || rig == null || floor == null) return;
         if (!OVRManager.hasInputFocus || !OVRInput.GetControllerPositionTracked(OVRInput.Controller.RTouch))
         {
             inputArmed = false;
@@ -143,13 +150,11 @@ public sealed class CADVirtualLocomotion : MonoBehaviour
             UpdateArc();
             return;
         }
-        if (Mathf.Abs(right.x) < 0.25f) turnArmed = true;
-        if (turnArmed && Time.unscaledTime >= nextTurnTime &&
+        if (Time.unscaledTime >= nextTurnTime &&
             Mathf.Abs(right.x) > 0.7f && Mathf.Abs(right.y) < 0.5f)
         {
             rig.transform.RotateAround(rig.centerEyeAnchor.position, floor.up,
                 Mathf.Sign(right.x) * turnDegrees);
-            turnArmed = false;
             nextTurnTime = Time.unscaledTime + 0.35f;
         }
         float magnitude = Mathf.Clamp01(left.magnitude);
