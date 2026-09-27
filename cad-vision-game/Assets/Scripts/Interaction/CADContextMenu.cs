@@ -1,10 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using Oculus.Interaction;
-using Oculus.Interaction.Surfaces;
 using UnityEngine;
-using UnityEngine.EventSystems;
 using UnityEngine.UI;
 
 /// <summary>
@@ -13,11 +10,11 @@ using UnityEngine.UI;
 /// a public CADVisionManipulationService method; nothing here edits CAD transforms, parents,
 /// visibility or selection directly.
 ///
-/// The panel is a world-space uGUI canvas driven through the Meta Interaction SDK
-/// (RayInteractable → PointableCanvas → PointableCanvasModule), so any ray + select source
-/// works: controller trigger now, hand pinch later. It is built in code (no per-object setup)
-/// and is never a CAD object; CADPointerInteraction classifies it as UI, so clicking it never
-/// deselects.
+/// The panel is a CADMenuPanel (the shared menu construction, also used by CADMainMenu): a
+/// world-space uGUI canvas driven through the Meta Interaction SDK (RayInteractable →
+/// PointableCanvas → PointableCanvasModule), so any ray + select source works (controller
+/// trigger, hand pinch). It is built in code (no per-object setup) and is never a CAD object;
+/// CADPointerInteraction classifies it as UI, so clicking it never deselects.
 ///
 /// While the service's multi-select mode is active the same panel is re-laid-out as a
 /// selection menu (Done / Reset Selected / Isolate Selected / Show All / Clear Selection),
@@ -25,6 +22,9 @@ using UnityEngine.UI;
 ///
 /// While whole-model manipulation mode is active it shows a minimal model menu (Done / Reset
 /// Model) at the model's visible bounds; it hides while the model is being moved or scaled.
+///
+/// The object and selection menus also offer "Main Menu" (CADMainMenu.ShowMainMenu): the way
+/// to reach the main menu with hands, whose system menu gesture isn't used.
 /// </summary>
 [DisallowMultipleComponent]
 [RequireComponent(typeof(CADVisionManipulationService))]
@@ -35,7 +35,7 @@ public class CADContextMenu : MonoBehaviour
         EnterAssembly, ExitAssembly, Isolate, ShowAll, DetachOrReattach, ResetObject, ResetAssembly,
         ResetModel, MultiSelect, Close,
         Done, ResetSelected, IsolateSelected, ClearSelection, EditSelection,
-        ManipulateModel, ModelDone,
+        ManipulateModel, ModelDone, MainMenu,
     }
 
     [Header("Placement")]
@@ -53,21 +53,18 @@ public class CADContextMenu : MonoBehaviour
     [SerializeField] private Color buttonColor = new Color(0.30f, 0.33f, 0.40f, 1f);
     [SerializeField] private Color textColor = Color.white;
 
-    // Layout in canvas units (1 unit = 1 mm at the canvas scale below).
-    private const float CanvasScale = 0.001f;
+    // Layout in canvas units (1 unit = 1 mm).
     private const float PanelWidth = 260f;
-    private const float Padding = 12f;
     private const float TitleHeight = 40f;
     private const float ButtonHeight = 44f;
-    private const float ButtonSpacing = 8f;
-    private const int FontSize = 20;
 
     // Object menu (one selected object).
     private static readonly MenuAction[] SingleLayout =
     {
         MenuAction.EnterAssembly, MenuAction.ExitAssembly, MenuAction.Isolate, MenuAction.ShowAll,
         MenuAction.DetachOrReattach, MenuAction.ResetObject, MenuAction.ResetAssembly,
-        MenuAction.ResetModel, MenuAction.ManipulateModel, MenuAction.MultiSelect, MenuAction.Close,
+        MenuAction.ResetModel, MenuAction.ManipulateModel, MenuAction.MultiSelect, MenuAction.MainMenu,
+        MenuAction.Close,
     };
 
     // Selection menu (multi-select mode).
@@ -81,7 +78,8 @@ public class CADContextMenu : MonoBehaviour
     private static readonly MenuAction[] GroupLayout =
     {
         MenuAction.EditSelection, MenuAction.ResetSelected, MenuAction.IsolateSelected,
-        MenuAction.ShowAll, MenuAction.ManipulateModel, MenuAction.ClearSelection, MenuAction.Close,
+        MenuAction.ShowAll, MenuAction.ManipulateModel, MenuAction.ClearSelection, MenuAction.MainMenu,
+        MenuAction.Close,
     };
 
     // Model menu (whole-model manipulation mode).
@@ -109,21 +107,21 @@ public class CADContextMenu : MonoBehaviour
         { MenuAction.EditSelection, "Edit Selection" },
         { MenuAction.ManipulateModel, "Manipulate Model" },
         { MenuAction.ModelDone, "Done" },
+        { MenuAction.MainMenu, "Main Menu" },
     };
 
     private CADVisionManipulationService manipulationService;
     private CADPointerInteraction pointerInteraction;
     private CADXRGrab gripFallback;
+    private CADMainMenu mainMenu;
 
-    private GameObject panelRoot;
-    private RectTransform canvasRect;
-    private BoxCollider surfaceBox;
+    private CADMenuPanel panel;
+    private GameObject panelRoot; // panel.Root.
     private Text titleText;
     private bool multiMode;          // Panel shows the multi-select (picking) menu.
     private bool groupMode;          // Panel shows the selection menu for an existing multi-selection.
     private bool modelMode;          // Panel shows the model menu (whole-model manipulation).
     private string multiSignature;   // Selected IDs the selection menu was last placed for.
-    private RayInteractable panelInteractable;
     private readonly Dictionary<MenuAction, Button> buttons = new();
 
     private string targetId;
@@ -137,8 +135,8 @@ public class CADContextMenu : MonoBehaviour
         manipulationService = GetComponent<CADVisionManipulationService>();
         pointerInteraction = GetComponent<CADPointerInteraction>();
         gripFallback = GetComponent<CADXRGrab>();
+        mainMenu = GetComponent<CADMainMenu>();
 
-        EnsureCanvasEventSystem();
         BuildPanel();
         Hide("initial");
     }
@@ -158,11 +156,7 @@ public class CADContextMenu : MonoBehaviour
         Hide("component disabled");
     }
 
-    private void OnDestroy()
-    {
-        if (panelRoot != null)
-            Destroy(panelRoot);
-    }
+    private void OnDestroy() => panel?.Destroy();
 
     // ---------------- Open / close ----------------
 
@@ -194,21 +188,14 @@ public class CADContextMenu : MonoBehaviour
 
         Place(request);
         RefreshButtons();
-        panelRoot.SetActive(true);
-        panelInteractable.enabled = true;
+        panel.Show();
         Debug.Log($"[CADContextMenu] Opened for '{targetId}'.");
     }
 
     private void Hide(string reason)
     {
         bool wasOpen = IsOpen;
-        if (panelRoot != null)
-        {
-            // Disable the interactable first so a hidden panel can never swallow ray clicks.
-            if (panelInteractable != null)
-                panelInteractable.enabled = false;
-            panelRoot.SetActive(false);
-        }
+        panel?.Hide(); // Interactable off first: a hidden panel never swallows ray clicks.
 
         if (wasOpen)
             Debug.Log($"[CADContextMenu] Closed ({reason}).");
@@ -236,8 +223,7 @@ public class CADContextMenu : MonoBehaviour
         else
             PlaceMulti(true);
         RefreshButtons();
-        panelRoot.SetActive(true);
-        panelInteractable.enabled = true;
+        panel.Show();
         Debug.Log($"[CADContextMenu] Opened selection menu ({count} selected).");
     }
 
@@ -265,8 +251,7 @@ public class CADContextMenu : MonoBehaviour
         titleText.text = "Manipulate Model";
         PlaceModel();
         RefreshButtons();
-        panelRoot.SetActive(true);
-        panelInteractable.enabled = true;
+        panel.Show();
         Debug.Log("[CADContextMenu] Opened model menu.");
     }
 
@@ -280,8 +265,7 @@ public class CADContextMenu : MonoBehaviour
         target = null;
         ApplyLayout(MultiLayout);
         UpdateMulti(forcePlace: true);
-        panelRoot.SetActive(true);
-        panelInteractable.enabled = true;
+        panel.Show();
         Debug.Log("[CADContextMenu] Opened selection menu (multi-select).");
     }
 
@@ -517,6 +501,7 @@ public class CADContextMenu : MonoBehaviour
             SetInteractable(MenuAction.IsolateSelected, any);
             SetInteractable(MenuAction.ShowAll, true);
             SetInteractable(MenuAction.ClearSelection, any);
+            SetInteractable(MenuAction.MainMenu, mainMenu != null);
             return;
         }
 
@@ -534,6 +519,7 @@ public class CADContextMenu : MonoBehaviour
         SetInteractable(MenuAction.ResetAssembly, ResetAssemblyTarget() != null);
         SetInteractable(MenuAction.ResetModel, true);
         SetInteractable(MenuAction.MultiSelect, true);
+        SetInteractable(MenuAction.MainMenu, mainMenu != null);
         SetInteractable(MenuAction.Close, true);
     }
 
@@ -545,17 +531,13 @@ public class CADContextMenu : MonoBehaviour
     private void SetLabel(MenuAction action, string label)
     {
         if (buttons.TryGetValue(action, out Button button))
-        {
-            Text text = button.GetComponentInChildren<Text>();
-            if (text != null && text.text != label)
-                text.text = label;
-        }
+            CADMenuPanel.SetLabel(button, label);
     }
 
     private void SetInteractable(MenuAction action, bool value)
     {
-        if (buttons.TryGetValue(action, out Button button) && button.interactable != value)
-            button.interactable = value;
+        if (buttons.TryGetValue(action, out Button button))
+            CADMenuPanel.SetInteractable(button, value);
     }
 
     private void OnAction(MenuAction action)
@@ -597,6 +579,9 @@ public class CADContextMenu : MonoBehaviour
             case MenuAction.EditSelection: manipulationService.BeginMultiSelect(); break; // Picking menu opens next frame.
             case MenuAction.ManipulateModel: manipulationService.BeginModelManipulation(); break; // Model menu opens next frame.
             case MenuAction.ModelDone: manipulationService.EndModelManipulation(); break;
+            case MenuAction.MainMenu:
+                if (mainMenu != null) mainMenu.ShowMainMenu();
+                break;
         }
 
         // The model is back at its review pose: follow it.
@@ -606,159 +591,37 @@ public class CADContextMenu : MonoBehaviour
 
     // ---------------- Construction ----------------
 
-    // The ISDK canvas bridge needs exactly one EventSystem with a PointableCanvasModule.
-    private static void EnsureCanvasEventSystem()
+    private CADMenuStyle Style => new CADMenuStyle
     {
-        EventSystem eventSystem = FindAnyObjectByType<EventSystem>(FindObjectsInactive.Include);
-        if (eventSystem == null)
-        {
-            var go = new GameObject("CAD Vision EventSystem");
-            eventSystem = go.AddComponent<EventSystem>();
-        }
-
-        if (eventSystem.GetComponent<PointableCanvasModule>() == null &&
-            FindAnyObjectByType<PointableCanvasModule>(FindObjectsInactive.Include) == null)
-        {
-            eventSystem.gameObject.AddComponent<PointableCanvasModule>();
-        }
-    }
+        PanelColor = panelColor,
+        BorderColor = borderColor,
+        ButtonColor = buttonColor,
+        SelectedButtonColor = CADMenuStyle.Default.SelectedButtonColor,
+        TextColor = textColor,
+    };
 
     private void BuildPanel()
     {
-        float height = PanelHeight(SingleLayout.Length);
+        panel = new CADMenuPanel("CAD Context Menu", PanelWidth, Style);
+        panelRoot = panel.Root;
 
-        // Separate root (never under a CAD object or the model root). Marked as UI.
-        panelRoot = new GameObject("CAD Context Menu");
-        panelRoot.AddComponent<CADUIPointerTarget>();
-
-        var canvasObject = new GameObject("Canvas", typeof(RectTransform));
-        canvasObject.transform.SetParent(panelRoot.transform, false);
-        var canvas = canvasObject.AddComponent<Canvas>();
-        canvas.renderMode = RenderMode.WorldSpace;
-        canvasObject.AddComponent<GraphicRaycaster>(); // Required by PointableCanvas.
-        canvasRect = (RectTransform)canvasObject.transform;
-        canvasRect.sizeDelta = new Vector2(PanelWidth, height);
-        canvasRect.localScale = Vector3.one * CanvasScale;
-
-        // Thin border behind the panel for contrast against passthrough and dark scenes.
-        Image border = CreateImage("Border", canvasRect, borderColor);
-        Stretch((RectTransform)border.transform, -3f);
-        Image background = CreateImage("Background", canvasRect, panelColor);
-        Stretch((RectTransform)background.transform, 0f);
-
-        titleText = CreateText("Title", canvasRect, "", FontSize, FontStyle.Bold);
-        PlaceTopDown((RectTransform)titleText.transform, Padding, TitleHeight, height);
-
+        titleText = panel.CreateText("Title", "", CADMenuPanel.FontSize, FontStyle.Bold);
         foreach (KeyValuePair<MenuAction, string> entry in Labels)
-            buttons[entry.Key] = CreateButton(entry.Key, entry.Value, canvasRect);
+        {
+            MenuAction action = entry.Key;
+            buttons[action] = panel.CreateButton(entry.Value, () => OnAction(action));
+        }
 
-        // Ray surface: a thin collider covering the panel, forwarding pointer events to the
-        // canvas. Same SDK path as CAD parts, but not under a CADObject, so it counts as UI.
-        // Ignore Raycast layer keeps it out of desktop Physics.Raycast (CADSelection).
-        var surfaceObject = new GameObject("Ray Surface");
-        surfaceObject.layer = 2; // Ignore Raycast
-        surfaceObject.transform.SetParent(panelRoot.transform, false);
-        surfaceBox = surfaceObject.AddComponent<BoxCollider>();
-
-        var pointableCanvas = canvasObject.AddComponent<PointableCanvas>();
-        pointableCanvas.InjectAllPointableCanvas(canvas);
-
-        var surface = surfaceObject.AddComponent<ColliderSurface>();
-        surface.InjectAllColliderSurface(surfaceBox);
-        panelInteractable = surfaceObject.AddComponent<RayInteractable>();
-        panelInteractable.InjectAllRayInteractable(surface);
-        panelInteractable.InjectOptionalSelectSurface(surface);
-        panelInteractable.InjectOptionalPointableElement(pointableCanvas);
+        ApplyLayout(SingleLayout);
     }
 
-    private static float PanelHeight(int buttonCount) =>
-        Padding * 2 + TitleHeight + buttonCount * ButtonHeight + Mathf.Max(0, buttonCount - 1) * ButtonSpacing;
-
-    // Shows exactly the layout's buttons, stacks them top-down and resizes panel + ray surface.
+    // Shows exactly the layout's buttons under the title, stacked top-down; the panel and its
+    // ray surface resize around them.
     private void ApplyLayout(MenuAction[] layout)
     {
-        float height = PanelHeight(layout.Length);
-        canvasRect.sizeDelta = new Vector2(PanelWidth, height);
-        surfaceBox.size = new Vector3(PanelWidth * CanvasScale, height * CanvasScale, 0.004f);
-        PlaceTopDown((RectTransform)titleText.transform, Padding, TitleHeight, height);
-
-        foreach (KeyValuePair<MenuAction, Button> entry in buttons)
-            entry.Value.gameObject.SetActive(Array.IndexOf(layout, entry.Key) >= 0);
-
-        float y = Padding + TitleHeight;
+        var rows = new List<CADMenuPanel.Row> { new CADMenuPanel.Row(TitleHeight, 0f, titleText) };
         foreach (MenuAction action in layout)
-        {
-            PlaceTopDown((RectTransform)buttons[action].transform, y, ButtonHeight, height);
-            y += ButtonHeight + ButtonSpacing;
-        }
-    }
-
-    private Button CreateButton(MenuAction action, string label, RectTransform parent)
-    {
-        Image image = CreateImage(label, parent, buttonColor);
-        var button = image.gameObject.AddComponent<Button>();
-        button.targetGraphic = image;
-        // Tints multiply buttonColor: normal slightly dimmed so hover (full) reads as brighter.
-        ColorBlock colors = button.colors;
-        colors.normalColor = new Color(0.75f, 0.75f, 0.75f, 1f);
-        colors.highlightedColor = Color.white;
-        colors.pressedColor = new Color(0.55f, 0.85f, 1f, 1f);
-        colors.selectedColor = new Color(0.75f, 0.75f, 0.75f, 1f);
-        colors.disabledColor = new Color(0.45f, 0.45f, 0.45f, 0.5f);
-        colors.colorMultiplier = 1f;
-        colors.fadeDuration = 0.05f;
-        button.colors = colors;
-        button.navigation = new Navigation { mode = Navigation.Mode.None };
-        button.onClick.AddListener(() => OnAction(action));
-
-        Text text = CreateText("Label", (RectTransform)image.transform, label, FontSize, FontStyle.Normal);
-        Stretch((RectTransform)text.transform, 0f);
-        return button;
-    }
-
-    private Image CreateImage(string name, RectTransform parent, Color color)
-    {
-        var go = new GameObject(name, typeof(RectTransform));
-        go.transform.SetParent(parent, false);
-        var image = go.AddComponent<Image>();
-        image.color = color;
-        return image;
-    }
-
-    private Text CreateText(string name, RectTransform parent, string value, int size, FontStyle style)
-    {
-        var go = new GameObject(name, typeof(RectTransform));
-        go.transform.SetParent(parent, false);
-        var text = go.AddComponent<Text>();
-        text.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
-        text.text = value;
-        text.fontSize = size;
-        text.fontStyle = style;
-        text.color = textColor;
-        text.alignment = TextAnchor.MiddleCenter;
-        text.horizontalOverflow = HorizontalWrapMode.Wrap;
-        text.verticalOverflow = VerticalWrapMode.Truncate;
-        text.raycastTarget = false;
-        return text;
-    }
-
-    private static void Stretch(RectTransform rect, float inset)
-    {
-        rect.anchorMin = Vector2.zero;
-        rect.anchorMax = Vector2.one;
-        rect.offsetMin = new Vector2(inset, inset);
-        rect.offsetMax = new Vector2(-inset, -inset);
-    }
-
-    // Positions a full-width row `top` units from the panel's top edge.
-    private static void PlaceTopDown(RectTransform rect, float top, float rowHeight, float panelHeight)
-    {
-        rect.anchorMin = new Vector2(0f, 1f);
-        rect.anchorMax = new Vector2(1f, 1f);
-        rect.pivot = new Vector2(0.5f, 1f);
-        rect.offsetMin = new Vector2(Padding, 0f);
-        rect.offsetMax = new Vector2(-Padding, 0f);
-        rect.anchoredPosition = new Vector2(0f, -top);
-        rect.sizeDelta = new Vector2(-2 * Padding, rowHeight);
+            rows.Add(new CADMenuPanel.Row(ButtonHeight, buttons[action]));
+        panel.Stack(rows);
     }
 }

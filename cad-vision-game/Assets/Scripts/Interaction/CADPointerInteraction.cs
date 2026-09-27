@@ -73,6 +73,12 @@ public class CADPointerInteraction : MonoBehaviour
     /// <summary>The selected CAD object was activated again (menu hook; no visual yet).</summary>
     public event Action<CADContextMenuRequest> ContextMenuRequested;
 
+    /// <summary>
+    /// A source pressed on UI at a world point (e.g. a panel's title bar). Listeners may follow
+    /// that source's pose while it stays selected; the press is otherwise a normal UI press.
+    /// </summary>
+    public event Action<ICADPointerSource, Vector3> UiPressed;
+
     public bool IsManipulating => session.IsActive;
     public bool IsManipulatingModel => session.IsModel;
     public bool IsScaling => pointerScale.IsActive;
@@ -405,6 +411,8 @@ public class CADPointerInteraction : MonoBehaviour
             pressedSelectedTarget = manipulationService.IsSelected(pressedResolvedId);
 
         machine.Down(kind, cadId, hitPoint, pose, time);
+        if (kind == CADPointerTargetKind.Ui && hitPoint.HasValue)
+            UiPressed?.Invoke(source, hitPoint.Value);
         Debug.Log($"[CADPointer] {source.SourceId} down on {kind}{(cadId != null ? $" '{cadId}'" : "")}" +
             $"{(pressedSelectedTarget ? " (already selected)" : "")}.");
     }

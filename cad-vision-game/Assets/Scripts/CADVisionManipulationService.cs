@@ -805,6 +805,32 @@ public partial class CADVisionManipulationService : MonoBehaviour
     // Interaction Scope
     // -------------------------
 
+    public bool IsAtRootScope => CurrentScopeId == null;
+
+    // Readable scope name for UI: "Full model" at the root, else the scope object's name.
+    public string CurrentScopeDisplayName => CurrentScopeId == null ? "Full model" : GetDisplayName(CurrentScopeId);
+
+    // Display name of a CAD object (its imported object name); the ID if it has none.
+    public string GetDisplayName(string id) =>
+        TryGetLiveObject(id, out CADObject cadObject) && !string.IsNullOrWhiteSpace(cadObject.name)
+            ? cadObject.name
+            : id;
+
+    /// <summary>
+    /// The assembly EnterScope would enter from the current selection: exactly one selected
+    /// object that has CAD children and isn't already the scope.
+    /// </summary>
+    public bool TryGetEnterableSelection(out string id)
+    {
+        id = null;
+        List<string> selected = GetSelectedIds();
+        if (selected.Count != 1 || !HasCadChildren(selected[0]) || selected[0] == CurrentScopeId)
+            return false;
+
+        id = selected[0];
+        return true;
+    }
+
     // Makes id's direct CAD children the selectable level. Does not change visibility.
     public void EnterScope(string id)
     {

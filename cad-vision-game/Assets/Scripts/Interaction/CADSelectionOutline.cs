@@ -36,6 +36,26 @@ public class CADSelectionOutline : MonoBehaviour
     private readonly HashSet<string> selectedNow = new();
     private readonly List<string> scratch = new();
 
+    /// <summary>
+    /// Display toggle (Settings → Outline). Off hides every outline without touching the
+    /// selection and without falling back to the color tint; On outlines the current
+    /// selection again on the next frame.
+    /// </summary>
+    public bool ShowOutlines
+    {
+        get => showOutlines;
+        set
+        {
+            if (showOutlines == value)
+                return;
+            showOutlines = value;
+            if (!value)
+                RemoveAllShells();
+        }
+    }
+
+    private bool showOutlines = true;
+
     private void Awake()
     {
         manipulationService = GetComponent<CADVisionManipulationService>();
@@ -59,8 +79,7 @@ public class CADSelectionOutline : MonoBehaviour
 
     private void OnDisable()
     {
-        foreach (string id in new List<string>(shellsById.Keys))
-            RemoveShells(id);
+        RemoveAllShells();
         if (manipulationService != null)
             manipulationService.UseSelectionTint = true;
     }
@@ -74,6 +93,9 @@ public class CADSelectionOutline : MonoBehaviour
     // LateUpdate: after this frame's selection changes (pointer, menu, service calls).
     private void LateUpdate()
     {
+        if (!showOutlines)
+            return;
+
         material.SetColor(ColorId, outlineColor);
         material.SetFloat(WidthId, outlineWidth);
 
@@ -97,6 +119,12 @@ public class CADSelectionOutline : MonoBehaviour
         }
 
         foreach (string id in scratch)
+            RemoveShells(id);
+    }
+
+    private void RemoveAllShells()
+    {
+        foreach (string id in new List<string>(shellsById.Keys))
             RemoveShells(id);
     }
 
