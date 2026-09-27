@@ -279,7 +279,9 @@ public sealed class CADWindowFrame
     private void SetGrabGlow(float glow)
     {
         GrabGlow = glow;
-        Vector3 local = window.InverseTransformPoint(spotPoint);
+        // The glow's own space: its origin (rect center) differs from the window's pivot when the
+        // window isn't pivoted at its center (e.g. the CADEN panel, pivoted at its logo).
+        Vector3 local = edgeGlow.rectTransform.InverseTransformPoint(spotPoint);
         edgeGlow.SetState(glow, new Vector2(local.x, local.y));
     }
 

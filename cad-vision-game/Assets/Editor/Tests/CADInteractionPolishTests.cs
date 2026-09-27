@@ -1807,6 +1807,23 @@ public class CADInteractionPolishTests
             "a button in the header grab region still wins");
         Assert.That(frame.IsGrabPoint(window.TransformPoint(new Vector3(r.xMin + 300f, r.yMax - 50f, 0f))), Is.True, "header grabs");
 
+        // Opens centered in front of the user, 0.8–1 m away, facing them.
+        Vector3 offset = go.transform.position - head.position;
+        Vector3 flatForward = Vector3.ProjectOnPlane(head.forward, Vector3.up).normalized;
+        Assert.That(Vector3.Dot(Vector3.ProjectOnPlane(offset, Vector3.up), flatForward), Is.InRange(0.8f, 1f));
+        Assert.That(Vector3.ProjectOnPlane(offset, Vector3.up).magnitude, Is.InRange(0.8f, 1f), "centered");
+        Assert.That(Vector3.Dot(go.transform.forward, offset.normalized), Is.GreaterThan(0.99f), "faces the user");
+
+        // The edge glow lights at the cursor (the window's pivot is its logo, not its center).
+        Vector3 edge = window.TransformPoint(new Vector3(r.xMin - CADMenuPanel.BorderWidth * 0.5f, r.center.y, 0f));
+        frame.TrackHover(new Oculus.Interaction.PointerEvent(5, Oculus.Interaction.PointerEventType.Hover,
+            new Pose(edge, Quaternion.identity)));
+        frame.UpdateGrabGlow(1f);
+        Assert.That(frame.GrabGlow, Is.EqualTo(1f));
+        Vector3 edgeInGlow = frame.EdgeGlow.rectTransform.InverseTransformPoint(edge);
+        Assert.That(frame.EdgeGlow.AlphaAt(new Vector2(edgeInGlow.x, edgeInGlow.y)), Is.GreaterThan(0.9f), "lit at the cursor");
+        Assert.That(frame.EdgeGlow.GetVertexPositions(), Is.Not.Empty);
+
         // Exempt from the one-menu rule: other menus open beside it.
         mainMenu.ShowMainMenu();
         Call(caden, "Update");

@@ -28,9 +28,11 @@ public sealed class CadenPanel : MonoBehaviour
     private static readonly Vector3 LogoLocal = new Vector3((LogoCenter.x - W / 2) * Scale, (H / 2 - LogoCenter.y) * Scale, 0);
     // Head-space position of the minimized logo; it stays pinned to the top-left of view.
     [SerializeField] private Vector3 minimizedLogoOffset = new Vector3(-0.34f, 0.15f, 0.9f);
-    // Distance of the opened panel (at least CADMenuPanel.MinMenuDistance); it unfolds right and
-    // down from the logo's direction.
-    [SerializeField] private float expandedDistance = 0.9f;
+    // The opened panel: centered in front of the user, facing them, this far away (clamped to
+    // 0.8–1 m and never closer than CADMenuPanel.MinMenuDistance), a little below eye level. It
+    // grows out of the logo.
+    [SerializeField, Range(0.8f, 1f)] private float expandedDistance = 0.9f;
+    [SerializeField] private float expandedDrop = 0.08f;
     private Vector3 expandedPosition;
     private Quaternion expandedRotation = Quaternion.identity;
     // Logo feedback: glow while speaking, spin-and-settle cycles while thinking.
@@ -400,11 +402,10 @@ public sealed class CadenPanel : MonoBehaviour
     {
         var forward = Vector3.ProjectOnPlane(viewer.forward, Vector3.up).normalized;
         if (forward.sqrMagnitude < 0.01f) forward = Vector3.forward;
-        // Upright like the other menus, with its logo where the pinned logo is, so it opens rightward.
-        expandedRotation = Quaternion.LookRotation(forward, Vector3.up);
-        float distance = Mathf.Max(expandedDistance, CADMenuPanel.MinMenuDistance);
-        var logoPoint = viewer.position + viewer.rotation * minimizedLogoOffset.normalized * distance;
-        expandedPosition = logoPoint - expandedRotation * LogoLocal;
+        // Like the Main Menu: centered in front of the user, a little below eye level, facing them.
+        float distance = Mathf.Max(Mathf.Clamp(expandedDistance, 0.8f, 1f), CADMenuPanel.MinMenuDistance);
+        expandedPosition = viewer.position + forward * distance + Vector3.down * expandedDrop;
+        expandedRotation = Quaternion.LookRotation(expandedPosition - viewer.position, Vector3.up);
     }
 
     // Blends between the panel's world pose and the head-pinned pose that puts the logo top-left.
