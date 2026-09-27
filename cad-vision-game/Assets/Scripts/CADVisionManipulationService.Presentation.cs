@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using UnityEngine;
 
-// Reset-scale, focus (presentation state) and visible-bounds queries. Everything stays ID
+// Reset-scale, model home, focus (presentation state) and visible-bounds queries. Everything stays ID
 // based; nothing here changes selection, scope, visibility, detach state or hierarchy.
 public partial class CADVisionManipulationService
 {
@@ -21,19 +21,56 @@ public partial class CADVisionManipulationService
             return false;
 
         Transform target = cadObject.transform;
-        Vector3 scale = cadObject.OriginalScale;
-        Transform original = cadObject.OriginalParent;
-        Transform current = target.parent;
-        if (original != null && current != null && original != current &&
-            !Mathf.Approximately(current.lossyScale.x, 0f))
-        {
-            // Uniform CAD scales: same world scale as under the original parent.
-            scale *= original.lossyScale.x / current.lossyScale.x;
-        }
-
+        Vector3 scale = OriginalScaleUnderCurrentParent(cadObject);
         Vector3 pivotWorld = TryGetObjectBounds(id, out Bounds bounds) ? bounds.center : target.position;
         SetObjectScaleAroundPoint(id, scale, target.InverseTransformPoint(pivotWorld), pivotWorld);
         return true;
+    }
+
+    // The local scale that gives the object its original world scale under its current parent
+    // (differs from OriginalScale only for detached objects; CAD scales are uniform).
+    private static Vector3 OriginalScaleUnderCurrentParent(CADObject cadObject)
+    {
+        Vector3 scale = cadObject.OriginalScale;
+        Transform original = cadObject.OriginalParent;
+        Transform current = cadObject.transform.parent;
+        if (original != null && current != null && original != current &&
+            !Mathf.Approximately(current.lossyScale.x, 0f))
+            scale *= original.lossyScale.x / current.lossyScale.x;
+        return scale;
+    }
+
+    /// <summary>
+    /// Undoes all resizing: every resized CAD object (parents before children) and the model
+    /// root back to their original scale, each around its own visible center, so what the user
+    /// sees stays where it is and rotations are unchanged. Objects at their original scale are
+    /// left untouched.
+    /// </summary>
+    public void ResetAllScales()
+    {
+        var resized = new List<CADObject>();
+        foreach (CADObject cadObject in objects.Values)
+        {
+            if (cadObject == null)
+                continue;
+            Vector3 original = OriginalScaleUnderCurrentParent(cadObject);
+            if ((cadObject.transform.localScale - original).sqrMagnitude > 1e-8f * Mathf.Max(original.sqrMagnitude, 1e-12f))
+                resized.Add(cadObject);
+        }
+
+        resized.Sort((a, b) => Depth(a.transform).CompareTo(Depth(b.transform)));
+        foreach (CADObject cadObject in resized)
+            ResetObjectScale(cadObject.id);
+        ResetModelScale();
+        Debug.Log($"Reset all sizes: {resized.Count} object(s) and the model.");
+    }
+
+    private static int Depth(Transform transform)
+    {
+        int depth = 0;
+        for (Transform t = transform.parent; t != null; t = t.parent)
+            depth++;
+        return depth;
     }
 
     /// <summary>Reset scale for every selected transform root (children follow their root).</summary>
@@ -51,6 +88,39 @@ public partial class CADVisionManipulationService
 
         Vector3 pivotWorld = TryGetModelBounds(out Bounds bounds) ? bounds.center : modelRoot.position;
         SetModelScaleAroundPoint(1f, modelRoot.InverseTransformPoint(pivotWorld), pivotWorld);
+        return true;
+    }
+
+    // -------------------------
+    // Model home (the pose Reset model returns the root to)
+    // -------------------------
+
+    /// <summary>World pose ResetModel/ResetModelTransform return the model root to.</summary>
+    public bool TryGetModelHomePose(out Vector3 position, out Quaternion rotation)
+    {
+        position = default;
+        rotation = Quaternion.identity;
+        if (modelRoot == null)
+            return false;
+
+        Transform parent = modelRoot.parent;
+        position = parent != null ? parent.TransformPoint(originalModelPosition) : originalModelPosition;
+        rotation = parent != null ? parent.rotation * originalModelRotation : originalModelRotation;
+        return true;
+    }
+
+    /// <summary>
+    /// Moves the model's home (the pose Reset model returns the root to), e.g. in front of the
+    /// user after a recenter. The adopted scale is unchanged; nothing moves now.
+    /// </summary>
+    public bool SetModelHomePose(Vector3 position, Quaternion rotation)
+    {
+        if (modelRoot == null)
+            return false;
+
+        Transform parent = modelRoot.parent;
+        originalModelPosition = parent != null ? parent.InverseTransformPoint(position) : position;
+        originalModelRotation = parent != null ? Quaternion.Inverse(parent.rotation) * rotation : rotation;
         return true;
     }
 
@@ -116,6 +186,70 @@ public partial class CADVisionManipulationService
         for (string current = id; current != null; current = GetParentId(current))
         {
             if (focusIds.Contains(current))
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// True if focusing on ids would ghost anything: some registered object with visible
+    /// geometry lies outside the targets (not a target, not inside one, and not a container of
+    /// one). False when the targets already cover all the geometry, e.g. the one top-level
+    /// assembly, where a Focus button would change nothing.
+    /// </summary>
+    public bool WouldFocusGhostAnything(IEnumerable<string> ids)
+    {
+        var targets = new HashSet<string>();
+        foreach (string id in ids)
+        {
+            if (TryGetLiveObject(id, out _))
+                targets.Add(id);
+        }
+        if (targets.Count == 0)
+            return false;
+
+        foreach (KeyValuePair<string, CADObject> entry in objects)
+        {
+            if (entry.Value == null || IsUnderAny(entry.Key, targets) || IsAncestorOfAny(entry.Key, targets))
+                continue;
+            if (HasGeometry(entry.Value))
+                return true;
+        }
+        return false;
+    }
+
+    private bool IsUnderAny(string id, HashSet<string> targets)
+    {
+        for (string current = id; current != null; current = GetParentId(current))
+        {
+            if (targets.Contains(current))
+                return true;
+        }
+        return false;
+    }
+
+    private bool IsAncestorOfAny(string id, HashSet<string> targets)
+    {
+        foreach (string target in targets)
+        {
+            for (string parent = GetParentId(target); parent != null; parent = GetParentId(parent))
+            {
+                if (parent == id)
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    // Visible geometry only: hidden objects and inactive scene objects (e.g. the scene's test
+    // model while an import is loaded) wouldn't visibly change, so they don't count.
+    private static bool HasGeometry(CADObject cadObject)
+    {
+        if (!cadObject.gameObject.activeInHierarchy)
+            return false;
+        foreach (Renderer renderer in cadObject.GetComponentsInChildren<Renderer>())
+        {
+            if (renderer.enabled && !renderer.TryGetComponent(out CADVisualOverlay _))
                 return true;
         }
         return false;

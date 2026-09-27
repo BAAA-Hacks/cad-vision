@@ -302,26 +302,32 @@ public class CADMainMenuTests
     public void ResetDropdownRoutesToTheServiceResets()
     {
         menu.ShowMainMenu();
-        Assert.That(Labels(), Has.No.Member("Reset object"), "collapsed by default");
-        Assert.That(Button("Reset object", includeInactive: true).gameObject.activeSelf, Is.False);
+        Assert.That(Labels(), Has.No.Member("Reset selected"), "collapsed by default");
+        Assert.That(Button("Reset selected", includeInactive: true).gameObject.activeSelf, Is.False);
 
         Button("Reset ▼").onClick.Invoke();
         Assert.That(menu.IsResetExpanded, Is.True);
-        Assert.That(Button("Reset object").interactable, Is.False, "nothing selected");
+        Assert.That(Button("Reset selected").interactable, Is.False, "nothing selected");
         Assert.That(Button("Reset assembly").interactable, Is.False, "no selection, root scope");
-        Assert.That(Button("Reset model").interactable, Is.True);
+        Assert.That(Button("Reset everything").interactable, Is.True);
 
         // Reset object: the one selected object.
         Vector3 p1 = t["P1"].position;
         svc.Select("P1");
         svc.SetObjectWorldPose("P1", p1 + Vector3.up, t["P1"].rotation);
         menu.Refresh();
-        Button("Reset object").onClick.Invoke();
+        Button("Reset selected").onClick.Invoke();
         Assert.That(Vector3.Distance(t["P1"].position, p1), Is.LessThan(1e-4f));
         Assert.That(menu.IsResetExpanded, Is.False, "an option collapses the dropdown");
 
-        // Reset assembly: the assembly containing the selected part resets with its parts.
+        // Reset assembly: the assembly the user is in resets with its parts.
         Vector3 p2 = t["P2"].position;
+        svc.Select("P2");
+        menu.Refresh();
+        Button("Reset ▼").onClick.Invoke();
+        Assert.That(Button("Reset assembly").interactable, Is.False, "model scope: no assembly to reset");
+        Button("Reset ▲").onClick.Invoke();
+        svc.EnterScope("A");
         svc.Select("P2");
         svc.SetObjectWorldPose("P2", p2 + Vector3.right, t["P2"].rotation);
         Button("Reset ▼").onClick.Invoke();
@@ -334,7 +340,7 @@ public class CADMainMenuTests
         svc.Select("P1");
         svc.SetObjectWorldPose("P1", p1 + Vector3.forward, t["P1"].rotation);
         Button("Reset ▼").onClick.Invoke();
-        Button("Reset model").onClick.Invoke();
+        Button("Reset everything").onClick.Invoke();
         Assert.That(Vector3.Distance(t["P1"].position, p1), Is.LessThan(1e-4f));
         Assert.That(svc.IsDetached("P1"), Is.False);
     }
@@ -423,9 +429,9 @@ public class CADMainMenuTests
         Assert.That(menu.IsOpen, Is.True, "not closed by the model change");
         Assert.That(ScopeText(), Is.EqualTo("Scope: Full model"));
         Assert.That(Button("Enter assembly").interactable, Is.False);
-        Assert.That(Button("Reset object").interactable, Is.False);
+        Assert.That(Button("Reset selected").interactable, Is.False);
         Assert.That(Button("Reset assembly").interactable, Is.False);
-        Assert.That(Button("Reset model").interactable, Is.True);
+        Assert.That(Button("Reset everything").interactable, Is.True);
         Assert.That(settings.DisplayMode, Is.EqualTo(CADDisplayMode.Wireframe), "preferences kept");
         Assert.That(settings.UiScale, Is.EqualTo(1.2f).Within(1e-4f));
 
@@ -509,7 +515,7 @@ public class CADMainMenuTests
 
         Button[] buttons = menu.PanelTransform.GetComponentsInChildren<Button>(true);
         Assert.That(buttons.Select(CADMenuPanel.GetLabel),
-            Is.SupersetOf(new[] { "Reset object", "Reset assembly", "Reset model", "Shaded", "Edges", "Wireframe", "+", "-" }));
+            Is.SupersetOf(new[] { "Reset selected", "Reset assembly", "Reset everything", "Shaded", "Edges", "Wireframe", "+", "-" }));
         foreach (Button button in buttons)
         {
             Assert.That(button.colors, Is.EqualTo(reference), $"'{CADMenuPanel.GetLabel(button)}' uses the context-menu button");
@@ -565,8 +571,8 @@ public class CADMainMenuTests
         Assert.That(Camera.main.transform, Is.SameAs(head), "the test eye is Camera.main");
         Vector3 offset = menu.PanelTransform.position - head.position;
         Vector3 flatForward = Vector3.ProjectOnPlane(head.forward, Vector3.up).normalized;
-        Assert.That(Vector3.Dot(Vector3.ProjectOnPlane(offset, Vector3.up), flatForward), Is.InRange(0.6f, 0.8f),
-            "0.6–0.8 m ahead");
+        Assert.That(Vector3.Dot(Vector3.ProjectOnPlane(offset, Vector3.up), flatForward), Is.InRange(0.75f, 0.95f),
+            "0.75–0.95 m ahead");
         Assert.That(offset.y, Is.InRange(-0.2f, -0.01f), "slightly below eye level");
         Assert.That(Vector3.Dot(menu.PanelTransform.forward, offset.normalized), Is.GreaterThan(0.99f), "faces the user");
     }

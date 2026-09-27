@@ -6,7 +6,7 @@ using UnityEngine.UI;
 /// The application's single global menu: Scope (current scope + one context-aware
 /// Enter/Exit Assembly button), CADEN (placeholder toggle), View (display mode buttons,
 /// outline toggle), Model (Manipulate model / Stop manipulating, and the Reset options shown
-/// under "Reset ▼": object, scale, assembly, model), Interface (UI scale), Close. Buttons carry
+/// under "Reset ▼": selected, assembly, all sizes, everything), Interface (UI scale), Close. Buttons carry
 /// hover tooltips (CADMenuPanel).
 ///
 /// Rendering and input are CADMenuPanel, the same construction the object/assembly context
@@ -17,8 +17,8 @@ using UnityEngine.UI;
 /// the context menu switches its button sets.
 ///
 /// Lifecycle: starts hidden (Inspector: startVisible). ToggleMainMenu / ShowMainMenu /
-/// HideMainMenu are the entry points. Every show respawns it ~0.7 m in front of the head,
-/// a little below eye level, facing the user (never head-locked). While open it stays put,
+/// HideMainMenu are the entry points. Every show respawns it ~0.85 m (at least
+/// CADMenuPanel.MinMenuDistance) in front of the head, a little below eye level, facing the user (never head-locked). While open it stays put,
 /// except that pressing and holding its border or its header with trigger or pinch drags it
 /// rigidly with the pointer (CADMenuPanel's shared border drag; the plain-text header is an
 /// extra grab region). It stays open across model replacement; all state
@@ -34,7 +34,7 @@ public class CADMainMenu : MonoBehaviour
 {
     [Header("Placement")]
     [Tooltip("Distance in front of the headset when shown (m).")]
-    [SerializeField, Range(0.4f, 1.2f)] private float spawnDistance = 0.7f;
+    [SerializeField, Range(0.4f, 1.2f)] private float spawnDistance = 0.85f;
     [Tooltip("How far below eye level it appears (m).")]
     [SerializeField] private float spawnDrop = 0.12f;
 
@@ -177,9 +177,7 @@ public class CADMainMenu : MonoBehaviour
 
         CADMenuPanel.SetLabel(resetButton, resetExpanded ? "Reset ▲" : "Reset ▼");
         CADMenuPanel.SetInteractable(resetObjectButton, manipulationService.GetSelectedIds().Count > 0);
-        CADMenuPanel.SetInteractable(resetScaleButton, modelMode
-            ? manipulationService.ModelRoot != null
-            : manipulationService.GetSelectedIds().Count > 0);
+        CADMenuPanel.SetInteractable(resetScaleButton, manipulationService.ModelRoot != null);
         CADMenuPanel.SetInteractable(resetAssemblyButton, ResetAssemblyTarget() != null);
         CADMenuPanel.SetInteractable(resetModelButton, manipulationService.ModelRoot != null);
 
@@ -198,19 +196,9 @@ public class CADMainMenu : MonoBehaviour
             text.text = value;
     }
 
-    // The selected assembly, else the assembly containing the one selected object, else the
-    // current scope (entered assembly). Same rule as the object context menu.
-    private string ResetAssemblyTarget()
-    {
-        List<string> selected = manipulationService.GetSelectedIds();
-        if (selected.Count == 1)
-        {
-            string id = selected[0];
-            return manipulationService.HasCadChildren(id) ? id : manipulationService.GetLogicalParentId(id);
-        }
-
-        return manipulationService.CurrentScopeId;
-    }
+    // The assembly the user is in (current scope); none at model scope. Same rule as the
+    // context menus.
+    private string ResetAssemblyTarget() => manipulationService.CurrentScopeId;
 
     // ---------------- Actions ----------------
 
@@ -228,31 +216,17 @@ public class CADMainMenu : MonoBehaviour
         ApplyLayout();
     }
 
-    // One selected object: ResetObject; several: ResetSelected (same per-root rules).
+    // The selection: parts reset, assemblies reset with everything in them.
     private void ResetObjectAction()
     {
-        List<string> selected = manipulationService.GetSelectedIds();
-        if (selected.Count == 1)
-            manipulationService.ResetObject(selected[0]);
-        else if (selected.Count > 1)
-            manipulationService.ResetSelected();
+        manipulationService.ResetSelected();
         CollapseReset();
     }
 
-    // Model mode: the model root's review scale; else the selection's (one object or the
-    // selected transform roots). Position and rotation stay.
+    // Every resized object and the model root back to their original size; nothing moves.
     private void ResetScaleAction()
     {
-        if (manipulationService.IsModelManipulationActive)
-            manipulationService.ResetModelScale();
-        else
-        {
-            List<string> selected = manipulationService.GetSelectedIds();
-            if (selected.Count == 1)
-                manipulationService.ResetObjectScale(selected[0]);
-            else if (selected.Count > 1)
-                manipulationService.ResetSelectedScale();
-        }
+        manipulationService.ResetAllScales();
         CollapseReset();
     }
 
@@ -323,14 +297,14 @@ public class CADMainMenu : MonoBehaviour
         manipulateButton = AddButton("Manipulate model", ToggleModelManipulation,
             "Move, rotate, or scale the entire CAD model.");
         resetButton = AddButton("Reset ▼", ToggleReset, "Show the reset options.");
-        resetObjectButton = AddButton("Reset object", ResetObjectAction,
-            "Restore the selected object to its original assembly transform.");
-        resetScaleButton = AddButton("Reset scale", ResetScaleAction,
-            "Restore the original scale without changing position or rotation.");
+        resetObjectButton = AddButton("Reset selected", ResetObjectAction,
+            "Put the selected parts back: original positions, rotations and sizes.");
+        resetScaleButton = AddButton("Reset all sizes", ResetScaleAction,
+            "Undo all resizing of the model and its parts. Nothing moves.");
         resetAssemblyButton = AddButton("Reset assembly", ResetAssemblyAction,
-            "Restore the assembly and its parts to their original transforms.");
-        resetModelButton = AddButton("Reset model", ResetModelAction,
-            "Restore the whole model and every part to the review pose.");
+            "Put the assembly you're in and all its parts back: original positions, rotations and sizes.");
+        resetModelButton = AddButton("Reset everything", ResetModelAction,
+            "Undo every change: all parts back in place, the model back in front of you at its original size.");
 
         interfaceSection = Section("Interface");
         scaleLabel = Label("UI scale");
@@ -426,8 +400,8 @@ public class CADMainMenu : MonoBehaviour
         if (resetExpanded)
         {
             rows.Add(new(ButtonHeight, resetObjectButton));
-            rows.Add(new(ButtonHeight, resetScaleButton));
             rows.Add(new(ButtonHeight, resetAssemblyButton));
+            rows.Add(new(ButtonHeight, resetScaleButton));
             rows.Add(new(ButtonHeight, SectionSpacing, resetModelButton));
         }
         rows.Add(new(SectionHeight, interfaceSection));

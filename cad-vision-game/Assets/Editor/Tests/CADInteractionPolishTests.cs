@@ -370,7 +370,7 @@ public class CADInteractionPolishTests
         svc.TryGetModelBounds(out Bounds before);
 
         MainButton("Reset ▼").onClick.Invoke();
-        MainButton("Reset scale").onClick.Invoke(); // Model mode: the model root.
+        MainButton("Reset all sizes").onClick.Invoke();
         Assert.That(Vector3.Distance(root.localScale, reviewScale), Is.LessThan(Eps));
         Assert.That(Quaternion.Angle(root.rotation, rotation), Is.LessThan(1e-3f));
         svc.TryGetModelBounds(out Bounds after);
@@ -379,28 +379,80 @@ public class CADInteractionPolishTests
 
     // 17
     [Test]
-    public void MainMenuResetScaleResetsTheSelectedRoots()
+    public void ResetAllSizesUndoesEveryResizeWithoutMovingAnything()
     {
-        svc.EnterScope("A");
-        Vector3 s1 = t["P1"].localScale, s2 = t["P2"].localScale;
-        svc.SetObjectScaleAroundPoint("P1", s1 * 2f, Vector3.zero, t["P1"].position);
-        svc.SetObjectScaleAroundPoint("P2", s2 * 4f, Vector3.zero, t["P2"].position);
-        Vector3 p1 = t["P1"].position;
-        svc.BeginMultiSelect();
-        svc.AddToSelection("P1");
-        svc.AddToSelection("P2");
+        // What a user typically does: scale the top-level assembly at model scope (an object
+        // scale, not the model root), a part inside it, and the model in model mode.
+        Vector3 a = t["A"].localScale, s1 = t["P1"].localScale, s2 = t["P2"].localScale;
+        Vector3 reviewScale = root.localScale;
+        svc.SetObjectScaleAroundPoint("A", a * 2f, Vector3.zero, t["A"].position);
+        svc.SetObjectScaleAroundPoint("P1", s1 * 3f, Vector3.zero, t["P1"].position);
+        svc.SetModelScaleAroundPoint(1.5f, Vector3.zero, root.position);
+        svc.SetObjectWorldPose("P2", t["P2"].position + Vector3.up * 0.1f, t["P2"].rotation);
+        svc.Select("P1");
 
         mainMenu.ShowMainMenu();
         MainButton("Reset ▼").onClick.Invoke();
-        Assert.That(MainButton("Reset scale").interactable, Is.True);
-        MainButton("Reset scale").onClick.Invoke();
-        Assert.That(Vector3.Distance(t["P1"].localScale, s1), Is.LessThan(Eps));
-        Assert.That(Vector3.Distance(t["P2"].localScale, s2), Is.LessThan(Eps));
-        Assert.That(Selected(), Is.EquivalentTo(new[] { "P1", "P2" }), "selection kept");
+        Assert.That(MainButton("Reset all sizes").interactable, Is.True);
+        MainButton("Reset all sizes").onClick.Invoke();
 
-        svc.EndMultiSelect(clearSelection: true);
+        Assert.That(Vector3.Distance(t["A"].localScale, a), Is.LessThan(Eps));
+        Assert.That(Vector3.Distance(t["P1"].localScale, s1), Is.LessThan(Eps));
+        Assert.That(Vector3.Distance(t["P2"].localScale, s2), Is.LessThan(Eps), "never resized: untouched");
+        Assert.That(Vector3.Distance(root.localScale, reviewScale), Is.LessThan(Eps));
+        Assert.That(Selected(), Is.EqualTo(new[] { "P1" }), "selection kept");
+
         mainMenu.Refresh();
-        Assert.That(MainButton("Reset scale", includeInactive: true).interactable, Is.False, "nothing to reset");
+        Assert.That(MainButton("Reset all sizes", includeInactive: true).interactable, Is.True,
+            "always available: it doesn't depend on the selection");
+    }
+
+    [Test]
+    public void ModelMenuResetAllSizesAlsoUndoesAnAssemblyResize()
+    {
+        Vector3 a = t["A"].localScale;
+        svc.SetObjectScaleAroundPoint("A", a * 2f, Vector3.zero, t["A"].position);
+        svc.BeginModelManipulation();
+        Tick();
+        ContextButton("Reset all sizes").onClick.Invoke();
+        Assert.That(Vector3.Distance(t["A"].localScale, a), Is.LessThan(Eps),
+            "an assembly scaled at model scope is reset too, not just the model root");
+    }
+
+    [Test]
+    public void ResetEverythingReturnsToAMovedHome()
+    {
+        Vector3 home = root.position + new Vector3(1f, 0f, 2f);
+        Quaternion homeRotation = Quaternion.Euler(0f, 90f, 0f);
+        Assert.That(svc.SetModelHomePose(home, homeRotation), Is.True);
+        Assert.That(root.position, Is.Not.EqualTo(home), "setting the home moves nothing");
+
+        svc.ResetModel();
+        Assert.That(Vector3.Distance(root.position, home), Is.LessThan(Eps));
+        Assert.That(Quaternion.Angle(root.rotation, homeRotation), Is.LessThan(1e-3f));
+        Assert.That(svc.TryGetModelHomePose(out Vector3 got, out _), Is.True);
+        Assert.That(Vector3.Distance(got, home), Is.LessThan(Eps));
+    }
+
+    [Test]
+    public void RecenterKeepsThePoseRelativeToTheHead()
+    {
+        // Head at the origin facing +Z, model 1 m ahead; after recentering the head faces +X.
+        CADRuntimeBridge.MoveWithHeadFrame(new Vector3(0f, 1.4f, 1f), Quaternion.identity,
+            new Vector3(0f, 1.6f, 0f), 0f, new Vector3(2f, 1.6f, 0f), 90f,
+            out Vector3 position, out Quaternion rotation);
+        Assert.That(Vector3.Distance(position, new Vector3(3f, 1.4f, 0f)), Is.LessThan(Eps), "still 1 m ahead");
+        Assert.That(Quaternion.Angle(rotation, Quaternion.Euler(0f, 90f, 0f)), Is.LessThan(1e-3f), "turned with the view");
+    }
+
+    [Test]
+    public void FocusIgnoresHiddenGeometry()
+    {
+        svc.EnterScope("A");
+        string[] allButP4 = { "P1", "P2", "P3", "S" };
+        Assert.That(svc.WouldFocusGhostAnything(allButP4), Is.True, "P4 would be ghosted");
+        svc.Hide("P4");
+        Assert.That(svc.WouldFocusGhostAnything(allButP4), Is.False, "hidden P4 wouldn't visibly change");
     }
 
     // ================= Focus =================
@@ -502,7 +554,7 @@ public class CADInteractionPolishTests
     {
         svc.EnterScope("A");
         OpenObjectMenu("P1");
-        Assert.That(ContextLabels(), Is.EqualTo(new[] { "Exit assembly", "Focus", "Detach", "Reset object", "Multi-select", "Main menu", "Close" }));
+        Assert.That(ContextLabels(), Is.EqualTo(new[] { "Exit assembly", "Focus", "Detach", "Reset part", "Reset assembly", "Multi-select", "Main menu", "Close" }));
 
         svc.Detach("P1");
         OpenObjectMenu("P1");
@@ -514,8 +566,9 @@ public class CADInteractionPolishTests
     public void AssemblyMenuShowsAssemblyActions()
     {
         OpenObjectMenu("A");
-        Assert.That(ContextLabels(), Is.EqualTo(new[] { "Enter assembly", "Focus", "Reset assembly", "Multi-select", "Main menu", "Close" }),
-            "top-level assembly: no parent to detach from");
+        Assert.That(ContextLabels(), Is.EqualTo(new[] { "Enter assembly", "Reset part", "Multi-select", "Main menu", "Close" }),
+            "model scope, the only top-level assembly: no Focus (nothing to ghost), no Reset assembly (not inside one), " +
+            "no Detach (no parent)");
 
         svc.EnterScope("A");
         OpenObjectMenu("S");
@@ -536,19 +589,19 @@ public class CADInteractionPolishTests
         svc.AddToSelection("P1");
         svc.AddToSelection("P2");
         Tick();
-        Assert.That(ContextLabels(), Is.EqualTo(new[] { "Exit assembly", "Done", "Focus selection", "Reset selected", "Clear selection" }));
+        Assert.That(ContextLabels(), Is.EqualTo(new[] { "Exit assembly", "Done", "Focus selection", "Reset selected", "Reset assembly", "Clear selection" }));
 
         ContextButton("Done").onClick.Invoke();
         Tick();
         typeof(CADContextMenu).GetMethod("Open", Any).Invoke(menu, new object[] { new CADContextMenuRequest("P1", t["P1"].position, true) });
-        Assert.That(ContextLabels(), Is.EqualTo(new[] { "Exit assembly", "Focus selection", "Reset selected", "Edit selection", "Clear selection", "Close" }));
+        Assert.That(ContextLabels(), Is.EqualTo(new[] { "Exit assembly", "Focus selection", "Reset selected", "Reset assembly", "Edit selection", "Clear selection", "Close" }));
     }
 
     // 29
     [Test]
     public void GlobalActionsAreNotInObjectMenus()
     {
-        string[] global = { "Reset model", "Manipulate model", "Show all", "Isolate", "Isolate selected" };
+        string[] global = { "Reset everything", "Manipulate model", "Show all", "Isolate", "Isolate selected" };
         svc.EnterScope("A");
         OpenObjectMenu("P1");
         Assert.That(ContextLabels().Intersect(global), Is.Empty);
@@ -660,7 +713,7 @@ public class CADInteractionPolishTests
         OpenObjectMenu("P1");
         CADMenuTooltip tooltip = menu.Panel.Tooltip;
         var focus = ContextButton("Focus").GetComponent<CADMenuTooltipTrigger>();
-        var reset = ContextButton("Reset object").GetComponent<CADMenuTooltipTrigger>();
+        var reset = ContextButton("Reset part").GetComponent<CADMenuTooltipTrigger>();
 
         tooltip.Enter(focus, 10f);
         tooltip.Tick(10.2f);
@@ -671,7 +724,7 @@ public class CADInteractionPolishTests
         tooltip.Enter(reset, 11f);
         Assert.That(tooltip.IsShowing, Is.False, "38: new target restarts the delay");
         tooltip.Tick(11.6f);
-        Assert.That(tooltip.ShownText, Is.EqualTo("Restore this object to its original assembly transform."));
+        Assert.That(tooltip.ShownText, Is.EqualTo("Put this back where it was: original position, rotation and size."));
 
         tooltip.Exit(focus); // Stale exit from the previous button.
         Assert.That(tooltip.IsShowing, Is.True);
@@ -969,7 +1022,8 @@ public class CADInteractionPolishTests
     public void TooltipDelayIsPointThreeSeconds()
     {
         Assert.That(CADMenuTooltip.DefaultHoverDelay, Is.EqualTo(0.3f).Within(1e-4f));
-        OpenObjectMenu("A");
+        svc.EnterScope("A");
+        OpenObjectMenu("P1");
         CADMenuTooltip tooltip = menu.Panel.Tooltip;
         Assert.That(tooltip.HoverDelay, Is.EqualTo(CADMenuTooltip.DefaultHoverDelay), "one shared default");
         var focus = ContextButton("Focus").GetComponent<CADMenuTooltipTrigger>();
@@ -1302,7 +1356,7 @@ public class CADInteractionPolishTests
         Tick();
         Call(mainMenu, "LateUpdate");
         Assert.That(menu.IsOpen, Is.True);
-        Assert.That(ContextLabels(), Is.EqualTo(new[] { "Done", "Reset scale", "Reset model" }));
+        Assert.That(ContextLabels(), Is.EqualTo(new[] { "Done", "Reset all sizes", "Reset everything" }));
         Assert.That(mainMenu.IsOpen, Is.False);
         Assert.That(OpenMenuCount(), Is.EqualTo(1));
 
@@ -1435,6 +1489,184 @@ public class CADInteractionPolishTests
             CADMenuPanel.RoundedCorners = true;
         }
     }
+
+    // ================= Menu edits: detach exits, no no-op buttons =================
+
+    [Test]
+    public void DetachLeavesTheAssemblyAndKeepsThePartSelected()
+    {
+        svc.EnterScope("A");
+        svc.EnterScope("S");
+        OpenObjectMenu("S1");
+        ContextButton("Detach").onClick.Invoke();
+
+        Assert.That(svc.IsDetached("S1"), Is.True);
+        Assert.That(svc.CurrentScopeId, Is.EqualTo("A"), "one level up, out of the assembly it left");
+        Assert.That(Selected(), Is.EqualTo(new[] { "S1" }), "the detached part stays selected");
+
+        OpenObjectMenu("S1");
+        ContextButton("Reattach").onClick.Invoke();
+        Assert.That(svc.IsDetached("S1"), Is.False);
+        Assert.That(svc.CurrentScopeId, Is.EqualTo("A"), "reattaching doesn't change scope");
+    }
+
+    [Test]
+    public void DetachAtModelScopeKeepsTheScope()
+    {
+        svc.EnterScope("A");
+        OpenObjectMenu("S");
+        ContextButton("Detach").onClick.Invoke();
+        Assert.That(svc.CurrentScopeId, Is.Null, "A → model scope");
+        Assert.That(Selected(), Is.EqualTo(new[] { "S" }));
+    }
+
+    [Test]
+    public void ResetAssemblyIsOnlyOfferedInsideAnAssembly()
+    {
+        OpenObjectMenu("A"); // Model scope: the top-level assembly.
+        Assert.That(ContextLabels(), Does.Not.Contain("Reset assembly"));
+        Assert.That(ContextLabels(), Does.Contain("Reset part"), "a selected assembly has Reset part");
+
+        svc.EnterScope("A");
+        OpenObjectMenu("S"); // A subassembly inside A.
+        Assert.That(ContextLabels(), Does.Contain("Reset part"));
+        Assert.That(ContextLabels(), Does.Contain("Reset assembly"));
+    }
+
+    [Test]
+    public void ResetPartResetsTheSelectionAndResetAssemblyTheScope()
+    {
+        svc.EnterScope("A");
+        Vector3 s = t["S"].localPosition, s1 = t["S1"].localPosition, p1 = t["P1"].localPosition;
+        svc.SetObjectWorldPose("S1", t["S1"].position + Vector3.up * 0.1f, t["S1"].rotation);
+        svc.SetObjectWorldPose("S", t["S"].position + Vector3.right * 0.1f, t["S"].rotation);
+        svc.SetObjectWorldPose("P1", t["P1"].position + Vector3.forward * 0.1f, t["P1"].rotation);
+
+        OpenObjectMenu("S");
+        ContextButton("Reset part").onClick.Invoke(); // The selected assembly, with what's in it.
+        Assert.That(Vector3.Distance(t["S"].localPosition, s), Is.LessThan(Eps));
+        Assert.That(Vector3.Distance(t["S1"].localPosition, s1), Is.LessThan(Eps));
+        Assert.That(Vector3.Distance(t["P1"].localPosition, p1), Is.GreaterThan(0.05f), "only the selected assembly");
+
+        OpenObjectMenu("P2");
+        ContextButton("Reset assembly").onClick.Invoke(); // A, the scope, not P2.
+        Assert.That(Vector3.Distance(t["P1"].localPosition, p1), Is.LessThan(Eps));
+        Assert.That(svc.CurrentScopeId, Is.EqualTo("A"));
+    }
+
+    [Test]
+    public void FocusIsHiddenWhenItWouldChangeNothing()
+    {
+        Assert.That(svc.WouldFocusGhostAnything(new[] { "A" }), Is.False, "A holds all the geometry");
+        Assert.That(svc.WouldFocusGhostAnything(new[] { "P1" }), Is.True);
+        Assert.That(svc.WouldFocusGhostAnything(new[] { "S" }), Is.True);
+        Assert.That(svc.WouldFocusGhostAnything(new[] { "P1", "P2", "P3", "S", "P4" }), Is.False,
+            "every part of A together: nothing left to ghost");
+
+        OpenObjectMenu("A");
+        Assert.That(ContextLabels(), Does.Not.Contain("Focus"));
+
+        svc.EnterScope("A");
+        svc.BeginMultiSelect();
+        foreach (string id in new[] { "P1", "P2", "P3", "S", "P4" })
+            svc.AddToSelection(id);
+        Tick();
+        Assert.That(ContextLabels(), Does.Not.Contain("Focus selection"), "the whole assembly selected");
+        svc.RemoveFromSelection("P4");
+        Tick();
+        Assert.That(ContextLabels(), Does.Contain("Focus selection"));
+    }
+
+    [Test]
+    public void ClearFocusStaysAvailableWhileFocused()
+    {
+        svc.Focus("A"); // Focused elsewhere (e.g. via CADEN): nothing ghosted, but it is active.
+        OpenObjectMenu("A");
+        Assert.That(ContextLabels(), Does.Contain("Clear focus"));
+        ContextButton("Clear focus").onClick.Invoke();
+        Assert.That(svc.IsFocusActive, Is.False);
+    }
+
+    // ================= Grab affordance (edge glow) =================
+
+    [Test]
+    public void EdgeGlowLightsWhileARayIsOnTheGrabBand()
+    {
+        svc.EnterScope("A");
+        OpenObjectMenu("P1");
+        CADMenuPanel panel = menu.Panel;
+        Assert.That(panel.GrabGlow, Is.EqualTo(0f));
+
+        RaisePointer(panel, 7, Oculus.Interaction.PointerEventType.Hover, ContextButton("Focus").transform.position);
+        panel.UpdateGrabGlow(1f);
+        Assert.That(panel.GrabGlow, Is.EqualTo(0f), "over a button: no glow");
+
+        RaisePointer(panel, 7, Oculus.Interaction.PointerEventType.Move, BorderPoint(panel, left: true));
+        panel.UpdateGrabGlow(0.05f);
+        Assert.That(panel.GrabGlow, Is.InRange(0.01f, 0.99f), "fades in");
+        panel.UpdateGrabGlow(1f);
+        Assert.That(panel.GrabGlow, Is.EqualTo(1f), "on the grab band: full glow");
+
+        RaisePointer(panel, 7, Oculus.Interaction.PointerEventType.Unhover, BorderPoint(panel, left: true));
+        panel.UpdateGrabGlow(1f);
+        Assert.That(panel.GrabGlow, Is.EqualTo(0f), "ray left: off");
+
+        RaisePointer(panel, 7, Oculus.Interaction.PointerEventType.Hover, BorderPoint(panel, left: false));
+        panel.UpdateGrabGlow(1f);
+        Hide(menu);
+        Assert.That(panel.GrabGlow, Is.EqualTo(0f), "hiding clears it");
+    }
+
+    [Test]
+    public void MenusAreThreeQuartersOfTheStyleGuideSize()
+    {
+        Assert.That(CADMenuPanel.CanvasScale, Is.EqualTo(0.00075f).Within(1e-7f));
+        svc.EnterScope("A");
+        OpenObjectMenu("P1");
+        Assert.That(CanvasOf(menu.Panel).lossyScale.x, Is.EqualTo(0.00075f).Within(1e-7f));
+    }
+
+    [Test]
+    public void EdgeGlowIsOnlyNearTheCursorAndOnlyOutsideTheWindow()
+    {
+        svc.EnterScope("A");
+        OpenObjectMenu("P1");
+        CADMenuPanel panel = menu.Panel;
+        RaisePointer(panel, 3, Oculus.Interaction.PointerEventType.Hover, BorderPoint(panel, left: true));
+        panel.UpdateGrabGlow(1f);
+
+        Rect r = CanvasOf(panel).rect;
+        float edge = CADMenuPanel.BorderWidth;
+        Assert.That(panel.EdgeGlow.AlphaAt(new Vector2(r.xMin - edge, r.center.y)), Is.GreaterThan(0.9f), "lit at the cursor");
+        Assert.That(panel.EdgeGlow.AlphaAt(new Vector2(r.xMax + edge, r.center.y)), Is.LessThan(0.01f), "far edge stays dark");
+        Assert.That(panel.EdgeGlow.AlphaAt(new Vector2(r.center.x, r.yMax + edge)), Is.LessThan(0.2f), "fades along the edge");
+
+        // Every glow vertex is on or outside the window's rounded edge (the panel background).
+        List<Vector3> vertices = panel.EdgeGlow.GetVertexPositions();
+        Assert.That(vertices, Is.Not.Empty);
+        var window = new Rect(r.xMin - edge, r.yMin - edge, r.width + 2 * edge, r.height + 2 * edge);
+        float radius = panel.EdgeGlow.Radius;
+        foreach (Vector3 v in vertices)
+        {
+            Vector2 q = new Vector2(Mathf.Abs(v.x - window.center.x), Mathf.Abs(v.y - window.center.y))
+                - (window.size * 0.5f - Vector2.one * radius);
+            float outside = Vector2.Max(q, Vector2.zero).magnitude + Mathf.Min(Mathf.Max(q.x, q.y), 0f) - radius;
+            Assert.That(outside, Is.GreaterThanOrEqualTo(-1e-3f), $"glow vertex {v} is over the window");
+        }
+    }
+
+    [Test]
+    public void MenusOpenAtLeastPointEightMetresAway()
+    {
+        Assert.That(CADMenuPanel.MinMenuDistance, Is.EqualTo(0.8f).Within(1e-4f));
+    }
+
+    private static void RaisePointer(CADMenuPanel panel, int id, Oculus.Interaction.PointerEventType type, Vector3 point) =>
+        typeof(CADMenuPanel).GetMethod("TrackHover", Any).Invoke(panel,
+            new object[] { new Oculus.Interaction.PointerEvent(id, type, new Pose(point, Quaternion.identity)) });
+
+    private static void Hide(CADContextMenu contextMenu) =>
+        typeof(CADContextMenu).GetMethod("Hide", Any).Invoke(contextMenu, new object[] { "test" });
 
     // ================= Helpers =================
 
