@@ -128,6 +128,13 @@ public static class CadenIntegrationChecks
             Require(Code(await registry.ExecuteAsync("detach_for_inspection", await Arguments(Ids("R")))) == "INVALID_ARGUMENTS", "Root assembly detach accepted");
             await Apply("reset_objects", Ids("A"));
             Require(!service.IsDetached("P") && !service.IsDetached("Q") && nodes[2].transform.position == p0, "Reset did not undo explode");
+            // A small part inside a long one keeps moving out until it no longer overlaps (a tail inside a rocket body).
+            Vector3 qScale = nodes[3].transform.localScale;
+            nodes[3].transform.localScale = new Vector3(1f, 0.1f, 0.1f);
+            await Apply("detach_for_inspection", explode);
+            Require(!nodes[2].GetComponent<Renderer>().bounds.Intersects(nodes[3].GetComponent<Renderer>().bounds), "Explode left a part inside a longer one");
+            await Apply("reset_objects", Ids("A"));
+            nodes[3].transform.localScale = qScale;
             var staleFocus = await Arguments(Ids("A")); service.Focus("O");
             Require(Code(await registry.ExecuteAsync("focus_objects", staleFocus)) == "REVISION_CONFLICT", "Human focus change ignored");
             await Apply("hide_objects", Ids("O"));
