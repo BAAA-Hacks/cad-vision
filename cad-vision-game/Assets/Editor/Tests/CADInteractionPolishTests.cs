@@ -1587,6 +1587,52 @@ public class CADInteractionPolishTests
         Assert.That(svc.IsFocusActive, Is.False);
     }
 
+    // ================= Grab affordance (edge glow) =================
+
+    [Test]
+    public void EdgeGlowLightsWhileARayIsOnTheGrabBand()
+    {
+        svc.EnterScope("A");
+        OpenObjectMenu("P1");
+        CADMenuPanel panel = menu.Panel;
+        Assert.That(panel.GrabGlow, Is.EqualTo(0f));
+
+        RaisePointer(panel, 7, Oculus.Interaction.PointerEventType.Hover, ContextButton("Focus").transform.position);
+        panel.UpdateGrabGlow(1f);
+        Assert.That(panel.GrabGlow, Is.EqualTo(0f), "over a button: no glow");
+
+        RaisePointer(panel, 7, Oculus.Interaction.PointerEventType.Move, BorderPoint(panel, left: true));
+        panel.UpdateGrabGlow(0.05f);
+        Assert.That(panel.GrabGlow, Is.InRange(0.01f, 0.99f), "fades in");
+        panel.UpdateGrabGlow(1f);
+        Assert.That(panel.GrabGlow, Is.EqualTo(1f), "on the grab band: full glow");
+
+        RaisePointer(panel, 7, Oculus.Interaction.PointerEventType.Unhover, BorderPoint(panel, left: true));
+        panel.UpdateGrabGlow(1f);
+        Assert.That(panel.GrabGlow, Is.EqualTo(0f), "ray left: off");
+
+        RaisePointer(panel, 7, Oculus.Interaction.PointerEventType.Hover, BorderPoint(panel, left: false));
+        panel.UpdateGrabGlow(1f);
+        Hide(menu);
+        Assert.That(panel.GrabGlow, Is.EqualTo(0f), "hiding clears it");
+    }
+
+    [Test]
+    public void MenusAreThreeQuartersOfTheStyleGuideSize()
+    {
+        Assert.That(CADMenuPanel.CanvasScale, Is.EqualTo(0.00075f).Within(1e-7f));
+        svc.EnterScope("A");
+        OpenObjectMenu("P1");
+        Assert.That(CanvasOf(menu.Panel).lossyScale.x, Is.EqualTo(0.00075f).Within(1e-7f));
+    }
+
+    private static void RaisePointer(CADMenuPanel panel, int id, Oculus.Interaction.PointerEventType type, Vector3 point) =>
+        typeof(CADMenuPanel).GetMethod("TrackHover", Any).Invoke(panel,
+            new object[] { new Oculus.Interaction.PointerEvent(id, type, new Pose(point, Quaternion.identity)) });
+
+    private static void Hide(CADContextMenu contextMenu) =>
+        typeof(CADContextMenu).GetMethod("Hide", Any).Invoke(contextMenu, new object[] { "test" });
+
     // ================= Helpers =================
 
     private void AssertBeside(Bounds bounds, string what) => AssertBesidePanel(menu.Panel, bounds, what);

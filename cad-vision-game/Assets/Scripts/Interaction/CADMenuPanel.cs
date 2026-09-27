@@ -37,7 +37,7 @@ public struct CADMenuStyle
 ///
 /// - a separate root GameObject (never under a CAD object or the model root), marked
 ///   CADUIPointerTarget so pressing it never deselects CAD;
-/// - a world-space uGUI Canvas (+ GraphicRaycaster) at 0.001 scale (1 canvas unit = 1 mm),
+/// - a world-space uGUI Canvas (+ GraphicRaycaster) at CanvasScale (1 canvas unit = 0.75 mm),
 ///   no CanvasScaler, no nested canvases, masks, custom materials or shaders (built-in UI
 ///   Images and legacy Text with LegacyRuntime.ttf);
 /// - the CADVision UI style guide: navy panel with a thin border, navy-surface secondary
@@ -69,21 +69,32 @@ public struct CADMenuStyle
 /// </summary>
 public sealed class CADMenuPanel
 {
-    public const float CanvasScale = 0.001f;
+    // World metres per canvas unit: every menu at 75% of the style guide's 1 unit = 1 mm.
+    public const float CanvasScale = 0.00075f;
     // Style guide spacing: outer padding ≈ 28 (Padding + the grab band, which is panel
     // background), 12 between related elements, 24 between sections.
     public const float Padding = 16f;
     public const float RowSpacing = 12f;
     public const float SectionSpacing = 24f;
     public const float ControlHeight = 52f;
-    // Style guide type sizes (UI units at 0.001 canvas scale).
+    // Style guide type sizes (canvas units).
     public const int TitleSize = 26;
     public const int SectionSize = 20;
     public const int FontSize = 22;       // Body, buttons.
     public const int SecondarySize = 17;  // Subtitles, labels, status.
     public const int SmallSize = 15;
-    /// <summary>Width of the grab band around the content (canvas units = mm); drawn as panel background.</summary>
-    public const float BorderWidth = 12f;
+    /// <summary>Width of the grab band around the content (canvas units); drawn as panel background.</summary>
+    public const float BorderWidth = 16f; // 12 mm at the 75% canvas scale: still easy to hit.
+
+    // Grab affordance (Meta-style edge glow): while a ray hovers the grab band (or drags the
+    // panel) the border lights up in the accent color with a soft outer glow, a spot of light
+    // follows the ray along the edge, and the grab handle under the content brightens.
+    private const float GlowSize = 16f;       // Soft glow outside the border (canvas units).
+    private const float GlowFadeTime = 0.12f; // Seconds to fade fully in or out.
+    private const float GlowAlpha = 0.6f;
+    private const float SpotSize = 150f;
+    private const float SpotAlpha = 0.35f;
+    private static Sprite glowSprite, spotSprite;
 
     /// <summary>
     /// Rounded panels and buttons (a generated 9-slice sprite). Set false before menus are built
@@ -151,6 +162,15 @@ public sealed class CADMenuPanel
     private Quaternion dragRotationOffset;
     private readonly List<RectTransform> grabRegions = new();
 
+    // Grab affordance: ray hit points per hovering pointer, and the current glow (0..1).
+    private readonly Dictionary<int, Vector3> hoverPoints = new();
+    private Image borderImage, glowImage, spotImage, handleImage;
+    private Color handleRestColor;
+    private Vector3 spotPoint;
+
+    /// <summary>Grab-band highlight, 0 (off) to 1 (a ray on the grab band, or dragging).</summary>
+    public float GrabGlow { get; private set; }
+
     public bool IsDragging => dragSource != null;
     /// <summary>The user moved the panel since it was last shown (owners then stop auto-placing it).</summary>
     public bool WasMoved { get; private set; }
@@ -182,10 +202,39 @@ public sealed class CADMenuPanel
 
         // Opaque navy panel reaching over the grab band, with a thin border outline: readable
         // over passthrough and models. The band is ordinary panel background (the drag handle).
-        Image border = CreateImage("Border", style.BorderColor, PanelRadius + 2f);
-        Stretch((RectTransform)border.transform, -BorderWidth - 2f);
+        glowImage = CreateImage("Grab Glow", Transparent(style.SelectedButtonColor));
+        glowImage.raycastTarget = false;
+        if (GlowSprite != null)
+        {
+            glowImage.sprite = GlowSprite;
+            glowImage.type = Image.Type.Sliced; // 1 sprite pixel = 1 canvas unit.
+            Stretch((RectTransform)glowImage.transform, -BorderWidth - 2f - GlowSize);
+        }
+        else
+            Stretch((RectTransform)glowImage.transform, -BorderWidth - 5f);
+        borderImage = CreateImage("Border", style.BorderColor, PanelRadius + 2f);
+        Stretch((RectTransform)borderImage.transform, -BorderWidth - 2f);
         Image background = CreateImage("Background", style.PanelColor, PanelRadius);
         Stretch((RectTransform)background.transform, -BorderWidth);
+
+        // A short pill in the bottom band, like a system window's grab bar.
+        handleRestColor = style.SecondaryTextColor;
+        handleRestColor.a = 0.45f;
+        handleImage = CreateImage("Grab Handle", handleRestColor, 3f);
+        handleImage.raycastTarget = false;
+        var handleRect = (RectTransform)handleImage.transform;
+        handleRect.anchorMin = handleRect.anchorMax = new Vector2(0.5f, 0f);
+        handleRect.pivot = new Vector2(0.5f, 0.5f);
+        handleRect.sizeDelta = new Vector2(64f, 6f);
+        handleRect.anchoredPosition = new Vector2(0f, -BorderWidth * 0.5f);
+
+        // Light that follows the ray along the edge; under the content (created before it).
+        spotImage = CreateImage("Grab Spot", Transparent(style.SelectedButtonColor));
+        spotImage.raycastTarget = false;
+        spotImage.sprite = SpotSprite;
+        var spotRect = (RectTransform)spotImage.transform;
+        spotRect.anchorMin = spotRect.anchorMax = new Vector2(0.5f, 0.5f);
+        spotRect.sizeDelta = new Vector2(SpotSize, SpotSize);
 
         // Ray surface: a thin collider covering the panel, forwarding pointer events to the
         // canvas. Same SDK path as CAD parts, but not under a CADObject, so it counts as UI.
@@ -205,6 +254,7 @@ public sealed class CADMenuPanel
         interactable.InjectOptionalSelectSurface(surface);
         interactable.InjectOptionalPointableElement(pointableCanvas);
         interactable.WhenPointerEventRaised += LogPointerEvent;
+        interactable.WhenPointerEventRaised += TrackHover;
 
         Tooltip = Root.AddComponent<CADMenuTooltip>();
         Tooltip.Initialize(canvasRect, LegacyFont);
@@ -242,6 +292,8 @@ public sealed class CADMenuPanel
         interactable.enabled = false;
         EndDrag();
         WasMoved = false; // The next show is placed automatically again.
+        hoverPoints.Clear();
+        SetGrabGlow(0f);
         Tooltip.Hide();
         Root.SetActive(false);
         if (activePanel == this)
@@ -324,9 +376,13 @@ public sealed class CADMenuPanel
         Debug.Log($"[CADMenuPanel] '{Root.name}' moved with {source.SourceId}.");
     }
 
-    /// <summary>Follows the dragging pointer rigidly (call each frame while open); ends on release or tracking loss.</summary>
+    /// <summary>
+    /// Follows the dragging pointer rigidly (call each frame while open); ends on release or
+    /// tracking loss. Also animates the grab-band glow.
+    /// </summary>
     public void UpdateDrag()
     {
+        UpdateGrabGlow(Time.unscaledDeltaTime);
         if (dragSource == null)
             return;
 
@@ -343,6 +399,68 @@ public sealed class CADMenuPanel
     }
 
     public void EndDrag() => dragSource = null;
+
+    // ---------------- Grab affordance ----------------
+
+    // Ray hit points of the pointers hovering this panel (buttons included; the glow only
+    // reacts to points on the grab band).
+    private void TrackHover(PointerEvent evt)
+    {
+        switch (evt.Type)
+        {
+            case PointerEventType.Hover:
+            case PointerEventType.Move:
+            case PointerEventType.Select:
+            case PointerEventType.Unselect:
+                hoverPoints[evt.Identifier] = evt.Pose.position;
+                break;
+            case PointerEventType.Unhover:
+            case PointerEventType.Cancel:
+                hoverPoints.Remove(evt.Identifier);
+                break;
+        }
+    }
+
+    /// <summary>Fades the glow toward on (a ray on the grab band, or dragging) or off.</summary>
+    public void UpdateGrabGlow(float deltaTime)
+    {
+        bool hot = IsDragging;
+        foreach (Vector3 point in hoverPoints.Values)
+        {
+            if (IsGrabPoint(point))
+            {
+                hot = true;
+                spotPoint = point;
+                break;
+            }
+        }
+
+        float target = hot && IsOpen ? 1f : 0f;
+        SetGrabGlow(Mathf.MoveTowards(GrabGlow, target, deltaTime / GlowFadeTime));
+    }
+
+    private void SetGrabGlow(float glow)
+    {
+        GrabGlow = glow;
+        Color accent = style.SelectedButtonColor;
+        glowImage.color = WithAlpha(accent, GlowAlpha * glow);
+        borderImage.color = Color.Lerp(style.BorderColor, accent, glow);
+        handleImage.color = Color.Lerp(handleRestColor, accent, glow);
+        spotImage.color = WithAlpha(accent, SpotAlpha * glow);
+        if (glow > 0f)
+        {
+            Vector3 local = canvasRect.InverseTransformPoint(spotPoint);
+            ((RectTransform)spotImage.transform).anchoredPosition = new Vector2(local.x, local.y);
+        }
+    }
+
+    private static Color WithAlpha(Color color, float alpha)
+    {
+        color.a = alpha;
+        return color;
+    }
+
+    private static Color Transparent(Color color) => WithAlpha(color, 0f);
 
     /// <summary>A new target: forget the hand placement so the owner places the panel automatically.</summary>
     public void ForgetMove() => WasMoved = false;
@@ -696,6 +814,81 @@ public sealed class CADMenuPanel
             roundedSprite.hideFlags = HideFlags.DontSave;
             return roundedSprite;
         }
+    }
+
+    // Soft outer glow around the panel's rounded border: opaque inside a rect with the border's
+    // corner radius, fading out over GlowSize. 9-sliced at 1 sprite pixel = 1 canvas unit.
+    // Null when RoundedCorners is off (the glow is then a plain rect).
+    private static Sprite GlowSprite
+    {
+        get
+        {
+            if (!RoundedCorners)
+                return null;
+            if (glowSprite != null)
+                return glowSprite;
+
+            int corner = Mathf.RoundToInt(PanelRadius + 2f + GlowSize); // Slice border.
+            int side = 2 * corner + 2;
+            float half = side / 2f;
+            float radius = PanelRadius + 2f;
+            glowSprite = GeneratedSprite("CAD Menu Glow", side, (x, y) =>
+            {
+                float dx = Mathf.Max(Mathf.Abs(x - half) - (half - corner), 0f);
+                float dy = Mathf.Max(Mathf.Abs(y - half) - (half - corner), 0f);
+                float outside = Mathf.Sqrt(dx * dx + dy * dy) - radius; // Distance past the border.
+                float t = Mathf.Clamp01(1f - outside / GlowSize);
+                return outside <= 0f ? 1f : t * t;
+            }, corner);
+            return glowSprite;
+        }
+    }
+
+    // Radial light: bright center fading smoothly to nothing at the edge.
+    private static Sprite SpotSprite
+    {
+        get
+        {
+            if (spotSprite != null)
+                return spotSprite;
+            const int side = 64;
+            spotSprite = GeneratedSprite("CAD Menu Spot", side, (x, y) =>
+            {
+                float r = Vector2.Distance(new Vector2(x, y), new Vector2(side / 2f, side / 2f)) / (side / 2f);
+                float t = Mathf.Clamp01(1f - r);
+                return t * t;
+            }, 0);
+            return spotSprite;
+        }
+    }
+
+    // A white texture with alpha from alphaAt(pixel center x, y), as a sprite (9-sliced by border).
+    private static Sprite GeneratedSprite(string name, int side, Func<float, float, float> alphaAt, int border)
+    {
+        var texture = new Texture2D(side, side, TextureFormat.RGBA32, false)
+        {
+            name = name,
+            wrapMode = TextureWrapMode.Clamp,
+            filterMode = FilterMode.Bilinear,
+            hideFlags = HideFlags.DontSave,
+        };
+        var pixels = new Color32[side * side];
+        for (int y = 0; y < side; y++)
+        {
+            for (int x = 0; x < side; x++)
+            {
+                float alpha = Mathf.Clamp01(alphaAt(x + 0.5f, y + 0.5f));
+                pixels[y * side + x] = new Color32(255, 255, 255, (byte)Mathf.RoundToInt(alpha * 255f));
+            }
+        }
+        texture.SetPixels32(pixels);
+        texture.Apply(false, true);
+
+        Sprite sprite = Sprite.Create(texture, new Rect(0, 0, side, side), new Vector2(0.5f, 0.5f), 100f, 0,
+            SpriteMeshType.FullRect, new Vector4(border, border, border, border));
+        sprite.name = name;
+        sprite.hideFlags = HideFlags.DontSave;
+        return sprite;
     }
 
     private Image CreateImage(string name, Color color, float radius = 0f)
