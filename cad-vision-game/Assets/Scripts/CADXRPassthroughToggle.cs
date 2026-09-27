@@ -18,6 +18,7 @@ public class CADXRPassthroughToggle : MonoBehaviour
     [SerializeField] private OVRInput.Controller controller = OVRInput.Controller.LTouch;
 
     private GameObject virtualFloor;
+    private CADVirtualLocomotion locomotion;
     private Material floorMaterial;
     private Material skyMaterial;
     private Material originalSkybox;
@@ -50,6 +51,12 @@ public class CADXRPassthroughToggle : MonoBehaviour
 
         // Read the real state instead of assuming it.
         IsPassthroughEnabled = passthroughLayer.isActiveAndEnabled && !passthroughLayer.hidden;
+        if (virtualFloor != null)
+        {
+            locomotion = GetComponent<CADVirtualLocomotion>();
+            if (locomotion == null) locomotion = gameObject.AddComponent<CADVirtualLocomotion>();
+            locomotion.Initialize(FindAnyObjectByType<OVRCameraRig>(), virtualFloor.transform);
+        }
         ApplyEnvironment();
         Debug.Log($"[CADXRPassthroughToggle] Started; passthrough {(IsPassthroughEnabled ? "on" : "off")} " +
             $"(layer '{passthroughLayer.name}').");
@@ -132,7 +139,12 @@ public class CADXRPassthroughToggle : MonoBehaviour
         floorMesh.RecalculateBounds();
         virtualFloor = new GameObject("Virtual Environment - White Floor");
         // Floor-level tracking is enabled in this scene. Keep the floor in that space.
-        if (rig != null) virtualFloor.transform.SetParent(rig.trackingSpace, false);
+        if (rig != null)
+        {
+            virtualFloor.transform.SetParent(rig.trackingSpace, false);
+            // The floor is world geometry: it must not move or turn with locomotion.
+            virtualFloor.transform.SetParent(null, true);
+        }
         virtualFloor.layer = 2; // Ignore Raycast; decoration must not intercept CAD selection.
         virtualFloor.AddComponent<MeshFilter>().sharedMesh = floorMesh;
         MeshRenderer renderer = virtualFloor.AddComponent<MeshRenderer>();
@@ -143,6 +155,7 @@ public class CADXRPassthroughToggle : MonoBehaviour
 
     private void ApplyEnvironment()
     {
+        if (locomotion != null) locomotion.SetVirtualMode(!IsPassthroughEnabled);
         if (virtualFloor != null) virtualFloor.SetActive(!IsPassthroughEnabled);
         if (environmentCaptured)
         {
@@ -170,6 +183,7 @@ public class CADXRPassthroughToggle : MonoBehaviour
 
     private void OnDestroy()
     {
+        if (locomotion != null) { locomotion.SetVirtualMode(false); Destroy(locomotion); }
         if (environmentCaptured)
         {
             RenderSettings.skybox = originalSkybox;
