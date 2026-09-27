@@ -896,7 +896,7 @@ public class CADInteractionPolishTests
     }
 
     [Test]
-    public void DraggedWindowsPushAndPullLikeObjectsWithinLimits()
+    public void DraggedWindowsFollowTheRayFaceTheUserAndPushPullLinearly()
     {
         menu.Panel.EnableBorderDrag(pointer);
         svc.EnterScope("A");
@@ -904,30 +904,47 @@ public class CADInteractionPolishTests
         Transform panel = PanelOf(menu);
         Vector3 border = BorderPoint(menu.Panel, left: true);
         Vector3 held = panel.InverseTransformPoint(border);
+        Vector3 placed = panel.position;
+        Quaternion placedRotation = panel.rotation;
 
-        // The pointer well behind the window (hold distance beyond the 0.7 m reach).
-        Vector3 start = head.position + new Vector3(0f, -0.3f, -0.3f);
+        Vector3 start = head.position + new Vector3(0.1f, -0.3f, 0f);
         Quaternion aim = Quaternion.LookRotation(border - start);
         rightController.Pose = new Pose(start, aim);
         PressUi(rightController, border);
         Tick();
         Assert.That(menu.Panel.IsDragging, Is.True);
+        Assert.That(Vector3.Distance(panel.position, placed), Is.LessThan(1e-4f), "no jump at grab start");
+        Assert.That(Quaternion.Angle(panel.rotation, placedRotation), Is.LessThan(0.05f), "an already-facing window doesn't turn");
         float hold0 = Vector3.Distance(start, border);
 
-        // Pushing 5 cm along the ray moves the window farther than 5 cm, but at most 2x.
+        // Push 5 cm along the ray: the window goes 3x as far (a constant gain, not a curve).
         rightController.Pose = new Pose(start + aim * Vector3.forward * 0.05f, aim);
         Tick();
-        float growth = Vector3.Distance(rightController.Pose.position, panel.TransformPoint(held)) - hold0;
-        Assert.That(growth, Is.GreaterThan(0.01f), "amplified push beyond reach");
-        Assert.That(growth, Is.LessThanOrEqualTo(0.05f + 1e-4f), "gentler than objects: at most 2x");
+        float hold1 = Vector3.Distance(rightController.Pose.position, panel.TransformPoint(held));
+        Assert.That(hold1 - hold0, Is.EqualTo(0.10f).Within(1e-3f), "3x: 5 cm of hand, 15 cm of window");
+        rightController.Pose = new Pose(rightController.Pose.position + aim * Vector3.forward * 0.05f, aim);
+        Tick();
+        float hold2 = Vector3.Distance(rightController.Pose.position, panel.TransformPoint(held));
+        Assert.That(hold2 - hold1, Is.EqualTo(0.10f).Within(1e-3f), "the same gain farther away (linear)");
+        AssertFacesHead(panel, "after pushing");
 
-        // Sideways stays 1:1 (no amplification).
+        // Sideways 1:1, still facing the user.
         Vector3 before = panel.TransformPoint(held);
         rightController.Pose = new Pose(rightController.Pose.position + aim * Vector3.right * 0.05f, aim);
         Tick();
-        Assert.That(Vector3.Distance(panel.TransformPoint(held), before), Is.EqualTo(0.05f).Within(0.005f));
+        Assert.That(Vector3.Distance(panel.TransformPoint(held), before), Is.EqualTo(0.05f).Within(1e-3f));
+        AssertFacesHead(panel, "after moving sideways");
 
-        // Pushing on and on: never farther than 3 m from the head.
+        // Pointing 25 degrees to the side swings it around, turning to face the user; the held
+        // point stays on the ray.
+        aim = Quaternion.Euler(0f, 25f, 0f) * aim;
+        rightController.Pose = new Pose(rightController.Pose.position, aim);
+        Tick();
+        AssertFacesHead(panel, "after pointing to the side");
+        Vector3 toHeld = panel.TransformPoint(held) - rightController.Pose.position;
+        Assert.That(Vector3.Angle(toHeld, aim * Vector3.forward), Is.LessThan(2f), "held on the ray");
+
+        // Limits: never farther than 3 m, never closer than 0.4 m from the head.
         for (int i = 0; i < 80; i++)
         {
             rightController.Pose = new Pose(rightController.Pose.position + aim * Vector3.forward * 0.05f, aim);
@@ -935,8 +952,6 @@ public class CADInteractionPolishTests
         }
         Assert.That(Vector3.Distance(panel.position, head.position), Is.LessThanOrEqualTo(3f + 1e-3f));
         Assert.That(Vector3.Distance(panel.position, head.position), Is.GreaterThan(2.5f), "it did go far");
-
-        // Pulling back hard: never closer than 0.4 m.
         for (int i = 0; i < 150; i++)
         {
             rightController.Pose = new Pose(rightController.Pose.position - aim * Vector3.forward * 0.05f, aim);
@@ -944,7 +959,21 @@ public class CADInteractionPolishTests
         }
         Assert.That(Vector3.Distance(panel.position, head.position), Is.GreaterThanOrEqualTo(0.4f - 1e-3f));
         Release(rightController);
+        Tick();
+
+        // Let go: it stays exactly put, even when the user walks around it.
+        Vector3 dropped = panel.position;
+        Quaternion droppedRotation = panel.rotation;
+        head.position += new Vector3(0.8f, 0f, 0.3f);
+        for (int i = 0; i < 5; i++) Tick();
+        Assert.That(Vector3.Distance(panel.position, dropped), Is.LessThan(1e-5f));
+        Assert.That(Quaternion.Angle(panel.rotation, droppedRotation), Is.LessThan(1e-3f), "no re-facing when idle");
+        head.position -= new Vector3(0.8f, 0f, 0.3f);
     }
+
+    private void AssertFacesHead(Transform panel, string when) =>
+        Assert.That(Vector3.Dot(panel.forward, (panel.position - head.position).normalized), Is.GreaterThan(0.9995f),
+            $"{when}: faces the user");
 
     // 13, 14, 15, 16, 17
     [Test]

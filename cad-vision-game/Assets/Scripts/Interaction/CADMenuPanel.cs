@@ -89,7 +89,7 @@ public sealed class CADMenuPanel
     /// Invisible extra grab area beyond the window's visible edge (canvas units), so a ray that
     /// just misses the edge still grabs; the edge glow shows it has been found.
     /// </summary>
-    public const float GrabMargin = 20f; // 15 mm.
+    public const float GrabMargin = 32f; // 24 mm: easy to catch the edge without aiming precisely.
 
     // Grab affordance (Meta-style edge glow) and border drag live in CADWindowFrame, shared
     // with every CADVision window.
