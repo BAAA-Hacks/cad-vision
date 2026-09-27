@@ -57,9 +57,6 @@ public class CADContextMenu : MonoBehaviour
         ModelDone, ResetScale, ResetModel, ExitAssembly, ResetSize,
     }
 
-    [Header("Placement")]
-    [Tooltip("Re-face the headset only after it moves this far while the menu is open (m).")]
-    [SerializeField, Min(0.05f)] private float refaceHeadMovement = 0.4f;
 
     // Layout in canvas units (1 unit = 1 mm); style guide sizes (CADMenuPanel).
     private const float PanelWidth = 320f;
@@ -134,7 +131,6 @@ public class CADContextMenu : MonoBehaviour
     private CADObject target;
     private bool wasModelMode;       // Mode edges: a mode that just started always shows its menu.
     private bool wasMultiMode;
-    private Vector3 headPositionAtFacing;
 
     public bool IsOpen => panelRoot != null && panelRoot.activeSelf;
     /// <summary>The shared panel (placement and tooltips are CADMenuPanel's).</summary>
@@ -320,8 +316,6 @@ public class CADContextMenu : MonoBehaviour
                 if (modelStarted || !otherMenuOpen)
                     OpenModel();
             }
-            else
-                RefaceIfHeadMoved();
             return;
         }
 
@@ -346,10 +340,7 @@ public class CADContextMenu : MonoBehaviour
                     OpenMulti();
             }
             else
-            {
                 UpdateMulti();
-                RefaceIfHeadMoved();
-            }
             return;
         }
 
@@ -369,12 +360,8 @@ public class CADContextMenu : MonoBehaviour
                 Hide("selection changed");
             else if (IsMoving())
                 Hide("selection is being moved");
-            else
-            {
-                if (Refresh())
-                    PlaceSelection();
-                RefaceIfHeadMoved();
-            }
+            else if (Refresh())
+                PlaceSelection();
             return;
         }
 
@@ -402,21 +389,7 @@ public class CADContextMenu : MonoBehaviour
 
         if (Refresh())
             PlaceObject(null);
-        RefaceIfHeadMoved();
-    }
-
-    // Minimal facing: only after the head has moved noticeably, never every frame, and never
-    // once the user has placed the menu by hand.
-    private void RefaceIfHeadMoved()
-    {
-        if (panel.WasMoved)
-            return;
-        Transform head = Head();
-        if (head != null && Vector3.Distance(head.position, headPositionAtFacing) > refaceHeadMovement)
-        {
-            panel.FaceHead(head);
-            headPositionAtFacing = head.position;
-        }
+        // No re-facing: an open menu stays exactly where it is until the user moves it.
     }
 
     // ---------------- Context-aware contents ----------------
@@ -641,10 +614,7 @@ public class CADContextMenu : MonoBehaviour
 
     private void PlaceBeside(Bounds bounds)
     {
-        Transform head = Head();
-        panel.PlaceBesideBounds(bounds, head);
-        if (head != null)
-            headPositionAtFacing = head.position;
+        panel.PlaceBesideBounds(bounds, Head());
     }
 
     private void PlaceInFrontOfHead()
@@ -657,7 +627,6 @@ public class CADContextMenu : MonoBehaviour
             forward = Vector3.forward;
         panelRoot.transform.position = head.position + forward.normalized * Mathf.Max(0.8f, CADMenuPanel.MinMenuDistance);
         panel.FaceHead(head);
-        headPositionAtFacing = head.position;
     }
 
     private static Transform Head() => Camera.main != null ? Camera.main.transform : null;
