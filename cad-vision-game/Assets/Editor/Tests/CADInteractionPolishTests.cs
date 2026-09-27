@@ -1858,12 +1858,11 @@ public class CADInteractionPolishTests
             "a button in the header grab region still wins");
         Assert.That(frame.IsGrabPoint(window.TransformPoint(new Vector3(r.xMin + 300f, r.yMax - 50f, 0f))), Is.True, "header grabs");
 
-        // Opens centered in front of the user, 1.1 m away, facing them.
+        // Opens 1.1 m away, facing the user, beside the model (which is straight ahead here).
         Vector3 offset = go.transform.position - head.position;
-        Vector3 flatForward = Vector3.ProjectOnPlane(head.forward, Vector3.up).normalized;
-        Assert.That(Vector3.Dot(Vector3.ProjectOnPlane(offset, Vector3.up), flatForward), Is.EqualTo(1.1f).Within(1e-3f));
-        Assert.That(Vector3.ProjectOnPlane(offset, Vector3.up).magnitude, Is.EqualTo(1.1f).Within(1e-3f), "centered");
+        Assert.That(Vector3.ProjectOnPlane(offset, Vector3.up).magnitude, Is.EqualTo(1.1f).Within(1e-3f));
         Assert.That(Vector3.Dot(go.transform.forward, offset.normalized), Is.GreaterThan(0.99f), "faces the user");
+        AssertCadenClearOfModel(go.transform, "at startup");
 
         // The edge glow lights at the cursor (the window's pivot is its logo, not its center).
         Vector3 edge = window.TransformPoint(new Vector3(r.xMin - CADMenuPanel.BorderWidth * 0.5f, r.center.y, 0f));
@@ -2004,6 +2003,44 @@ public class CADInteractionPolishTests
         Assert.That(Vector3.Distance(surface.transform.TransformPoint(surface.center), windowCenter), Is.LessThan(1e-3f),
             "the ray surface stays centered on the resized panel");
         Assert.That(canvas.localScale.x, Is.EqualTo(CADMenuPanel.CanvasScale).Within(1e-7f), "the logo tile keeps its size");
+    }
+
+    [Test]
+    public void CadenPanelOpensStraightAheadWhenTheModelIsElsewhere()
+    {
+        root.position = head.position + new Vector3(-2f, 0f, 0.5f); // Far to the left.
+        var go = Track(new GameObject("CADEN clear test"));
+        var caden = go.AddComponent<CadenPanel>();
+        Call(caden, "Awake");
+        typeof(CadenPanel).GetField("trackingReady", Any).SetValue(caden, true);
+        Call(caden, "Recenter");
+        Vector3 flat = Vector3.ProjectOnPlane(go.transform.position - head.position, Vector3.up);
+        Assert.That(Vector3.Angle(flat, Vector3.forward), Is.LessThan(0.5f), "nothing in the way: straight ahead");
+
+        // A model loaded afterwards, right in front: the panel steps aside (it wasn't moved).
+        root.position = head.position + new Vector3(0f, -0.4f, 1.2f);
+        Call(caden, "Update"); // Finds the service and subscribes.
+        svc.ReplaceImportedModel(root, t.ToDictionary(kv => kv.Key, kv => kv.Value.gameObject));
+        AssertCadenClearOfModel(go.transform, "after the model loaded");
+    }
+
+    // The CADEN panel's horizontal extent (seen from the head) doesn't overlap the model's.
+    private void AssertCadenClearOfModel(Transform caden, string when)
+    {
+        Assert.That(svc.TryGetModelBounds(out Bounds model), Is.True);
+        Vector3 forward = Vector3.ProjectOnPlane(caden.position - head.position, Vector3.up).normalized;
+        float min = float.PositiveInfinity, max = float.NegativeInfinity;
+        for (int i = 0; i < 8; i++)
+        {
+            Vector3 corner = model.center + Vector3.Scale(model.extents,
+                new Vector3((i & 1) == 0 ? -1 : 1, (i & 2) == 0 ? -1 : 1, (i & 4) == 0 ? -1 : 1));
+            float angle = Vector3.SignedAngle(forward, Vector3.ProjectOnPlane(corner - head.position, Vector3.up), Vector3.up);
+            min = Mathf.Min(min, angle);
+            max = Mathf.Max(max, angle);
+        }
+        float distance = Vector3.ProjectOnPlane(caden.position - head.position, Vector3.up).magnitude;
+        float half = Mathf.Atan2((720f / 2 + CADMenuPanel.BorderWidth) * CADMenuPanel.CanvasScale, distance) * Mathf.Rad2Deg;
+        Assert.That(max < -half || min > half, Is.True, $"{when}: the panel covers the model ({min:F1}..{max:F1} vs ±{half:F1})");
     }
 
     // ================= CADEN hand voice =================

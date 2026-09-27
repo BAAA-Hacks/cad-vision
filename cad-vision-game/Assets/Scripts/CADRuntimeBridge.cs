@@ -35,8 +35,10 @@ public class CADRuntimeBridge : MonoBehaviour
     [SerializeField] private bool placeInFrontOfUser = true;
     [Tooltip("Gap between the eyes and the model's near side (m).")]
     [SerializeField, Min(0.2f)] private float placementGap = 0.8f;
+    // Renamed from placementDrop so the scene's old value (0.2 m, too low) doesn't override the
+    // new default.
     [Tooltip("Model center below eye level (m).")]
-    [SerializeField] private float placementDrop = 0.2f;
+    [SerializeField] private float modelBelowEye = 0.08f;
     [Tooltip("Longest wait for head tracking before placing anyway (s).")]
     [SerializeField, Min(0f)] private float headTrackingTimeout = 5f;
     [Tooltip("When the user recenters the view, bring the model (and its reset pose) along to the new view.")]
@@ -172,7 +174,7 @@ public class CADRuntimeBridge : MonoBehaviour
                 if (!TryGetTrackedHead(out Transform head) && !timedOut)
                     return; // Retried every frame from Update.
 
-                if (head != null && PlaceInFront(root.transform, head, placementGap, placementDrop))
+                if (head != null && PlaceInFront(root.transform, head, placementGap, modelBelowEye))
                     Debug.Log($"[CADRuntimeBridge] Placed model in front of the user" +
                         $"{(timedOut ? " (head tracking not confirmed)" : "")}.");
             }
@@ -261,7 +263,7 @@ public class CADRuntimeBridge : MonoBehaviour
 
         if (!hasHomeFrame)
         {
-            PlaceInFront(root, head, placementGap, placementDrop);
+            PlaceInFront(root, head, placementGap, modelBelowEye);
             manipulationService.SetModelHomePose(root.position, root.rotation);
         }
         else

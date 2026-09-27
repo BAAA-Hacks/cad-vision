@@ -33,7 +33,7 @@ public sealed class CadenPanel : MonoBehaviour
     // 0.8–1.5 m and never closer than CADMenuPanel.MinMenuDistance), a little below eye level.
     // It grows out of the logo.
     [SerializeField, Range(0.8f, 1.5f)] private float expandedDistance = 1.1f;
-    [SerializeField] private float expandedDrop = 0.08f;
+    [SerializeField] private float expandedDrop = 0.02f;
     private Vector3 expandedPosition;
     private Quaternion expandedRotation = Quaternion.identity;
     // Logo feedback: glow while speaking, spin-and-settle cycles while thinking.
@@ -89,6 +89,8 @@ public sealed class CadenPanel : MonoBehaviour
     private float size = 1f;
     private CADPointerInteraction pointer;
     private CADUISettings settings;
+    private CADVisionManipulationService modelService; // Where the model is (the panel opens beside it).
+    private CADVisionManipulationService subscribedService;
 
     private bool IsShowing => canvasRect != null && canvasRect.gameObject.activeSelf;
     private bool CadenOn
@@ -244,6 +246,13 @@ public sealed class CadenPanel : MonoBehaviour
         if (IsShowing != visible) SetVisible(visible);
         if (pointer == null) pointer = FindAnyObjectByType<CADPointerInteraction>();
         frame.EnableBorderDrag(pointer);
+        if (modelService == null) modelService = FindAnyObjectByType<CADVisionManipulationService>();
+        if (modelService != null && subscribedService != modelService)
+        {
+            if (subscribedService != null) subscribedService.ModelReplaced -= OnModelReplaced;
+            subscribedService = modelService;
+            subscribedService.ModelReplaced += OnModelReplaced;
+        }
         AnimateMinimize();
         if (Time.unscaledTime < nextContextUpdate) return;
         nextContextUpdate = Time.unscaledTime + 0.5f;
@@ -481,10 +490,50 @@ public sealed class CadenPanel : MonoBehaviour
     {
         var forward = Vector3.ProjectOnPlane(viewer.forward, Vector3.up).normalized;
         if (forward.sqrMagnitude < 0.01f) forward = Vector3.forward;
-        // Like the Main Menu: centered in front of the user, a little below eye level, facing them.
+        // Like the Main Menu: in front of the user, a little below eye level, facing them; turned
+        // to the side of the model if straight ahead would cover it.
         float distance = Mathf.Max(Mathf.Clamp(expandedDistance, 0.8f, 1.5f), CADMenuPanel.MinMenuDistance);
-        expandedPosition = viewer.position + forward * distance + Vector3.down * expandedDrop;
+        float yaw = YawBesideModel(forward, distance);
+        var direction = Quaternion.AngleAxis(yaw, Vector3.up) * forward;
+        expandedPosition = viewer.position + direction * distance + Vector3.down * expandedDrop;
         expandedRotation = Quaternion.LookRotation(expandedPosition - viewer.position, Vector3.up);
+    }
+
+    private const float ModelClearance = 4f; // Degrees between the panel and the model.
+    private const float MaxSideYaw = 70f;
+
+    // Horizontal angle (degrees from forward) for the panel's center: 0 unless the model's visible
+    // bounds, seen from the head, overlap the panel there; then just past the model's nearer edge.
+    private float YawBesideModel(Vector3 forward, float distance)
+    {
+        if (modelService == null) modelService = FindAnyObjectByType<CADVisionManipulationService>();
+        if (modelService == null || !modelService.TryGetModelBounds(out Bounds bounds)) return 0;
+
+        float min = float.PositiveInfinity, max = float.NegativeInfinity;
+        Vector3 c = bounds.center, e = bounds.extents;
+        for (int i = 0; i < 8; i++)
+        {
+            var corner = c + Vector3.Scale(e, new Vector3((i & 1) == 0 ? -1 : 1, (i & 2) == 0 ? -1 : 1, (i & 4) == 0 ? -1 : 1));
+            var flat = Vector3.ProjectOnPlane(corner - viewer.position, Vector3.up);
+            if (Vector3.Dot(flat, forward) <= 0.05f) return 0; // Around or behind the user: nothing to avoid ahead.
+            float angle = Vector3.SignedAngle(forward, flat, Vector3.up);
+            min = Mathf.Min(min, angle); max = Mathf.Max(max, angle);
+        }
+
+        float halfWidth = (W / 2 + CADMenuPanel.BorderWidth) * Scale * size;
+        float half = Mathf.Atan2(halfWidth, distance) * Mathf.Rad2Deg + ModelClearance;
+        if (max < -half || min > half) return 0; // Straight ahead is clear.
+        float left = min - half, right = max + half;
+        float yaw = Mathf.Abs(left) <= Mathf.Abs(right) ? left : right;
+        return Mathf.Clamp(yaw, -MaxSideYaw, MaxSideYaw);
+    }
+
+    // A model was loaded after the panel opened: step aside again, unless the user placed it.
+    private void OnModelReplaced()
+    {
+        if (!positioned || viewer == null || minimized || openness < 1 || frame.WasMoved) return;
+        PlaceAtLogo();
+        transform.SetPositionAndRotation(expandedPosition, expandedRotation);
     }
 
     // Blends between the panel's world pose and the head-pinned pose that puts the logo top-left.
@@ -639,6 +688,7 @@ public sealed class CadenPanel : MonoBehaviour
     private void OnDestroy()
     {
         generation++; if (host != null) { host.Changed -= ResetConversation; host.Feedback -= ShowFeedback; }
+        if (subscribedService != null) subscribedService.ModelReplaced -= OnModelReplaced;
         frame?.DisableBorderDrag();
         if (rounded != null) Destroy(rounded); if (roundedTexture != null) Destroy(roundedTexture);
         if (circle != null) Destroy(circle); if (circleTexture != null) Destroy(circleTexture);
