@@ -143,9 +143,14 @@ public partial class CADVisionManipulationService
         DetachAndOffset(targets.ToDictionary(id => id, _ => right * distance));
     }
 
+    private const float ExplodeMaxOffset = 2f, ExplodeGrowth = 1.2f, ExplodeOverlapMargin = 0.001f;
+    private const int ExplodeMaxPasses = 40;
+
     /// <summary>
     /// Explodes targets apart: each moves away from their shared barycenter (mean geometry centre), its
-    /// distance from it scaled by 1 + spread. A target sitting on the barycenter is detached but stays put.
+    /// distance from it scaled by 1 + spread. Parts whose bounds still overlap another's afterwards (a tail
+    /// inside a long body) keep moving further out along their own direction until clear or at the 2 m cap.
+    /// A target sitting on the barycenter is detached but stays put; the parts around it move instead.
     /// </summary>
     public void ExplodeCaden(IEnumerable<string> ids, float spread)
     {
@@ -153,14 +158,53 @@ public partial class CADVisionManipulationService
         // Already detached objects keep their pose; with fewer than two left there is nothing to separate.
         var targets = CadenTopmost(ids).Where(id => !IsDetached(id)).ToArray();
         if (targets.Length < 2) return;
-        var centers = targets.ToDictionary(id => id, id => CadenBounds(CadenDetachable(id).Part).center);
-        var barycenter = centers.Values.Aggregate(Vector3.zero, (sum, center) => sum + center) / centers.Count;
-        var offsets = centers.ToDictionary(pair => pair.Key, pair => (pair.Value - barycenter) * spread);
-        foreach (var offset in offsets.Values)
-            if (!float.IsFinite(offset.x) || !float.IsFinite(offset.y) || !float.IsFinite(offset.z) || offset.magnitude > 2f)
+        var bounds = targets.ToDictionary(id => id, id => CadenBounds(CadenDetachable(id).Part));
+        var barycenter = bounds.Values.Aggregate(Vector3.zero, (sum, b) => sum + b.center) / bounds.Count;
+        var directions = bounds.ToDictionary(pair => pair.Key, pair => pair.Value.center - barycenter);
+        var factors = targets.ToDictionary(id => id, _ => spread);
+        Vector3 Offset(string id) => directions[id] * factors[id];
+        foreach (var id in targets)
+        {
+            var offset = Offset(id);
+            if (!float.IsFinite(offset.x) || !float.IsFinite(offset.y) || !float.IsFinite(offset.z) || offset.magnitude > ExplodeMaxOffset)
                 throw new InvalidOperationException("Explode offset would exceed two world metres; lower spread or reduce model review scale first.");
-        DetachAndOffset(offsets);
+        }
+
+        // A part on the barycenter has no direction to move in, and none may pass the cap.
+        bool CanGrow(string id) => directions[id].sqrMagnitude > 1e-10f && (Offset(id) * ExplodeGrowth).magnitude <= ExplodeMaxOffset;
+        for (int pass = 0; pass < ExplodeMaxPasses; pass++)
+        {
+            var grow = new HashSet<string>(StringComparer.Ordinal);
+            for (int i = 0; i < targets.Length; i++)
+                for (int j = i + 1; j < targets.Length; j++)
+                {
+                    string a = targets[i], b = targets[j];
+                    if (!Overlaps(Shifted(bounds[a], Offset(a)), Shifted(bounds[b], Offset(b)))) continue;
+                    // Push the smaller (covered) part further out. Growing both would never separate
+                    // parts that share a direction, such as a shaft centred in its sleeve.
+                    bool aSmaller = bounds[a].size.sqrMagnitude <= bounds[b].size.sqrMagnitude;
+                    string small = aSmaller ? a : b, large = aSmaller ? b : a;
+                    // Only a push that moves a part away from the other one helps; otherwise it would tunnel through.
+                    var apart = bounds[small].center + Offset(small) - (bounds[large].center + Offset(large));
+                    bool smallHelps = CanGrow(small) && Vector3.Dot(directions[small], apart) > 0;
+                    bool largeHelps = CanGrow(large) && Vector3.Dot(directions[large], -apart) > 0;
+                    if (smallHelps) grow.Add(small);
+                    else if (largeHelps) grow.Add(large);
+                    else if (CanGrow(small)) grow.Add(small);
+                    else if (CanGrow(large)) grow.Add(large);
+                }
+            if (grow.Count == 0) break;
+            foreach (var id in grow) factors[id] *= ExplodeGrowth;
+        }
+        DetachAndOffset(targets.ToDictionary(id => id, Offset));
     }
+
+    private static Bounds Shifted(Bounds bounds, Vector3 offset) => new Bounds(bounds.center + offset, bounds.size);
+    // Touching faces don't count; parts must actually intersect to obstruct each other.
+    private static bool Overlaps(Bounds a, Bounds b) =>
+        a.min.x < b.max.x - ExplodeOverlapMargin && b.min.x < a.max.x - ExplodeOverlapMargin &&
+        a.min.y < b.max.y - ExplodeOverlapMargin && b.min.y < a.max.y - ExplodeOverlapMargin &&
+        a.min.z < b.max.z - ExplodeOverlapMargin && b.min.z < a.max.z - ExplodeOverlapMargin;
 
     private (CADObject Part, CADObject Parent) CadenDetachable(string id)
     {

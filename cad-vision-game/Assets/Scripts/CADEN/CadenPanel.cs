@@ -350,7 +350,7 @@ public sealed class CadenPanel : MonoBehaviour
         input.targetGraphic = field; input.lineType = InputField.LineType.MultiLineNewline; input.characterLimit = 4000;
         var value = Label("Input", field.rectTransform, 22, 12, 520, 65, "", 22, Color.white);
         value.supportRichText = false;
-        var placeholder = Label("Placeholder", field.rectTransform, 22, 12, 520, 65, "Ask about your design…", 22, Muted);
+        var placeholder = Label("Placeholder", field.rectTransform, 22, 12, 520, 65, "Press Y to talk to me! Ask me anything!", 22, Muted);
         input.textComponent = value; input.placeholder = placeholder;
         input.onValueChanged.AddListener(_ => send.interactable = !busy && host.Session != null && !string.IsNullOrWhiteSpace(input.text));
         status = Label("Status", p, 30, 730, 435, 25, "Connect CADEN to begin", 17, Muted);
