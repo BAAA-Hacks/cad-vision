@@ -15,8 +15,12 @@ using UnityEngine.UI;
 ///   just inside the window, and extra grab regions (e.g. a title bar); never a button or other
 ///   control;
 /// - drag: a semantic pointer (CADPointerInteraction.UiPressed: controller trigger or hand
-///   pinch) pressing a grab point moves the window's root rigidly with that pointer until it
-///   releases or loses tracking;
+///   pinch) pressing a grab point moves the window's root with that pointer until it releases
+///   or loses tracking, the same way CAD objects move (CADGrabSession: rigid pickup, and
+///   beyond ReachDistance pushing/pulling along the ray is amplified, so a small flick sends
+///   the window away or reels it in; sideways and up/down stay 1:1). Gentler than objects
+///   (windows sit about 1 m away, so the boost is always on), and the window stays between
+///   MinDistance and MaxDistance from the head;
 /// - glow: while a ray hovers a grab point (or drags), the part of the border nearest the ray
 ///   lights up.
 ///
@@ -41,9 +45,19 @@ public sealed class CADWindowFrame
 
     private CADPointerInteraction dragPointer;
     private ICADPointerSource dragSource;
-    private Vector3 dragPositionOffset;
-    private Quaternion dragRotationOffset;
+    private readonly CADGrabSession dragSession = new CADGrabSession(); // Same math as CAD objects.
     private Vector3 spotPoint;
+
+    /// <summary>Hold distance (m, pointer to grabbed point) beyond which push/pull is amplified.</summary>
+    public float ReachDistance = 0.7f;
+    /// <summary>Largest extra push/pull gain (1 = at most 2× the hand's depth movement).</summary>
+    public float MaxExtraGain = 1f;
+    /// <summary>How quickly the gain rises beyond reach (per metre).</summary>
+    public float DecayRate = 1.5f;
+    /// <summary>Closest a dragged window comes to the head (m).</summary>
+    public float MinDistance = 0.4f;
+    /// <summary>Farthest a dragged window goes from the head (m).</summary>
+    public float MaxDistance = 3f;
 
     /// <summary>Padding strip just inside the window that also grabs (canvas units).</summary>
     public float InnerGrabInset = CADMenuPanel.Padding - 2f;
@@ -188,15 +202,15 @@ public sealed class CADWindowFrame
     private void OnUiPressed(ICADPointerSource source, Vector3 hitPoint)
     {
         if (canInteract() && dragSource == null && IsGrabPoint(hitPoint))
-            BeginDrag(source);
+            BeginDrag(source, hitPoint);
     }
 
-    private void BeginDrag(ICADPointerSource source)
+    private void BeginDrag(ICADPointerSource source, Vector3 hitPoint)
     {
-        Pose pose = source.Pose;
-        Quaternion inverse = Quaternion.Inverse(pose.rotation);
-        dragPositionOffset = inverse * (root.position - pose.position);
-        dragRotationOffset = inverse * root.rotation;
+        dragSession.ReachDistance = ReachDistance;
+        dragSession.MaxExtraGain = MaxExtraGain;
+        dragSession.DecayRate = DecayRate;
+        dragSession.BeginStandalone(root, source.Pose, hitPoint); // Held at the pressed point.
         dragSource = source;
         DragStarted?.Invoke();
         Debug.Log($"[CADWindowFrame] '{root.name}' moved with {source.SourceId}.");
@@ -219,12 +233,39 @@ public sealed class CADWindowFrame
         }
 
         Pose pose = dragSource.Pose;
-        root.SetPositionAndRotation(pose.position + pose.rotation * dragPositionOffset,
-            pose.rotation * dragRotationOffset);
+        if (!dragSession.Update(pose))
+        {
+            EndDrag();
+            return;
+        }
+        KeepWithinReach(pose);
         WasMoved = true;
     }
 
-    public void EndDrag() => dragSource = null;
+    // Never closer than MinDistance nor farther than MaxDistance from the head (along the line
+    // from the head); the pickup then continues from the clamped pose.
+    private void KeepWithinReach(Pose pointer)
+    {
+        Camera camera = Camera.main;
+        if (camera == null)
+            return;
+
+        Vector3 head = camera.transform.position;
+        Vector3 fromHead = root.position - head;
+        float distance = fromHead.magnitude;
+        float clamped = Mathf.Clamp(distance, MinDistance, Mathf.Max(MinDistance, MaxDistance));
+        if (distance < 1e-4f || Mathf.Approximately(distance, clamped))
+            return;
+
+        root.position = head + fromHead / distance * clamped;
+        dragSession.Rebase(pointer);
+    }
+
+    public void EndDrag()
+    {
+        dragSource = null;
+        dragSession.End();
+    }
 
     /// <summary>A new placement: forget the hand placement so the owner places the window again.</summary>
     public void ForgetMove() => WasMoved = false;

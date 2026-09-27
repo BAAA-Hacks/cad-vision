@@ -29,9 +29,9 @@ public sealed class CadenPanel : MonoBehaviour
     // Head-space position of the minimized logo; it stays pinned to the top-left of view.
     [SerializeField] private Vector3 minimizedLogoOffset = new Vector3(-0.34f, 0.15f, 0.9f);
     // The opened panel: centered in front of the user, facing them, this far away (clamped to
-    // 0.8–1 m and never closer than CADMenuPanel.MinMenuDistance), a little below eye level. It
-    // grows out of the logo.
-    [SerializeField, Range(0.8f, 1f)] private float expandedDistance = 0.9f;
+    // 0.8–1.5 m and never closer than CADMenuPanel.MinMenuDistance), a little below eye level.
+    // It grows out of the logo.
+    [SerializeField, Range(0.8f, 1.5f)] private float expandedDistance = 1.1f;
     [SerializeField] private float expandedDrop = 0.08f;
     private Vector3 expandedPosition;
     private Quaternion expandedRotation = Quaternion.identity;
@@ -403,7 +403,7 @@ public sealed class CadenPanel : MonoBehaviour
         var forward = Vector3.ProjectOnPlane(viewer.forward, Vector3.up).normalized;
         if (forward.sqrMagnitude < 0.01f) forward = Vector3.forward;
         // Like the Main Menu: centered in front of the user, a little below eye level, facing them.
-        float distance = Mathf.Max(Mathf.Clamp(expandedDistance, 0.8f, 1f), CADMenuPanel.MinMenuDistance);
+        float distance = Mathf.Max(Mathf.Clamp(expandedDistance, 0.8f, 1.5f), CADMenuPanel.MinMenuDistance);
         expandedPosition = viewer.position + forward * distance + Vector3.down * expandedDrop;
         expandedRotation = Quaternion.LookRotation(expandedPosition - viewer.position, Vector3.up);
     }

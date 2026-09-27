@@ -895,6 +895,57 @@ public class CADInteractionPolishTests
             "no move-window button");
     }
 
+    [Test]
+    public void DraggedWindowsPushAndPullLikeObjectsWithinLimits()
+    {
+        menu.Panel.EnableBorderDrag(pointer);
+        svc.EnterScope("A");
+        OpenObjectMenu("P1");
+        Transform panel = PanelOf(menu);
+        Vector3 border = BorderPoint(menu.Panel, left: true);
+        Vector3 held = panel.InverseTransformPoint(border);
+
+        // The pointer well behind the window (hold distance beyond the 0.7 m reach).
+        Vector3 start = head.position + new Vector3(0f, -0.3f, -0.3f);
+        Quaternion aim = Quaternion.LookRotation(border - start);
+        rightController.Pose = new Pose(start, aim);
+        PressUi(rightController, border);
+        Tick();
+        Assert.That(menu.Panel.IsDragging, Is.True);
+        float hold0 = Vector3.Distance(start, border);
+
+        // Pushing 5 cm along the ray moves the window farther than 5 cm, but at most 2x.
+        rightController.Pose = new Pose(start + aim * Vector3.forward * 0.05f, aim);
+        Tick();
+        float growth = Vector3.Distance(rightController.Pose.position, panel.TransformPoint(held)) - hold0;
+        Assert.That(growth, Is.GreaterThan(0.01f), "amplified push beyond reach");
+        Assert.That(growth, Is.LessThanOrEqualTo(0.05f + 1e-4f), "gentler than objects: at most 2x");
+
+        // Sideways stays 1:1 (no amplification).
+        Vector3 before = panel.TransformPoint(held);
+        rightController.Pose = new Pose(rightController.Pose.position + aim * Vector3.right * 0.05f, aim);
+        Tick();
+        Assert.That(Vector3.Distance(panel.TransformPoint(held), before), Is.EqualTo(0.05f).Within(0.005f));
+
+        // Pushing on and on: never farther than 3 m from the head.
+        for (int i = 0; i < 80; i++)
+        {
+            rightController.Pose = new Pose(rightController.Pose.position + aim * Vector3.forward * 0.05f, aim);
+            Tick();
+        }
+        Assert.That(Vector3.Distance(panel.position, head.position), Is.LessThanOrEqualTo(3f + 1e-3f));
+        Assert.That(Vector3.Distance(panel.position, head.position), Is.GreaterThan(2.5f), "it did go far");
+
+        // Pulling back hard: never closer than 0.4 m.
+        for (int i = 0; i < 150; i++)
+        {
+            rightController.Pose = new Pose(rightController.Pose.position - aim * Vector3.forward * 0.05f, aim);
+            Tick();
+        }
+        Assert.That(Vector3.Distance(panel.position, head.position), Is.GreaterThanOrEqualTo(0.4f - 1e-3f));
+        Release(rightController);
+    }
+
     // 13, 14, 15, 16, 17
     [Test]
     public void BorderDragMovesTheMenuAndButtonsNeverDo()
@@ -1807,11 +1858,11 @@ public class CADInteractionPolishTests
             "a button in the header grab region still wins");
         Assert.That(frame.IsGrabPoint(window.TransformPoint(new Vector3(r.xMin + 300f, r.yMax - 50f, 0f))), Is.True, "header grabs");
 
-        // Opens centered in front of the user, 0.8–1 m away, facing them.
+        // Opens centered in front of the user, 1.1 m away, facing them.
         Vector3 offset = go.transform.position - head.position;
         Vector3 flatForward = Vector3.ProjectOnPlane(head.forward, Vector3.up).normalized;
-        Assert.That(Vector3.Dot(Vector3.ProjectOnPlane(offset, Vector3.up), flatForward), Is.InRange(0.8f, 1f));
-        Assert.That(Vector3.ProjectOnPlane(offset, Vector3.up).magnitude, Is.InRange(0.8f, 1f), "centered");
+        Assert.That(Vector3.Dot(Vector3.ProjectOnPlane(offset, Vector3.up), flatForward), Is.EqualTo(1.1f).Within(1e-3f));
+        Assert.That(Vector3.ProjectOnPlane(offset, Vector3.up).magnitude, Is.EqualTo(1.1f).Within(1e-3f), "centered");
         Assert.That(Vector3.Dot(go.transform.forward, offset.normalized), Is.GreaterThan(0.99f), "faces the user");
 
         // The edge glow lights at the cursor (the window's pivot is its logo, not its center).
