@@ -18,7 +18,7 @@ namespace Core.Speech
         {
             if (string.IsNullOrWhiteSpace(apiKey)) throw new ArgumentException("STT_KEY_MISSING: Set ELEVENLABS_API_KEY in this device's CADEN/.env.");
             if (string.IsNullOrWhiteSpace(model)) throw new ArgumentException("STT_MODEL_MISSING: Set ELEVENLABS_STT_MODEL.");
-            ApiKey = apiKey.Trim(); Model = model.Trim();
+            ApiKey = apiKey.Trim(); Model = model.Trim(); Core.Diagnostics.DiagnosticLog.RegisterSecret(ApiKey);
         }
     }
 

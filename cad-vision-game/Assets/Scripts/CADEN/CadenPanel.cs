@@ -21,6 +21,7 @@ public sealed class CadenPanel : MonoBehaviour
     private static readonly Color Cyan = new Color32(42, 220, 219, 255);
     private CadenSessionHost host;
     private RectTransform canvasRect, messages;
+    private RectTransform loadingSpinner;
     private GameObject expanded;
     private Image microphoneFace;
     private GameObject microphoneSlash;
@@ -38,6 +39,9 @@ public sealed class CadenPanel : MonoBehaviour
     private bool busy, positioned, trackingReady;
     private int generation;
     private float nextContextUpdate;
+    private string displayedVoiceError;
+    private bool showingVoiceDraft;
+    private string savedTypedDraft;
     private Transform viewer;
 
     private bool draggingPanel;
@@ -59,7 +63,30 @@ public sealed class CadenPanel : MonoBehaviour
     {
         if (!positioned) return;
         microphonePreview = host.Voice != null && host.Voice.Recording;
-        status.text = (host.IsBusy ? "[" + "|/-\\"[(int)(Time.unscaledTime * 8) % 4] + "] " : "") + (host.Voice != null && host.Voice.Busy ? host.Voice.Status : host.Status);
+        var voice = host.Voice;
+        if (voice != null && voice.Busy)
+        {
+            if (!showingVoiceDraft) { savedTypedDraft = input.text; showingVoiceDraft = true; }
+            input.SetTextWithoutNotify(voice.Transcript);
+        }
+        else if (showingVoiceDraft)
+        {
+            input.SetTextWithoutNotify(savedTypedDraft ?? "");
+            showingVoiceDraft = false;
+        }
+        bool voiceFailed = voice != null && !string.IsNullOrEmpty(voice.LastError);
+        status.text = voice != null && (voice.Busy || voiceFailed) ? voice.Status : host.Status;
+        status.color = voiceFailed ? new Color32(255, 105, 105, 255) : Muted;
+        if (voiceFailed && displayedVoiceError != voice.LastError)
+        {
+            displayedVoiceError = voice.LastError;
+            AddMessage("VOICE ERROR", voice.LastError, false);
+            feedback.text = "Voice failed. See the error above; press Y to retry.";
+        }
+        if (!voiceFailed) displayedVoiceError = null;
+        bool processing = (host.IsBusy && !microphonePreview) || host.Status.StartsWith("Loading", StringComparison.Ordinal);
+        loadingSpinner.gameObject.SetActive(processing);
+        if (processing) loadingSpinner.Rotate(0, 0, -240f * Time.unscaledDeltaTime);
         if (microphoneFace != null)
             microphoneFace.color = microphonePreview
                 ? Color.Lerp(Card, Cyan, 0.5f + 0.5f * Mathf.Sin(Time.unscaledTime * 7f)) : Card;
@@ -202,6 +229,18 @@ public sealed class CadenPanel : MonoBehaviour
         cancel = ActionButton("Stop", p, 530, 732, 162, 58, () => host.Cancel(), 22);
         cancel.gameObject.SetActive(false);
         BuildMicrophone(p);
+        loadingSpinner = Rect("Loading spinner", p, 488, 748, 32, 32);
+        loadingSpinner.pivot = new Vector2(0.5f, 0.5f);
+        for (int i = 0; i < 12; i++)
+        {
+            float angle = i * Mathf.PI * 2 / 12;
+            var dot = Image("Spinner dot", loadingSpinner, 0, 0, 5, 5,
+                new Color(Cyan.r, Cyan.g, Cyan.b, 0.15f + 0.85f * i / 11));
+            dot.sprite = circle; dot.type = UnityEngine.UI.Image.Type.Simple; dot.raycastTarget = false;
+            dot.rectTransform.anchorMin = dot.rectTransform.anchorMax = dot.rectTransform.pivot = new Vector2(0.5f, 0.5f);
+            dot.rectTransform.anchoredPosition = new Vector2(Mathf.Cos(angle), Mathf.Sin(angle)) * 13;
+        }
+        loadingSpinner.gameObject.SetActive(false);
 
         var surfaceObject = new GameObject("CADEN ray surface"); surfaceObject.layer = 2;
         surfaceObject.transform.SetParent(transform, false);
@@ -217,6 +256,7 @@ public sealed class CadenPanel : MonoBehaviour
 
     private void ResetConversation()
     {
+        displayedVoiceError = null;
         generation++;
         foreach (Transform child in messages) { child.gameObject.SetActive(false); Destroy(child.gameObject); }
         AddMessage("CADEN", "Hey, I'm CADEN.\nWhat would you like to know about this assembly?", false);
@@ -317,12 +357,10 @@ public sealed class CadenPanel : MonoBehaviour
             pixels[y * size + x] = new Color(1, 1, 1, Mathf.Clamp01(31.5f - Vector2.Distance(new Vector2(x, y), new Vector2(31.5f, 31.5f))));
         circleTexture.SetPixels(pixels); circleTexture.Apply();
         circle = Sprite.Create(circleTexture, new Rect(0, 0, size, size), new Vector2(0.5f, 0.5f));
-        microphoneFace = Image("Microphone (record / send / cancel)", parent, 28, 634, 64, 64, Card);
+        microphoneFace = Image("Microphone status (use left Y)", parent, 28, 634, 64, 64, Card);
         microphoneFace.sprite = circle; microphoneFace.type = UnityEngine.UI.Image.Type.Simple;
-        var button = microphoneFace.gameObject.AddComponent<Button>();
-        button.targetGraphic = microphoneFace;
-        button.navigation = new Navigation { mode = Navigation.Mode.None };
-        button.onClick.AddListener(() => host.ToggleVoice());
+        // Status indicator only; speech is toggled on left-controller Y button-down.
+        microphoneFace.raycastTarget = false;
         Image("Mic capsule", microphoneFace.transform, 25, 13, 14, 25, Color.white).raycastTarget = false;
         Image("Mic left", microphoneFace.transform, 19, 27, 3, 14, Color.white).raycastTarget = false;
         Image("Mic right", microphoneFace.transform, 42, 27, 3, 14, Color.white).raycastTarget = false;

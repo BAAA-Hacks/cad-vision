@@ -42,7 +42,7 @@ public partial class CADVisionManipulationService
         }
         internal Pose Root;
         internal readonly List<Pose> Poses = new List<Pose>();
-        internal string[] Selected, Detached;
+        internal string[] Selected, Detached, Focused;
         internal string Scope;
         internal bool Multi, Follows;
         public string Fingerprint { get; internal set; }
@@ -55,6 +55,7 @@ public partial class CADVisionManipulationService
             Root = modelRoot == null ? null : new CadenViewBackup.Pose(modelRoot),
             Selected = GetSelectedIds().OrderBy(id => id, StringComparer.Ordinal).ToArray(),
             Detached = detachedIds.OrderBy(id => id, StringComparer.Ordinal).ToArray(),
+            Focused = FocusIds.OrderBy(id => id, StringComparer.Ordinal).ToArray(),
             Scope = CurrentScopeId, Multi = IsMultiSelectActive, Follows = viewFollowsScope
         };
         using var bytes = new MemoryStream();
@@ -63,6 +64,7 @@ public partial class CADVisionManipulationService
             writer.Write(state.Scope ?? ""); writer.Write(state.Multi); writer.Write(state.Follows);
             writer.Write(state.Selected.Length); foreach (var id in state.Selected) writer.Write(id);
             writer.Write(state.Detached.Length); foreach (var id in state.Detached) writer.Write(id);
+            writer.Write(state.Focused.Length); foreach (var id in state.Focused) writer.Write(id);
             state.Root?.Write(writer);
             foreach (var id in ids)
             {
@@ -85,6 +87,7 @@ public partial class CADVisionManipulationService
         foreach (var id in state.Selected) AddToSelection(id);
         if (state.Multi) BeginMultiSelect(); else EndMultiSelect();
         viewFollowsScope = state.Follows;
+        Focus(state.Focused);
     }
 
     public void SetCadenIsolation(IEnumerable<string> visibleIds, IEnumerable<string> cadIds)

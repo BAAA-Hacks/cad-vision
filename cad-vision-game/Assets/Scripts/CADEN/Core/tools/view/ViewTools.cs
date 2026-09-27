@@ -19,7 +19,7 @@ namespace Core.Tools.View
     public static class ViewTools
     {
         public static readonly IReadOnlyList<string> Names = Array.AsReadOnly(new[] {
-            "get_view_state", "select_objects", "clear_selection", "isolate_objects", "clear_isolation",
+            "get_view_state", "select_objects", "clear_selection", "focus_objects", "clear_focus",
             "hide_objects", "show_objects", "detach_for_inspection", "reattach_objects", "reset_objects", "reset_view" });
         public static IEnumerable<ICadenTool> Create(IViewHost host) => Names.Select(name => name == "get_view_state"
             ? (ICadenTool)new ViewRead(host) : new ViewAction(host, name));
@@ -43,7 +43,7 @@ namespace Core.Tools.View
                         properties["expectedRevision"] = new JObject { ["type"] = "integer", ["minimum"] = 0 };
                         required.Add("operationId"); required.Add("viewSessionId"); required.Add("expectedRevision");
                     }
-                    if (new[] { "select_objects", "isolate_objects", "hide_objects", "show_objects", "reattach_objects", "reset_objects" }.Contains(Name))
+                    if (new[] { "select_objects", "focus_objects", "hide_objects", "show_objects", "reattach_objects", "reset_objects" }.Contains(Name))
                     {
                         properties["objectIds"] = new JObject { ["type"] = "array", ["items"] = Text(), ["minItems"] = 1, ["maxItems"] = 64 };
                         required.Add("objectIds");
@@ -56,8 +56,8 @@ namespace Core.Tools.View
                         "get_view_state" => "Read live selected IDs, interaction scope, detach state, viewSessionId and view revision. Visibility readback is unavailable. Selection does not limit explicit-name queries.",
                         "select_objects" => "Select exact IDs using replace/add/remove. Changes user selection; replace is blocked during multi-select picking.",
                         "clear_selection" => "Clear the user's selection. Blocked during multi-select picking.",
-                        "isolate_objects" => "Show only exact target objects and logical descendants, including detached descendants; preserve selection and interaction scope.",
-                        "clear_isolation" => "Show all imported CAD objects, also clearing explicit hides. Preserve selection, poses and interaction scope.",
+                        "focus_objects" => "Use the Unity menu Focus operation: emphasize targets and logical descendants, ghost/dim other parts without hiding them. Use for focus, isolate, only show, or show just. Preserve visibility, selection, poses and query/interaction scope.",
+                        "clear_focus" => "Clear the Unity menu Focus effect, restoring normal appearance. Preserve explicit hides, selection, poses and scope; this does not unhide objects.",
                         "hide_objects" => "Hide exact objects and their logical descendants, including detached members.",
                         "show_objects" => "Unhide exact objects and logical descendants, restoring necessary hidden ancestors. Other hidden branches stay hidden.",
                         "detach_for_inspection" => "Temporarily detach one part or subassembly and place it to the viewer's right using geometry bounds. Already detached is a no-op. Does not change CAD mates or engineering metadata.",

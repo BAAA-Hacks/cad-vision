@@ -19,6 +19,7 @@ public sealed class StreamingSpeechTurn
     private readonly Queue<(string Text, CancellationToken Token)> queue = new Queue<(string, CancellationToken)>();
     private readonly SemaphoreSlim wake = new SemaphoreSlim(0);
     private readonly Action<Exception> report;
+    private readonly Func<string, CancellationToken, Task>? streamAndPlay;
     private CancellationTokenSource? round;
     private SpeechTextBuffer buffer = new();
     private string received = "";
@@ -27,9 +28,10 @@ public sealed class StreamingSpeechTurn
     public Task Completion { get; }
 
     public StreamingSpeechTurn(ISpeechClient client, Func<byte[], CancellationToken, Task> play,
-        Action<Exception> report, CancellationToken cancellation)
+        Action<Exception> report, CancellationToken cancellation, Func<string, CancellationToken, Task>? streamAndPlay = null)
     {
         this.report = report;
+        this.streamAndPlay = streamAndPlay;
         stopped = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
         Completion = RunAsync(client, play);
     }
@@ -98,9 +100,13 @@ public sealed class StreamingSpeechTurn
                 try
                 {
                     item.Token.ThrowIfCancellationRequested();
-                    var pcm = await client.SynthesizeAsync(item.Text, item.Token);
-                    item.Token.ThrowIfCancellationRequested();
-                    await play(pcm, item.Token);
+                    if (streamAndPlay != null) await streamAndPlay(item.Text, item.Token);
+                    else
+                    {
+                        var pcm = await client.SynthesizeAsync(item.Text, item.Token);
+                        item.Token.ThrowIfCancellationRequested();
+                        await play(pcm, item.Token);
+                    }
                 }
                 catch (OperationCanceledException) when (item.Token.IsCancellationRequested) { }
             }

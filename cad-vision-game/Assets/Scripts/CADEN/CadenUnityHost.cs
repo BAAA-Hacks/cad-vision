@@ -176,7 +176,8 @@ namespace CADEN.Unity
             var pending = CancellationTokenSource.CreateLinkedTokenSource(modelLifetime.Token);
             turn = pending;
             var voice = speech == null ? null : new StreamingSpeechTurn(speech, PlayPcmAsync,
-                ex => mainContext.Post(_ => { if (this != null) Report(ex, "unity.speech"); }, null), pending.Token);
+                ex => mainContext.Post(_ => { if (this != null) Report(ex, "unity.speech"); }, null), pending.Token,
+                speech is IStreamingSpeechClient streaming ? (text, token) => StreamPcmAsync(streaming, text, token) : null);
             speaking = voice;
             SetStatus("CADEN is thinking");
             try
@@ -226,6 +227,50 @@ namespace CADEN.Unity
                 while (audioSource != null && audioSource.isPlaying) { token.ThrowIfCancellationRequested(); await Task.Delay(20, token); }
             }
             finally { if (audioSource != null) { audioSource.Stop(); audioSource.clip = null; } if (clip != null) Destroy(clip); audioGate.Release(); }
+        }
+        private async Task StreamPcmAsync(IStreamingSpeechClient client, string text, CancellationToken token)
+        {
+            await audioGate.WaitAsync(token);
+            using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(token);
+            var fifo = new PcmStreamBuffer();
+            AudioClip clip = null;
+            Task download = null;
+            try
+            {
+                async Task Produce()
+                {
+                    await client.StreamAsync(text, fifo.AppendAsync, lifetime.Token).ConfigureAwait(false);
+                    fifo.Complete();
+                }
+                download = Produce();
+                // Start after 500ms (12,000 samples at 24kHz), or immediately for a completed shorter utterance.
+                while (fifo.Count < 12000 && !download.IsCompleted) await Task.Delay(10, lifetime.Token);
+                if (download.IsCompleted) await download;
+                token.ThrowIfCancellationRequested();
+                if (this == null || audioSource == null) throw new OperationCanceledException();
+                const int clipSamples = 1024;
+                clip = AudioClip.Create("CADEN streaming speech", clipSamples, 1, 24000, true, fifo.Read);
+                audioSource.clip = clip; audioSource.loop = true; audioSource.Play();
+                while (!fifo.Drained)
+                {
+                    token.ThrowIfCancellationRequested();
+                    if (download.IsCompleted) await download;
+                    await Task.Delay(10, lifetime.Token);
+                }
+                await download;
+                // The audio callback can consume ahead of the physical speaker. Drain Unity's DSP queue.
+                AudioSettings.GetDSPBufferSize(out int length, out int buffers);
+                double end = AudioSettings.dspTime + (double)length * buffers / AudioSettings.outputSampleRate + (double)clipSamples / 24000 + 0.03;
+                while (AudioSettings.dspTime < end) await Task.Delay(10, lifetime.Token);
+            }
+            finally
+            {
+                lifetime.Cancel();
+                if (audioSource != null) { audioSource.Stop(); audioSource.loop = false; audioSource.clip = null; }
+                if (clip != null) Destroy(clip);
+                if (download != null) { try { await download; } catch { /* Original failure/cancellation is reported by the speech queue. */ } }
+                audioGate.Release();
+            }
         }
         private DiagnosticReceipt Report(Exception ex, string operation)
         { var receipt = DiagnosticLog.Report(ex, operation); Debug.LogError(receipt.UserMessage); ErrorReceived.Invoke(receipt.UserMessage); return receipt; }
