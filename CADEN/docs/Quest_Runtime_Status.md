@@ -1,3 +1,5 @@
+> Current UI: the large runtime/status/test panel has been removed. Only the chat-log viewer remains, hidden initially. Click the left thumbstick to view logs. Y starts/stops recording, or cancels while processing. Older UI instructions below describe the previous diagnostic panel.
+
 # Quest runtime status
 
 The CADEN status panel is created automatically in the running game, including Android builds. It shows platform/build identity, CADEN readiness, the imported metadata's root name/ID and revision, mapped object count, receiver status, and configuration location. It does not display credentials. Status/reload make no paid API calls. The **Test Gemini: model name + identity** button sends exactly "What is the name of this CAD model, and who are you?" through the normal chat pipeline and displays the response or error. It requires CADEN ready and is disabled during a request; configured ElevenLabs speech may also play.
