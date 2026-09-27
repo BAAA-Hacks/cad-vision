@@ -51,10 +51,7 @@ public partial class CADVisionManipulationService
         var resized = new List<CADObject>();
         foreach (CADObject cadObject in objects.Values)
         {
-            if (cadObject == null)
-                continue;
-            Vector3 original = OriginalScaleUnderCurrentParent(cadObject);
-            if ((cadObject.transform.localScale - original).sqrMagnitude > 1e-8f * Mathf.Max(original.sqrMagnitude, 1e-12f))
+            if (cadObject != null && IsResized(cadObject))
                 resized.Add(cadObject);
         }
 
@@ -63,6 +60,15 @@ public partial class CADVisionManipulationService
             ResetObjectScale(cadObject.id);
         ResetModelScale();
         Debug.Log($"Reset all sizes: {resized.Count} object(s) and the model.");
+    }
+
+    /// <summary>True if the object itself was resized (its own scale differs from the original).</summary>
+    public bool IsResized(string id) => TryGetLiveObject(id, out CADObject cadObject) && IsResized(cadObject);
+
+    private static bool IsResized(CADObject cadObject)
+    {
+        Vector3 original = OriginalScaleUnderCurrentParent(cadObject);
+        return (cadObject.transform.localScale - original).sqrMagnitude > 1e-8f * Mathf.Max(original.sqrMagnitude, 1e-12f);
     }
 
     private static int Depth(Transform transform)

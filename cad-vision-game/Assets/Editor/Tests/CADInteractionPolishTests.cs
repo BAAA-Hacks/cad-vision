@@ -114,6 +114,7 @@ public class CADInteractionPolishTests
     [TearDown]
     public void TearDown()
     {
+        Call(pointer, "OnDestroy"); // The gesture readout.
         Call(display, "OnDestroy");
         Call(outline, "OnDestroy");
         foreach (object owner in new object[] { menu, mainMenu })
@@ -1048,8 +1049,13 @@ public class CADInteractionPolishTests
         Assert.That(panel.IsGrabPoint(EdgePoint(panel, top: false)), Is.True, $"{what}: bottom border grabs");
         Assert.That(panel.IsGrabPoint(button.transform.position), Is.False, $"{what}: buttons win");
         var box = panel.Root.GetComponentInChildren<BoxCollider>();
-        Assert.That(box.size.x, Is.EqualTo((panel.Width + 2 * CADMenuPanel.BorderWidth) * CADMenuPanel.CanvasScale).Within(1e-5f),
-            $"{what}: the ray surface covers the border");
+        Assert.That(box.size.x, Is.EqualTo((panel.Width + 2 * (CADMenuPanel.BorderWidth + 2f + CADMenuPanel.GrabMargin))
+            * CADMenuPanel.CanvasScale).Within(1e-5f), $"{what}: the ray surface covers the border and the margin outside");
+        foreach (bool left in new[] { true, false })
+            Assert.That(panel.IsGrabPoint(OutsidePoint(panel, left, CADMenuPanel.GrabMargin - 2f)), Is.True,
+                $"{what}: just outside the visible edge still grabs");
+        Assert.That(panel.IsGrabPoint(OutsidePoint(panel, true, CADMenuPanel.GrabMargin + 10f)), Is.False,
+            $"{what}: well outside does not");
     }
 
     private static RectTransform CanvasOf(CADMenuPanel panel) => (RectTransform)panel.Root.transform.Find("Canvas");
@@ -1061,6 +1067,15 @@ public class CADInteractionPolishTests
         Rect r = canvas.rect;
         float x = left ? r.xMin - CADMenuPanel.BorderWidth * 0.5f : r.xMax + CADMenuPanel.BorderWidth * 0.5f;
         return canvas.TransformPoint(new Vector3(x, r.center.y, 0f));
+    }
+
+    // Beyond the visible left/right edge (border line included) by distance canvas units.
+    private static Vector3 OutsidePoint(CADMenuPanel panel, bool left, float distance)
+    {
+        RectTransform canvas = CanvasOf(panel);
+        Rect r = canvas.rect;
+        float edge = CADMenuPanel.BorderWidth + 2f + distance;
+        return canvas.TransformPoint(new Vector3(left ? r.xMin - edge : r.xMax + edge, r.center.y, 0f));
     }
 
     private static Vector3 EdgePoint(CADMenuPanel panel, bool top)
@@ -1667,6 +1682,100 @@ public class CADInteractionPolishTests
 
     private static void Hide(CADContextMenu contextMenu) =>
         typeof(CADContextMenu).GetMethod("Hide", Any).Invoke(contextMenu, new object[] { "test" });
+
+    // ================= Two-pointer rotation =================
+
+    [Test]
+    public void TwoPointersRotateAroundThePivotWithoutResizing()
+    {
+        svc.EnterScope("A");
+        StartDrag(rightController, "P1");
+        var session = (CADGrabSession)Get(pointer, "session");
+        Vector3 scale0 = t["P1"].localScale;
+        Quaternion rotation0 = t["P1"].rotation;
+        Vector3 c = rightController.Pose.position;
+        var arm = new Vector3(0.3f, 0f, 0f);
+
+        Aim(leftController, "P1");
+        Press(leftController, c + arm);
+        Assert.That(pointer.IsScaling, Is.True);
+        Vector3 pivot = session.GrabPointWorld;
+
+        MoveTo(leftController, c + Quaternion.Euler(0f, 4f, 0f) * arm, 0.02f);
+        Assert.That(Quaternion.Angle(t["P1"].rotation, rotation0), Is.LessThan(1e-3f), "4°: inside the dead zone");
+
+        MoveTo(leftController, c + Quaternion.Euler(0f, 40f, 0f) * arm, 0.02f);
+        Assert.That(Quaternion.Angle(t["P1"].rotation, rotation0), Is.EqualTo(40f).Within(0.01f), "exact past the dead zone");
+        Assert.That(Vector3.Distance(t["P1"].localScale, scale0), Is.LessThan(1e-5f), "turning doesn't resize");
+        Assert.That(Vector3.Distance(session.GrabPointWorld, pivot), Is.LessThan(Eps), "around the pivot");
+        var readout = (CADGestureReadout)Get(pointer, "readout");
+        Assert.That(readout.IsShowing, Is.True);
+        Assert.That(readout.Text, Is.EqualTo("40°"));
+
+        MoveTo(leftController, c + Quaternion.Euler(0f, 40f, 0f) * (arm * 1.03f), 0.02f);
+        Assert.That(Vector3.Distance(t["P1"].localScale, scale0), Is.LessThan(1e-5f), "3% stretch: inside the dead zone");
+
+        MoveTo(leftController, c + Quaternion.Euler(0f, 40f, 0f) * (arm * 2f), 0.02f);
+        Assert.That(t["P1"].localScale.x, Is.EqualTo(scale0.x * 2f).Within(1e-4f), "both at once");
+        Assert.That(Quaternion.Angle(t["P1"].rotation, rotation0), Is.EqualTo(40f).Within(0.01f));
+        Assert.That(readout.Text, Is.EqualTo("×2.00   40°"));
+
+        Release(leftController);
+        Assert.That(readout.IsShowing, Is.False);
+    }
+
+    [Test]
+    public void TwoHandRotationCanBeSwitchedOff()
+    {
+        typeof(CADPointerInteraction).GetField("twoPointerRotation", Any).SetValue(pointer, false);
+        Call(pointer, "ApplySettings");
+        svc.EnterScope("A");
+        StartDrag(rightController, "P1");
+        Quaternion rotation0 = t["P1"].rotation;
+        Vector3 c = rightController.Pose.position;
+        Aim(leftController, "P1");
+        Press(leftController, c + new Vector3(0.3f, 0f, 0f));
+        MoveTo(leftController, c + Quaternion.Euler(0f, 40f, 0f) * new Vector3(0.3f, 0f, 0f), 0.02f);
+        Assert.That(Quaternion.Angle(t["P1"].rotation, rotation0), Is.LessThan(1e-3f));
+    }
+
+    [Test]
+    public void DeadZonesEaseInWithoutJumps()
+    {
+        Assert.That(CADScaleGesture.SoftDeadZone(5f, 6f), Is.EqualTo(0f));
+        Assert.That(CADScaleGesture.SoftDeadZone(6f, 6f), Is.EqualTo(0f));
+        Assert.That(CADScaleGesture.SoftDeadZone(9f, 6f), Is.EqualTo(6f));
+        Assert.That(CADScaleGesture.SoftDeadZone(12f, 6f), Is.EqualTo(12f));
+        Assert.That(CADScaleGesture.SoftDeadZone(30f, 6f), Is.EqualTo(30f));
+        Assert.That(CADGestureReadout.Format(1f, 0f), Is.Null);
+        Assert.That(CADGestureReadout.Format(1.25f, 0f), Is.EqualTo("×1.25"));
+        Assert.That(CADGestureReadout.Format(1f, 35.4f), Is.EqualTo("35°"));
+    }
+
+    [Test]
+    public void ResetSizeAppearsOnlyWhenResizedAndKeepsTheObjectInPlace()
+    {
+        svc.EnterScope("A");
+        OpenObjectMenu("P1");
+        Assert.That(ContextLabels(), Does.Not.Contain("Reset size"), "not resized");
+
+        Vector3 scale0 = t["P1"].localScale;
+        svc.SetObjectWorldPose("P1", t["P1"].position + new Vector3(0.2f, 0.1f, 0f), Quaternion.Euler(0f, 30f, 0f));
+        svc.SetObjectScaleAroundPoint("P1", scale0 * 2f, Vector3.zero, t["P1"].position);
+        svc.TryGetObjectBounds("P1", out Bounds before);
+        Quaternion rotation = t["P1"].rotation;
+
+        OpenObjectMenu("P1");
+        Assert.That(ContextLabels(), Is.EqualTo(new[] { "Exit assembly", "Focus", "Detach", "Reset part", "Reset size",
+            "Reset assembly", "Multi-select", "Main menu", "Close" }));
+        ContextButton("Reset size").onClick.Invoke();
+
+        Assert.That(Vector3.Distance(t["P1"].localScale, scale0), Is.LessThan(Eps), "original size");
+        svc.TryGetObjectBounds("P1", out Bounds after);
+        Assert.That(Vector3.Distance(after.center, before.center), Is.LessThan(1e-3f), "stays where it is");
+        Assert.That(Quaternion.Angle(t["P1"].rotation, rotation), Is.LessThan(1e-3f), "rotation kept");
+        Assert.That(svc.IsResized("P1"), Is.False);
+    }
 
     // ================= Helpers =================
 

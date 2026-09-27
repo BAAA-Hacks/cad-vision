@@ -53,7 +53,7 @@ public struct CADMenuStyle
 /// - Show/Hide: the ray interactable is disabled before the root is deactivated, so a hidden
 ///   panel never renders, never catches rays and leaves no active collider behind;
 /// - hover tooltips (CADMenuTooltip) for buttons created with tooltip text;
-/// - border drag: a grab band around the content (BorderWidth outside the canvas rect plus the
+/// - border drag: a grab band around the content (BorderWidth outside the canvas rect, an invisible GrabMargin beyond the visible edge, plus the
 ///   empty padding inside it; owners may add regions such as a title bar). A semantic pointer
 ///   pressing there (CADPointerInteraction.UiPressed) moves the panel rigidly with the pointer
 ///   until release; presses on buttons never start it. Owners call EnableBorderDrag once and
@@ -85,6 +85,11 @@ public sealed class CADMenuPanel
     public const int SmallSize = 15;
     /// <summary>Width of the grab band around the content (canvas units); drawn as panel background.</summary>
     public const float BorderWidth = 16f; // 12 mm at the 75% canvas scale: still easy to hit.
+    /// <summary>
+    /// Invisible extra grab area beyond the window's visible edge (canvas units), so a ray that
+    /// just misses the edge still grabs; the edge glow shows it has been found.
+    /// </summary>
+    public const float GrabMargin = 20f; // 15 mm.
 
     // Grab affordance (Meta-style edge glow): while a ray hovers the grab band (or drags the
     // panel) the part of the border nearest the ray lights up in the accent color with a soft
@@ -330,8 +335,8 @@ public sealed class CADMenuPanel
             return false; // Not on this panel's plane.
 
         Rect content = canvasRect.rect;
-        var outer = Rect.MinMaxRect(content.xMin - BorderWidth - 2f, content.yMin - BorderWidth - 2f,
-            content.xMax + BorderWidth + 2f, content.yMax + BorderWidth + 2f);
+        float reach = BorderWidth + 2f + GrabMargin; // Band, border line and the margin outside.
+        var outer = Rect.MinMaxRect(content.xMin - reach, content.yMin - reach, content.xMax + reach, content.yMax + reach);
         if (!outer.Contains(local))
             return false;
 
@@ -702,8 +707,10 @@ public sealed class CADMenuPanel
         Width = width;
         Height = height;
         canvasRect.sizeDelta = new Vector2(width, height);
-        // Covers the grab band too, so presses there reach the canvas (and the drag).
-        surfaceBox.size = new Vector3((width + 2 * BorderWidth) * CanvasScale, (height + 2 * BorderWidth) * CanvasScale, 0.004f);
+        // Covers the grab band and the margin outside the window too, so presses there reach
+        // the panel (and the drag).
+        float grab = 2 * (BorderWidth + 2f + GrabMargin);
+        surfaceBox.size = new Vector3((width + grab) * CanvasScale, (height + grab) * CanvasScale, 0.004f);
     }
 
     /// <summary>True if a world point (a ray hit) lies on rect, within slack canvas units.</summary>

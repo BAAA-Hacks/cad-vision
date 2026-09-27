@@ -54,7 +54,7 @@ public class CADContextMenu : MonoBehaviour
     {
         EnterAssembly, Focus, DetachOrReattach, ResetObject, ResetAssembly, MultiSelect, MainMenu, Close,
         Done, FocusSelection, ResetSelected, EditSelection, ClearSelection,
-        ModelDone, ResetScale, ResetModel, ExitAssembly,
+        ModelDone, ResetScale, ResetModel, ExitAssembly, ResetSize,
     }
 
     [Header("Placement")]
@@ -74,6 +74,7 @@ public class CADContextMenu : MonoBehaviour
         { MenuAction.Focus, "Focus" },
         { MenuAction.DetachOrReattach, "Detach" },
         { MenuAction.ResetObject, "Reset part" },
+        { MenuAction.ResetSize, "Reset size" },
         { MenuAction.ResetAssembly, "Reset assembly" },
         { MenuAction.MultiSelect, "Multi-select" },
         { MenuAction.MainMenu, "Main menu" },
@@ -95,6 +96,7 @@ public class CADContextMenu : MonoBehaviour
         { MenuAction.Focus, "Emphasize this selection and ghost the rest of the model." },
         { MenuAction.DetachOrReattach, "Move this part independently from its assembly." },
         { MenuAction.ResetObject, "Put this back where it was: original position, rotation and size." },
+        { MenuAction.ResetSize, "Back to the original size. It stays where it is." },
         { MenuAction.ResetAssembly, "Put the assembly you're in and all its parts back: original positions, rotations and sizes." },
         { MenuAction.MultiSelect, "Select multiple parts and move them together." },
         { MenuAction.MainMenu, "Open the main menu." },
@@ -468,6 +470,8 @@ public class CADContextMenu : MonoBehaviour
         if (manipulationService.IsDetached(targetId) || manipulationService.GetLogicalParentId(targetId) != null)
             actions.Add(MenuAction.DetachOrReattach);
         actions.Add(MenuAction.ResetObject); // The selected part or assembly.
+        if (manipulationService.IsResized(targetId))
+            actions.Add(MenuAction.ResetSize);
         AddResetAssembly(actions);
         actions.Add(MenuAction.MultiSelect);
         if (mainMenu != null)
@@ -678,6 +682,7 @@ public class CADContextMenu : MonoBehaviour
                     manipulationService.Select(id);
                 }
                 break;
+            case MenuAction.ResetSize: manipulationService.ResetObjectScale(id); break;
             case MenuAction.ResetObject:
                 // An assembly resets with everything in it.
                 if (manipulationService.HasCadChildren(id)) manipulationService.ResetAssembly(id);

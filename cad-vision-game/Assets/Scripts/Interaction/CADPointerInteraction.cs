@@ -30,6 +30,9 @@ using UnityEngine;
 /// While the service's whole-model manipulation mode is active, a drag on any CAD geometry
 /// holds the model root (at the pressed point) instead of an object; clicks leave selection
 /// alone.
+///
+/// Two pointers both scale and rotate (CADScaleGesture, each behind its own dead zone), with a
+/// small ×/° readout at the pivot (CADGestureReadout).
 /// </summary>
 [DisallowMultipleComponent]
 [RequireComponent(typeof(CADVisionManipulationService))]
@@ -78,6 +81,14 @@ public class CADPointerInteraction : MonoBehaviour
     [SerializeField, Min(0.01f)] private float minimumScaleSeparation = 0.08f;
     [SerializeField, Range(0.01f, 1f)] private float minimumScaleRatio = 0.1f;
     [SerializeField, Min(1f)] private float maximumScaleRatio = 10f;
+    [Tooltip("Two pointers also rotate: turning the line between them turns the target around the pivot.")]
+    [SerializeField] private bool twoPointerRotation = true;
+    [Tooltip("Separation change (fraction) ignored before two-pointer scaling starts, so turning doesn't resize.")]
+    [SerializeField, Range(0f, 0.3f)] private float scaleDeadZone = 0.05f;
+    [Tooltip("Turn (degrees) ignored before two-pointer rotation starts, so stretching doesn't turn.")]
+    [SerializeField, Range(0f, 30f)] private float rotationDeadZone = 6f;
+    [Tooltip("Show the current scale / angle next to the pivot during a two-pointer gesture.")]
+    [SerializeField] private bool showGestureReadout = true;
 
     /// <summary>The selected CAD object was activated again (menu hook; no visual yet).</summary>
     public event Action<CADContextMenuRequest> ContextMenuRequested;
@@ -108,6 +119,7 @@ public class CADPointerInteraction : MonoBehaviour
     private readonly CADPointerStateMachine machine = new CADPointerStateMachine();
     private readonly CADGrabSession session = new CADGrabSession();
     private readonly CADScaleGesture pointerScale = new CADScaleGesture();
+    private readonly CADGestureReadout readout = new CADGestureReadout();
     private readonly List<ICADPointerSource> sources = new();
     private readonly Dictionary<ICADPointerSource, SourceState> sourceStates = new();
     private float nextSourceSearch;
@@ -124,6 +136,8 @@ public class CADPointerInteraction : MonoBehaviour
     }
 
     private void OnEnable() => Active = true;
+
+    private void OnDestroy() => readout.Destroy();
 
     private void OnDisable()
     {
@@ -340,16 +354,16 @@ public class CADPointerInteraction : MonoBehaviour
         if (source.Classify(out string cadId, out _) != CADPointerTargetKind.Cad || !IsOnHeldTarget(cadId))
             return false;
 
-        float distance = Vector3.Distance(owner.Pose.position, source.Pose.position);
+        Vector3 first = owner.Pose.position, second = source.Pose.position;
         Vector3 pivot = session.GrabPointWorld;
         bool started = session.IsModel
-            ? pointerScale.TryBeginModel(manipulationService, distance, pivot)
-            : pointerScale.TryBeginObjects(manipulationService, session.HeldObjects.ToList(), distance, pivot);
+            ? pointerScale.TryBeginModel(manipulationService, first, second, pivot)
+            : pointerScale.TryBeginObjects(manipulationService, session.HeldObjects.ToList(), first, second, pivot);
         if (!started)
             return false;
 
         scalePartner = source;
-        Debug.Log($"[CADPointer] Two-pointer scaling started ({owner.SourceId} + {source.SourceId}, " +
+        Debug.Log($"[CADPointer] Two-pointer scale/rotate started ({owner.SourceId} + {source.SourceId}, " +
             $"{(session.IsModel ? "model" : session.Description)}).");
         return true;
     }
@@ -436,9 +450,14 @@ public class CADPointerInteraction : MonoBehaviour
             return;
         }
 
-        float distance = Vector3.Distance(owner.Pose.position, scalePartner.Pose.position);
-        if (!pointerScale.Update(distance))
+        if (!pointerScale.Update(owner.Pose.position, scalePartner.Pose.position))
+        {
             EndPointerScale("scaled target gone");
+            return;
+        }
+
+        if (showGestureReadout)
+            readout.Show(pointerScale.PivotWorld, pointerScale.AppliedRatio, pointerScale.AppliedAngle);
     }
 
     private void EndPointerScale(string reason)
@@ -447,6 +466,7 @@ public class CADPointerInteraction : MonoBehaviour
             return;
 
         pointerScale.End();
+        readout.Hide();
         scalePartner = null;
         Debug.Log($"[CADPointer] Two-pointer scaling ended ({reason}).");
     }
@@ -675,5 +695,8 @@ public class CADPointerInteraction : MonoBehaviour
         pointerScale.MinimumSeparation = minimumScaleSeparation;
         pointerScale.MinimumRatio = minimumScaleRatio;
         pointerScale.MaximumRatio = maximumScaleRatio;
+        pointerScale.Rotate = twoPointerRotation;
+        pointerScale.ScaleDeadZone = scaleDeadZone;
+        pointerScale.RotationDeadZone = rotationDeadZone;
     }
 }
