@@ -13,7 +13,7 @@ using Object = UnityEngine.Object;
 /// The single global main menu (CADMainMenu + CADUISettings), built on CADMenuPanel like the
 /// context menu: shared construction, lifecycle and placement, scope,
 /// CADEN placeholder, display mode, outline, reset dropdown, UI scale, title-bar drag, model
-/// replacement, controller/hand UI presses, the context menu's "Main Menu" entry, and the
+/// replacement, controller/hand UI presses, the context menu's "Main menu" entry, and the
 /// removal of the old wrist quick menu / Settings window.
 /// Model (registered like a Task 2 import): Root / A / { P1, P2, S / { S1 } }.
 /// </summary>
@@ -461,7 +461,7 @@ public class CADMainMenuTests
             new object[] { new CADContextMenuRequest("P1", Vector3.forward, true) });
         var contextRoot = (GameObject)Get(context, "panelRoot");
         contextRoot.GetComponentsInChildren<Button>(true)
-            .First(b => b.gameObject.activeSelf && CADMenuPanel.GetLabel(b) == "Main Menu")
+            .First(b => b.gameObject.activeSelf && CADMenuPanel.GetLabel(b) == "Main menu")
             .onClick.Invoke();
 
         Assert.That(menu.IsOpen, Is.True);
@@ -514,7 +514,9 @@ public class CADMainMenuTests
         {
             Assert.That(button.colors, Is.EqualTo(reference), $"'{CADMenuPanel.GetLabel(button)}' uses the context-menu button");
             Assert.That(button.targetGraphic, Is.TypeOf<Image>());
-            Assert.That(((Image)button.targetGraphic).sprite, Is.Null, "plain Image, no custom sprite");
+            Assert.That(((Image)button.targetGraphic).sprite, Is.Null.Or.SameAs(CADMenuPanel.RoundedSprite),
+                "plain Image with the one shared rounded sprite");
+            Assert.That(button.GetComponent<CADMenuButtonState>(), Is.Not.Null, "shared style-guide button states");
             Assert.That(button.GetComponentInChildren<Text>(true).font.name, Is.EqualTo("LegacyRuntime"));
         }
     }

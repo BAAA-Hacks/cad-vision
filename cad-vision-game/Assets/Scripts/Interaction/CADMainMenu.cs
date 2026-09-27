@@ -42,13 +42,15 @@ public class CADMainMenu : MonoBehaviour
     [Tooltip("Development safety net: show the menu at startup.")]
     [SerializeField] private bool startVisible;
 
-    // Layout in canvas units (1 unit = 1 mm at 100% UI scale).
-    private const float PanelWidth = 360f;
-    private const float TitleHeight = 32f;
-    private const float SectionHeight = 26f;
-    private const float TextHeight = 32f;
-    private const float ButtonHeight = 44f;
-    private const float SectionSpacing = 16f;
+    // Layout in canvas units (1 unit = 1 mm at 100% UI scale); style guide sizes (CADMenuPanel).
+    private const float PanelWidth = 440f;
+    private const float HeaderHeight = 64f;
+    private const float LogoSize = 56f;
+    private const float SectionHeight = 28f;
+    private const float TextHeight = 30f;
+    private const float ButtonHeight = CADMenuPanel.ControlHeight;
+    private const float SectionSpacing = CADMenuPanel.SectionSpacing;
+    private const string LogoResource = "CADVision/CADVisionLogo";
 
     private CADVisionManipulationService manipulationService;
     private CADUISettings settings;
@@ -56,7 +58,8 @@ public class CADMainMenu : MonoBehaviour
 
     private CADMenuPanel panel;
     private GameObject panelRoot; // panel.Root.
-    private Text title; // Plain header text; also a grab region of the border drag.
+    private RectTransform header; // Logo + wordmark + subtitle; also a grab region of the border drag.
+    private Text title;           // "CADVision" wordmark.
     private Text scopeSection, cadenSection, viewSection, modelSection, interfaceSection;
     private Text scopeText, displayLabel, outlineLabel, scaleLabel, scaleValue;
     private readonly Dictionary<CADDisplayMode, Button> displayButtons = new();
@@ -140,7 +143,9 @@ public class CADMainMenu : MonoBehaviour
             forward = Vector3.forward;
         forward.Normalize();
 
-        Vector3 position = head.position + forward * spawnDistance + Vector3.down * spawnDrop;
+        // Never closer than the shared minimum menu distance.
+        float distance = Mathf.Max(spawnDistance, CADMenuPanel.MinMenuDistance);
+        Vector3 position = head.position + forward * distance + Vector3.down * spawnDrop;
         panelRoot.transform.SetPositionAndRotation(position,
             Quaternion.LookRotation(position - head.position, Vector3.up));
     }
@@ -287,13 +292,11 @@ public class CADMainMenu : MonoBehaviour
         panelRoot = panel.Root;
         panel.CloseRequested = HideMainMenu; // Another menu opened (single-menu rule).
 
-        // Title bar: a normal panel button that is also a grab region of the shared border drag.
-        // Header: plain text (not a button) that, like the border, can be grabbed to move the menu.
-        title = panel.CreateText("Title", "Main menu", CADMenuPanel.FontSize + 2, FontStyle.Bold);
-        panel.AddGrabRegion(title.rectTransform);
+        BuildHeader();
 
         scopeSection = Section("Scope");
-        scopeText = panel.CreateText("Scope Value", "Scope: Full model");
+        scopeText = panel.CreateText("Scope Value", "Scope: Full model", CADMenuPanel.FontSize, FontStyle.Normal,
+            TextAnchor.MiddleLeft);
         scopeButton = AddButton("Enter assembly", OnScopeButton,
             "Enter the selected assembly, or go back up one level.");
 
@@ -301,7 +304,7 @@ public class CADMainMenu : MonoBehaviour
         cadenButton = AddButton("CADEN: Off", settings.ToggleCaden, "CADEN design assistant (placeholder toggle).");
 
         viewSection = Section("View");
-        displayLabel = panel.CreateText("Display Label", "Display");
+        displayLabel = Label("Display");
         foreach (CADDisplayMode mode in new[] { CADDisplayMode.Shaded, CADDisplayMode.Edges, CADDisplayMode.Wireframe })
         {
             CADDisplayMode captured = mode;
@@ -312,7 +315,7 @@ public class CADMainMenu : MonoBehaviour
                 _ => "Normal shaded surfaces.",
             });
         }
-        outlineLabel = panel.CreateText("Outline Label", "Outline");
+        outlineLabel = Label("Outline");
         outlineButton = AddButton("On", () => settings.SetOutlineEnabled(!settings.OutlineEnabled),
             "Show or hide the selection outline.");
 
@@ -330,7 +333,7 @@ public class CADMainMenu : MonoBehaviour
             "Restore the whole model and every part to the review pose.");
 
         interfaceSection = Section("Interface");
-        scaleLabel = panel.CreateText("Scale Label", "UI scale");
+        scaleLabel = Label("UI scale");
         scaleDownButton = AddButton("-", () => settings.StepUiScale(-1), "Make the main menu smaller.");
         scaleValue = panel.CreateText("Scale Value", "100%", CADMenuPanel.FontSize, FontStyle.Bold);
         scaleUpButton = AddButton("+", () => settings.StepUiScale(1), "Make the main menu larger.");
@@ -340,7 +343,52 @@ public class CADMainMenu : MonoBehaviour
         ApplyLayout();
     }
 
-    private Text Section(string title) => panel.CreateText(title, title, CADMenuPanel.FontSize - 2, FontStyle.Bold);
+    // Section heading: bold white (style guide 20–22).
+    private Text Section(string heading) =>
+        panel.CreateText(heading, heading, CADMenuPanel.SectionSize, FontStyle.Bold, TextAnchor.LowerLeft);
+
+    // Control label: muted secondary text, left-aligned beside or above its control.
+    private Text Label(string value) =>
+        panel.CreateText(value + " Label", value, CADMenuPanel.SecondarySize, FontStyle.Normal, TextAnchor.MiddleLeft,
+            panel.SecondaryTextColor);
+
+    // Branding for the app's main menu (style guide): the original logo (proportions kept, clear
+    // space around it), the CADVision wordmark and a quiet feature subtitle.
+    private void BuildHeader()
+    {
+        header = panel.CreateGroup("Header");
+        panel.AddGrabRegion(header);
+
+        float textLeft = 0f;
+        var logo = Resources.Load<Texture2D>(LogoResource);
+        if (logo != null)
+        {
+            float aspect = logo.height > 0 ? (float)logo.width / logo.height : 1f;
+            RawImage image = panel.CreateRawImage(header, "Logo", logo);
+            PlaceInHeader(image.rectTransform, 0f, 0f, LogoSize * aspect, LogoSize, verticalCenter: true);
+            textLeft = LogoSize * aspect + LogoSize * 0.25f; // Clear space ≈ a quarter of its height.
+        }
+        else
+        {
+            Debug.LogWarning($"[CADMainMenu] Logo '{LogoResource}' not found; header shows the wordmark only.");
+        }
+
+        title = panel.CreateText(header, "Title", "CADVision", CADMenuPanel.TitleSize + 2, FontStyle.Bold,
+            TextAnchor.LowerLeft);
+        PlaceInHeader(title.rectTransform, textLeft, 0f, 300f, 36f, verticalCenter: false);
+        Text subtitle = panel.CreateText(header, "Subtitle", "Main menu", CADMenuPanel.SecondarySize, FontStyle.Normal,
+            TextAnchor.UpperLeft, panel.SecondaryTextColor);
+        PlaceInHeader(subtitle.rectTransform, textLeft, 38f, 300f, 24f, verticalCenter: false);
+    }
+
+    // Top-left based placement inside the header group (canvas units).
+    private static void PlaceInHeader(RectTransform rect, float x, float top, float width, float height, bool verticalCenter)
+    {
+        rect.anchorMin = rect.anchorMax = new Vector2(0f, verticalCenter ? 0.5f : 1f);
+        rect.pivot = new Vector2(0f, verticalCenter ? 0.5f : 1f);
+        rect.anchoredPosition = new Vector2(x, verticalCenter ? 0f : -top);
+        rect.sizeDelta = new Vector2(width, height);
+    }
 
     // Every button refreshes the menu after its action (labels, selected and enabled states).
     private Button AddButton(string label, UnityEngine.Events.UnityAction onClick, string tooltip = null)
@@ -356,7 +404,7 @@ public class CADMainMenu : MonoBehaviour
     {
         var rows = new List<CADMenuPanel.Row>
         {
-            new(TitleHeight, CADMenuPanel.RowSpacing, title),
+            new(HeaderHeight, SectionSpacing, header),
 
             new(SectionHeight, scopeSection),
             new(TextHeight, scopeText),

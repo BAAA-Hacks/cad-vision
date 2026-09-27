@@ -42,8 +42,9 @@ using UnityEngine.UI;
 /// The picking and model menus open when their mode starts; if another menu (e.g. the Main
 /// Menu) takes over while the mode lasts, they reopen only once no other menu is open.
 ///
-/// Placement: every variant sits above its target's visible bounds (object, selection or
-/// model; never a Transform origin), via CADMenuPanel.PlaceAboveBounds, facing the user.
+/// Placement: every variant opens beside its target's visible bounds (object, selection or
+/// model; never a Transform origin) so the part never blocks it, at least
+/// CADMenuPanel.MinMenuDistance from the user, via CADMenuPanel.PlaceBesideBounds.
 /// </summary>
 [DisallowMultipleComponent]
 [RequireComponent(typeof(CADVisionManipulationService))]
@@ -60,38 +61,32 @@ public class CADContextMenu : MonoBehaviour
     [Tooltip("Re-face the headset only after it moves this far while the menu is open (m).")]
     [SerializeField, Min(0.05f)] private float refaceHeadMovement = 0.4f;
 
-    [Header("Style")]
-    [SerializeField] private Color panelColor = new Color(0.10f, 0.11f, 0.14f, 0.96f);
-    [SerializeField] private Color borderColor = new Color(0.55f, 0.85f, 1f, 1f);
-    [SerializeField] private Color buttonColor = new Color(0.30f, 0.33f, 0.40f, 1f);
-    [SerializeField] private Color textColor = Color.white;
-
-    // Layout in canvas units (1 unit = 1 mm).
-    private const float PanelWidth = 260f;
-    private const float TitleHeight = 40f;
-    private const float ScopeHeight = 24f;
-    private const float SectionGap = 20f; // Separates the hierarchy section from the actions.
-    private const float ButtonHeight = 44f;
+    // Layout in canvas units (1 unit = 1 mm); style guide sizes (CADMenuPanel).
+    private const float PanelWidth = 320f;
+    private const float TitleHeight = 36f;
+    private const float ScopeHeight = 26f;
+    private const float SectionGap = CADMenuPanel.SectionSpacing; // Separates the hierarchy section from the actions.
+    private const float ButtonHeight = CADMenuPanel.ControlHeight;
 
     private static readonly Dictionary<MenuAction, string> Labels = new()
     {
-        { MenuAction.EnterAssembly, "Enter Assembly" },
+        { MenuAction.EnterAssembly, "Enter assembly" },
         { MenuAction.Focus, "Focus" },
         { MenuAction.DetachOrReattach, "Detach" },
-        { MenuAction.ResetObject, "Reset Object" },
-        { MenuAction.ResetAssembly, "Reset Assembly" },
-        { MenuAction.MultiSelect, "Multi-Select" },
-        { MenuAction.MainMenu, "Main Menu" },
+        { MenuAction.ResetObject, "Reset object" },
+        { MenuAction.ResetAssembly, "Reset assembly" },
+        { MenuAction.MultiSelect, "Multi-select" },
+        { MenuAction.MainMenu, "Main menu" },
         { MenuAction.Close, "Close" },
         { MenuAction.Done, "Done" },
-        { MenuAction.FocusSelection, "Focus Selection" },
-        { MenuAction.ResetSelected, "Reset Selected" },
-        { MenuAction.EditSelection, "Edit Selection" },
-        { MenuAction.ClearSelection, "Clear Selection" },
+        { MenuAction.FocusSelection, "Focus selection" },
+        { MenuAction.ResetSelected, "Reset selected" },
+        { MenuAction.EditSelection, "Edit selection" },
+        { MenuAction.ClearSelection, "Clear selection" },
         { MenuAction.ModelDone, "Done" },
-        { MenuAction.ResetScale, "Reset Scale" },
-        { MenuAction.ResetModel, "Reset Model" },
-        { MenuAction.ExitAssembly, "Exit Assembly" },
+        { MenuAction.ResetScale, "Reset scale" },
+        { MenuAction.ResetModel, "Reset model" },
+        { MenuAction.ExitAssembly, "Exit assembly" },
     };
 
     private static readonly Dictionary<MenuAction, string> Tooltips = new()
@@ -260,7 +255,7 @@ public class CADContextMenu : MonoBehaviour
         multiSignature = null;
         targetId = null;
         target = null;
-        titleText.text = "Manipulate Model";
+        titleText.text = "Manipulate model";
         Refresh(forceLayout: true);
         PlaceModel();
         panel.Show();
@@ -287,7 +282,7 @@ public class CADContextMenu : MonoBehaviour
         List<string> ids = manipulationService.GetSelectedIds();
         ids.Sort(StringComparer.Ordinal);
         string signature = string.Join("|", ids);
-        titleText.text = $"Multi-Select: {ids.Count} selected";
+        titleText.text = $"Multi-select: {ids.Count} selected";
         bool relaid = Refresh(forceLayout: forcePlace);
         if (forcePlace || relaid || signature != multiSignature)
         {
@@ -513,9 +508,9 @@ public class CADContextMenu : MonoBehaviour
             scopeText.text = scope;
 
         bool focusHere = IsFocusOnTarget();
-        SetLabel(MenuAction.Focus, focusHere ? "Clear Focus" : Labels[MenuAction.Focus]);
+        SetLabel(MenuAction.Focus, focusHere ? "Clear focus" : Labels[MenuAction.Focus]);
         SetTooltip(MenuAction.Focus, focusHere ? ClearFocusTooltip : Tooltips[MenuAction.Focus]);
-        SetLabel(MenuAction.FocusSelection, focusHere ? "Clear Focus" : Labels[MenuAction.FocusSelection]);
+        SetLabel(MenuAction.FocusSelection, focusHere ? "Clear focus" : Labels[MenuAction.FocusSelection]);
         SetTooltip(MenuAction.FocusSelection, focusHere ? ClearFocusTooltip : Tooltips[MenuAction.FocusSelection]);
 
         if (targetId != null && !groupMode)
@@ -563,18 +558,18 @@ public class CADContextMenu : MonoBehaviour
             CADMenuPanel.SetInteractable(button, value);
     }
 
-    // ---------------- Placement (always above the target's visible bounds) ----------------
+    // ---------------- Placement (always beside the target's visible bounds) ----------------
 
     private void PlaceObject(CADContextMenuRequest? request)
     {
         if (panel.WasMoved)
             return;
         if (manipulationService.TryGetObjectBounds(targetId, out Bounds bounds))
-            PlaceAbove(bounds);
+            PlaceBeside(bounds);
         else if (request.HasValue)
-            PlaceAbove(new Bounds(request.Value.AnchorPoint, Vector3.zero)); // No visible geometry.
+            PlaceBeside(new Bounds(request.Value.AnchorPoint, Vector3.zero)); // No visible geometry.
         else if (target != null)
-            PlaceAbove(new Bounds(target.transform.position, Vector3.zero));
+            PlaceBeside(new Bounds(target.transform.position, Vector3.zero));
     }
 
     // The selected objects' combined visible bounds; with nothing visible, in front of the head.
@@ -583,7 +578,7 @@ public class CADContextMenu : MonoBehaviour
         if (panel.WasMoved)
             return;
         if (manipulationService.TryGetSelectionBounds(out Bounds bounds))
-            PlaceAbove(bounds);
+            PlaceBeside(bounds);
         else
             PlaceInFrontOfHead();
     }
@@ -595,15 +590,15 @@ public class CADContextMenu : MonoBehaviour
             return;
         Transform head = Head();
         if (manipulationService.TryGetModelBounds(out Bounds bounds) && (head == null || !bounds.Contains(head.position)))
-            PlaceAbove(bounds);
+            PlaceBeside(bounds);
         else
             PlaceInFrontOfHead();
     }
 
-    private void PlaceAbove(Bounds bounds)
+    private void PlaceBeside(Bounds bounds)
     {
         Transform head = Head();
-        panel.PlaceAboveBounds(bounds, head);
+        panel.PlaceBesideBounds(bounds, head);
         if (head != null)
             headPositionAtFacing = head.position;
     }
@@ -616,7 +611,7 @@ public class CADContextMenu : MonoBehaviour
         Vector3 forward = Vector3.ProjectOnPlane(head.forward, Vector3.up);
         if (forward.sqrMagnitude < 1e-6f)
             forward = Vector3.forward;
-        panelRoot.transform.position = head.position + forward.normalized * 0.8f;
+        panelRoot.transform.position = head.position + forward.normalized * Mathf.Max(0.8f, CADMenuPanel.MinMenuDistance);
         panel.FaceHead(head);
         headPositionAtFacing = head.position;
     }
@@ -692,29 +687,23 @@ public class CADContextMenu : MonoBehaviour
 
     // ---------------- Construction ----------------
 
-    private CADMenuStyle Style => new CADMenuStyle
-    {
-        PanelColor = panelColor,
-        BorderColor = borderColor,
-        ButtonColor = buttonColor,
-        SelectedButtonColor = CADMenuStyle.Default.SelectedButtonColor,
-        TextColor = textColor,
-    };
-
     private void BuildPanel()
     {
-        panel = new CADMenuPanel("CAD Context Menu", PanelWidth, Style);
+        panel = new CADMenuPanel("CAD Context Menu", PanelWidth, CADMenuStyle.Default);
         panelRoot = panel.Root;
         panel.CloseRequested = () => Hide("another menu opened");
 
-        titleText = panel.CreateText("Title", "", CADMenuPanel.FontSize, FontStyle.Bold);
-        scopeText = panel.CreateText("Scope", "Scope: Full model", CADMenuPanel.FontSize - 4);
-        scopeText.color = new Color(textColor.r, textColor.g, textColor.b, 0.7f); // Secondary.
+        // Header: title, then the quiet scope line (the hierarchy section starts here).
+        titleText = panel.CreateText("Title", "", CADMenuPanel.TitleSize, FontStyle.Bold, TextAnchor.MiddleLeft);
+        scopeText = panel.CreateText("Scope", "Scope: Full model", CADMenuPanel.SecondarySize, FontStyle.Normal,
+            TextAnchor.MiddleLeft, panel.SecondaryTextColor);
         foreach (KeyValuePair<MenuAction, string> entry in Labels)
         {
             MenuAction action = entry.Key;
             Tooltips.TryGetValue(action, out string tooltip);
-            buttons[action] = panel.CreateButton(entry.Value, () => OnAction(action), tooltip);
+            // "Done" is the one dominant action of the picking and model menus.
+            bool primary = action == MenuAction.Done || action == MenuAction.ModelDone;
+            buttons[action] = panel.CreateButton(entry.Value, () => OnAction(action), tooltip, primary);
         }
 
         Refresh(forceLayout: true);

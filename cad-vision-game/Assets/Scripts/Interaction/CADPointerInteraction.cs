@@ -48,10 +48,12 @@ public class CADPointerInteraction : MonoBehaviour
     [SerializeField] private bool useRightHand = true;
     [SerializeField] private bool useLeftHand = true;
 
-    [Header("Hand Ray Visual")]
+    [Header("Ray Visuals")]
     [Tooltip("Show the hand ray whenever the hand is pointing, not only over something interactive (easier aiming).")]
     [SerializeField] private bool alwaysShowHandRay = true;
-    [Tooltip("Drawn length of the hand ray (m). The rig default is a 0.25 m stub.")]
+    [Tooltip("Show the controller ray all the time, not only over something interactive.")]
+    [SerializeField] private bool alwaysShowControllerRay = true;
+    [Tooltip("Drawn length of the always-on rays (m). The rig default is a 0.25 m stub.")]
     [SerializeField, Min(0.1f)] private float handRayVisualLength = 1.5f;
 
     // Renamed from dragStartDistance/dragStartAngle so existing scene values (1.5 cm / 2.5°,
@@ -185,16 +187,19 @@ public class CADPointerInteraction : MonoBehaviour
             if (CADRayPointerSource.TryCreate(ray, out CADRayPointerSource source) && IsWanted(source))
             {
                 RegisterSource(source);
-                if (source.Kind == CADPointerSourceKind.Hand && alwaysShowHandRay)
-                    ConfigureHandRayVisual(ray);
+                bool alwaysOn = source.Kind == CADPointerSourceKind.Hand ? alwaysShowHandRay
+                    : source.Kind == CADPointerSourceKind.Controller && alwaysShowControllerRay;
+                if (alwaysOn)
+                    ConfigureRayVisual(ray);
             }
         }
     }
 
-    // The rig's hand ray visual hides unless it's over an interactable and is only 0.25 m long.
-    // RayInteractorRayVisual exposes no setters for those, so its two serialized fields are
-    // set directly (the SDK still hides the ray whenever the hand isn't in a pointing pose).
-    private void ConfigureHandRayVisual(RayInteractor ray)
+    // The rig's hand and controller ray visuals hide unless they're over an interactable and
+    // are only 0.25 m long. RayInteractorRayVisual exposes no setters for those, so its two
+    // serialized fields are set directly (the SDK still hides a hand ray whenever the hand
+    // isn't in a pointing pose, and any ray whose hand/controller isn't tracked).
+    private void ConfigureRayVisual(RayInteractor ray)
     {
         const BindingFlags Fields = BindingFlags.Instance | BindingFlags.NonPublic;
         FieldInfo interactorField = typeof(RayInteractorRayVisual).GetField("_rayInteractor", Fields);
@@ -202,7 +207,7 @@ public class CADPointerInteraction : MonoBehaviour
         FieldInfo lengthField = typeof(RayInteractorRayVisual).GetField("_maxRayVisualLength", Fields);
         if (interactorField == null || hideField == null || lengthField == null)
         {
-            Debug.LogWarning("[CADPointer] RayInteractorRayVisual fields changed in this SDK version; hand ray visual left as is.");
+            Debug.LogWarning("[CADPointer] RayInteractorRayVisual fields changed in this SDK version; ray visual left as is.");
             return;
         }
 
@@ -212,7 +217,7 @@ public class CADPointerInteraction : MonoBehaviour
                 continue;
             hideField.SetValue(visual, false);
             lengthField.SetValue(visual, handRayVisualLength);
-            Debug.Log($"[CADPointer] Hand ray visual on '{ray.name}': always shown, {handRayVisualLength:F1} m.");
+            Debug.Log($"[CADPointer] Ray visual on '{ray.name}': always shown, {handRayVisualLength:F1} m.");
         }
     }
 

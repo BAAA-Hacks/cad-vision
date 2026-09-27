@@ -17,7 +17,7 @@ public sealed class CADMenuTooltip : MonoBehaviour
     public static float DefaultHoverDelay = 0.3f;
     private const float Width = 250f;
     private const float Gap = CADMenuPanel.BorderWidth + 8f; // Clear of the panel's grab band.
-    private const float Padding = 8f;
+    private const float Padding = 12f;
     private const int FontSize = 16;
 
     private RectTransform canvas;
@@ -37,8 +37,9 @@ public sealed class CADMenuTooltip : MonoBehaviour
         var boxObject = new GameObject("Tooltip", typeof(RectTransform));
         boxObject.transform.SetParent(canvas, false);
         box = boxObject.AddComponent<Image>();
-        box.color = new Color(0.03f, 0.04f, 0.06f, 0.95f);
+        box.color = new Color32(0x17, 0x26, 0x39, 0xFA); // Style guide Surface, nearly opaque.
         box.raycastTarget = false;
+        CADMenuPanel.MakeRounded(box, 10f);
 
         var textObject = new GameObject("Tooltip Text", typeof(RectTransform));
         textObject.transform.SetParent(boxObject.transform, false);
