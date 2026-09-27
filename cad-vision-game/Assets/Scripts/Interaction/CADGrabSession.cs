@@ -235,6 +235,7 @@ public sealed class CADGrabSession
             multiplayer.ReleaseLease(IsModel
                 ? new[] { CADMultiplayerLeaseTable.ModelId } : GrabbedIds);
         members.Clear();
+        standalone = false;
     }
 
     // World center of the object's active, enabled renderers; its origin if it has none.

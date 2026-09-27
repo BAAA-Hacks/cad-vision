@@ -46,6 +46,7 @@ public class CADMainMenu : MonoBehaviour
     // Layout in canvas units (1 unit = 1 mm at 100% UI scale); style guide sizes (CADMenuPanel).
     private const float PanelWidth = 440f;
     private const float HeaderHeight = 64f;
+    private const float TitleHeight = 36f; // Room-code keypad heading.
     private const float LogoSize = 56f;
     private const float SectionHeight = 28f;
     private const float TextHeight = 30f;
@@ -187,13 +188,16 @@ public class CADMainMenu : MonoBehaviour
     public void Refresh()
     {
         SetText(scopeText, $"Scope: {manipulationService.CurrentScopeDisplayName}");
+        // Hosting shares the loaded model: until one is loaded, say so and keep Host disabled.
+        bool connecting = multiplayer.State == CADMultiplayerCoordinator.RoomState.Connecting;
+        bool canHost = !multiplayer.IsInRoom && !connecting && multiplayer.HasShareableModel;
         SetText(roomStatus, multiplayer.IsInRoom
             ? $"Room: {multiplayer.RoomCode} ({multiplayer.ParticipantCount}/2)\n{multiplayer.Status}"
-            : $"Room: {multiplayer.Status}");
-        CADMenuPanel.SetInteractable(hostRoomButton, !multiplayer.IsInRoom &&
-            multiplayer.State != CADMultiplayerCoordinator.RoomState.Connecting);
-        CADMenuPanel.SetInteractable(hostVirtualRoomButton, !multiplayer.IsInRoom &&
-            multiplayer.State != CADMultiplayerCoordinator.RoomState.Connecting);
+            : !multiplayer.HasShareableModel && !connecting && multiplayer.State == CADMultiplayerCoordinator.RoomState.Offline
+                ? "Room: Offline\nLoad a CAD model to host a room"
+                : $"Room: {multiplayer.Status}");
+        CADMenuPanel.SetInteractable(hostRoomButton, canHost);
+        CADMenuPanel.SetInteractable(hostVirtualRoomButton, canHost);
         CADMenuPanel.SetInteractable(joinRoomButton, !multiplayer.IsInRoom &&
             multiplayer.State != CADMultiplayerCoordinator.RoomState.Connecting);
         CADMenuPanel.SetInteractable(leaveRoomButton, multiplayer.IsInRoom);
@@ -219,9 +223,7 @@ public class CADMainMenu : MonoBehaviour
 
         CADMenuPanel.SetLabel(resetButton, resetExpanded ? "Reset ▲" : "Reset ▼");
         CADMenuPanel.SetInteractable(resetObjectButton, !multiplayer.IsInRoom && manipulationService.GetSelectedIds().Count > 0);
-        CADMenuPanel.SetInteractable(resetScaleButton, !multiplayer.IsInRoom && (modelMode
-            ? manipulationService.ModelRoot != null
-            : manipulationService.GetSelectedIds().Count > 0));
+        CADMenuPanel.SetInteractable(resetScaleButton, !multiplayer.IsInRoom && manipulationService.ModelRoot != null);
         CADMenuPanel.SetInteractable(resetAssemblyButton, !multiplayer.IsInRoom && ResetAssemblyTarget() != null);
         CADMenuPanel.SetInteractable(resetModelButton, !multiplayer.IsInRoom && manipulationService.ModelRoot != null);
 

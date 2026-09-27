@@ -29,6 +29,14 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
     private const int PackageChunkBytes = 16 * 1024;
     private const int MaxModelBytes = 100 * 1024 * 1024;
     private const int MaxMetadataBytes = 10 * 1024 * 1024;
+    // Join handshake: the guest repeats hello until the host answers (the first one can be lost
+    // if it leaves before the connection is up), and gives up with a clear error.
+    private const float HelloInterval = 1f;
+    private const float HostReplyTimeout = 60f;
+    private const float PackageStallTimeout = 20f;
+    // Online calls (Unity services sign-in, relay session) fail with a clear error instead of hanging.
+    private const float ServiceTimeout = 20f;
+    private const float ModelLoadWait = 30f;
 
     public enum RoomState { Offline, Connecting, Localizing, Syncing, Ready, Error }
     public enum RoomMode { Passthrough, Virtual }
@@ -39,6 +47,9 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
     public bool IsHost => session != null && session.IsHost;
     public int ParticipantCount => session?.Players?.Count ?? 0;
     public RoomMode Mode { get; private set; } = RoomMode.Passthrough;
+    /// <summary>A model loaded through the CAD loader can be shared (hosting needs one).</summary>
+    public bool HasShareableModel => service != null && service.ModelRoot != null &&
+        !string.IsNullOrEmpty(CADPackageIdentity.Current);
 
     private CADVisionManipulationService service;
     private CADXRPassthroughToggle environment;
@@ -72,6 +83,11 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
     private string incomingPackageId;
     private int incomingOffset;
     private bool importingPackage;
+    private bool awaitingHost;        // Guest: hello repeats until the host answers.
+    private float awaitingHostSince;
+    private float nextHelloTime;
+    private float lastChunkTime;
+    private bool guestLocalizing;
 
     private void Awake()
     {
@@ -125,20 +141,67 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
     {
         State = RoomState.Connecting;
         Status = "Preparing CAD room";
-        for (int i = 0; requireModel && i < 100 &&
-            (service.ModelRoot == null || string.IsNullOrEmpty(CADPackageIdentity.Current)); i++)
-            await Task.Delay(100);
-        if (requireModel && (service.ModelRoot == null || string.IsNullOrEmpty(CADPackageIdentity.Current)))
+        if (requireModel && !HasShareableModel)
         {
-            SetError("The bundled CAD model has not loaded.");
+            Status = "Waiting for the CAD model to load";
+            for (int i = 0; i < ModelLoadWait * 10 && !HasShareableModel; i++)
+                await Task.Delay(100);
+            if (!HasShareableModel)
+            {
+                SetError("No CAD model is loaded yet. Load one (it must come through the CAD loader), then host.");
+                return false;
+            }
+        }
+        if (Application.internetReachability == NetworkReachability.NotReachable)
+        {
+            SetError("This headset is offline. Connect it to Wi-Fi with internet access, then try again.");
             return false;
         }
         EnsureNetworkManager();
-        await UnityServices.InitializeAsync();
+        Status = "Connecting to Unity services";
+        await WithTimeout(UnityServices.InitializeAsync(), "Connecting to Unity services");
         if (!AuthenticationService.Instance.IsSignedIn)
-            await AuthenticationService.Instance.SignInAnonymouslyAsync();
+            await WithTimeout(AuthenticationService.Instance.SignInAnonymouslyAsync(), "Signing in to Unity services");
         EnsureNetworkManager();
         return true;
+    }
+
+    // An online call that doesn't answer in ServiceTimeout seconds fails instead of hanging.
+    private static async Task WithTimeout(Task task, string what)
+    {
+        if (await Task.WhenAny(task, Task.Delay(TimeSpan.FromSeconds(ServiceTimeout))) != task)
+            throw new TimeoutException(what + " timed out");
+        await task;
+    }
+
+    private static async Task<T> WithTimeout<T>(Task<T> task, string what)
+    {
+        await WithTimeout((Task)task, what);
+        return await task;
+    }
+
+    /// <summary>
+    /// A readable reason for a failed host/join: offline or DNS, Unity services not enabled for
+    /// the project, a wrong code, a full room, or the raw message.
+    /// </summary>
+    public static string ExplainFailure(Exception e, bool joining)
+    {
+        string text = (e.GetType().Name + " " + e.Message + " " + e.InnerException?.Message).ToLowerInvariant();
+        if (e is TimeoutException || text.Contains("timed out") || text.Contains("timeout"))
+            return e.Message + ". Check the headset's internet connection and try again.";
+        if (text.Contains("resolve") || text.Contains("dns") || text.Contains("name or service") ||
+            text.Contains("no such host") || text.Contains("network is unreachable") ||
+            text.Contains("unable to connect") || text.Contains("httprequestexception") || text.Contains("transport"))
+            return "This headset can't reach the internet (network/DNS failure). Check its Wi-Fi; a laptop hotspot may need to be turned off and on.";
+        if (text.Contains("forbidden") || text.Contains("403") || text.Contains("not enabled") ||
+            text.Contains("unauthorized") || text.Contains("401"))
+            return "Unity Relay/Sessions refused the request. Make sure Relay and Sessions (Lobby) are enabled for this app's Unity Cloud project.";
+        if (joining && (text.Contains("not found") || text.Contains("404") || text.Contains("invalid join code") ||
+            text.Contains("code")))
+            return "No room with that code. Check the code shown on the host headset.";
+        if (joining && (text.Contains("full") || text.Contains("max players")))
+            return "That room is full (2 people max).";
+        return (joining ? "Could not join room: " : "Could not host room: ") + e.Message;
     }
 
     public async void HostRoom() => await HostRoomAsync(RoomMode.Passthrough);
@@ -156,7 +219,7 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
             Status = "Creating room";
             var options = new SessionOptions { Type = SessionType, MaxPlayers = 2,
                 Name = "CAD Vision room", IsPrivate = true }.WithRelayNetwork();
-            session = await MultiplayerService.Instance.CreateSessionAsync(options);
+            session = await WithTimeout(MultiplayerService.Instance.CreateSessionAsync(options), "Creating the room");
             if (current != operationGeneration) return;
             BeginConnectedRoom(mode);
             State = RoomState.Localizing;
@@ -178,7 +241,7 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
         catch (Exception e)
         {
             Debug.LogException(e);
-            SetError("Could not host room: " + e.Message);
+            SetError(ExplainFailure(e, joining: false));
         }
     }
 
@@ -195,19 +258,55 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
         {
             if (!await PrepareAsync(false) || current != operationGeneration) return;
             Status = "Joining room";
-            session = await MultiplayerService.Instance.JoinSessionByCodeAsync(code,
-                new JoinSessionOptions { Type = SessionType });
+            session = await WithTimeout(MultiplayerService.Instance.JoinSessionByCodeAsync(code,
+                new JoinSessionOptions { Type = SessionType }), "Joining the room");
             if (current != operationGeneration) return;
             BeginConnectedRoom(RoomMode.Passthrough);
             State = RoomState.Localizing;
-            Status = "Waiting for host CAD and room location";
-            Send(new CADRoomWire { kind = "hello" }, NetworkManager.ServerClientId);
+            Status = "Connecting to the host";
+            StartAwaitingHost(); // Hello goes out once connected, and repeats until the host answers.
         }
         catch (Exception e)
         {
             Debug.LogException(e);
-            SetError("Could not join room: " + e.Message);
+            SetError(ExplainFailure(e, joining: true));
         }
+    }
+
+    private void StartAwaitingHost()
+    {
+        awaitingHost = true;
+        awaitingHostSince = Time.unscaledTime;
+        nextHelloTime = 0f;
+    }
+
+    // Guest: send hello once connected, again every HelloInterval until the host answers
+    // (wait / package-offer / frame); give up after HostReplyTimeout. Also ends a model transfer
+    // that stopped arriving.
+    private void UpdateGuestHandshake()
+    {
+        if (!roomActive || IsHost || State == RoomState.Error)
+            return;
+        float now = Time.unscaledTime;
+
+        if (incomingGlb != null && !importingPackage && now - lastChunkTime > PackageStallTimeout)
+        {
+            SetError("Stopped receiving the host's CAD model. Leave the room and join again.");
+            return;
+        }
+
+        if (!awaitingHost || importingPackage)
+            return;
+        if (now - awaitingHostSince > HostReplyTimeout)
+        {
+            awaitingHost = false;
+            SetError("The host didn't answer. Check the code, that both headsets are online, and that they run the same app version.");
+            return;
+        }
+        if (network == null || !network.IsConnectedClient || now < nextHelloTime)
+            return;
+        nextHelloTime = now + HelloInterval;
+        Send(new CADRoomWire { kind = "hello" }, NetworkManager.ServerClientId);
     }
 
     private void BeginConnectedRoom(RoomMode mode)
@@ -268,6 +367,8 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
 
     private async void LocalizeGuestAsync(CADRoomWire message)
     {
+        // Repeated hellos can bring repeated frames: localize once.
+        if (guestLocalizing || State != RoomState.Localizing) return;
         if (message.protocol != CADPackageIdentity.Protocol ||
             message.packageId != CADPackageIdentity.Current)
         { SetError("The headsets have different CAD files or app versions."); return; }
@@ -284,8 +385,10 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
             !Guid.TryParse(message.anchorId, out Guid anchorId))
         { SetError("Invalid shared location from host"); return; }
         SetMode(RoomMode.Passthrough);
+        guestLocalizing = true;
         try
         {
+            Status = "Finding the host's shared location";
             if (!await alignment.LoadSharedAsync(group, anchorId))
             { SetError(alignment.Status); return; }
             State = RoomState.Syncing;
@@ -293,6 +396,7 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
             Send(new CADRoomWire { kind = "ready" }, NetworkManager.ServerClientId);
         }
         catch (Exception e) { SetError("Could not align the room: " + e.Message); }
+        finally { guestLocalizing = false; }
     }
 
     private void OnMessage(ulong sender, FastBufferReader reader)
@@ -323,7 +427,8 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
                 if (message.packageId != CADPackageIdentity.Current)
                 { OfferHostPackage(sender); return; }
                 waitingForAnchor.Add(sender);
-                SendFrame(sender);
+                if (FrameReady) SendFrame(sender);
+                else Send(new CADRoomWire { kind = "wait", reason = Status }, sender); // Still setting up.
                 break;
             case "package-next":
                 SendPackageChunk(sender, message);
@@ -361,9 +466,12 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
     {
         switch (message.kind)
         {
-            case "package-offer": ReceivePackageOffer(message); break;
+            case "wait":
+                if (awaitingHost) { awaitingHost = false; Status = "Host is setting up the shared location"; }
+                break;
+            case "package-offer": awaitingHost = false; ReceivePackageOffer(message); break;
             case "package-chunk": ReceivePackageChunk(message); break;
-            case "frame": LocalizeGuestAsync(message); break;
+            case "frame": awaitingHost = false; LocalizeGuestAsync(message); break;
             case "snapshot": ApplySnapshot(message); break;
             case "state":
                 if (State != RoomState.Ready) bufferedUpdates.Add(message);
@@ -410,6 +518,7 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
 
     private void ReceivePackageOffer(CADRoomWire message)
     {
+        if (incomingGlb != null && message.packageId == incomingPackageId) return; // Already receiving it.
         if (State != RoomState.Localizing || importingPackage ||
             message.glbLength <= 0 || message.glbLength > MaxModelBytes ||
             message.jsonLength <= 0 || message.jsonLength > MaxMetadataBytes ||
@@ -419,6 +528,7 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
         incomingJson = new byte[message.jsonLength];
         incomingPackageId = message.packageId;
         incomingOffset = 0;
+        lastChunkTime = Time.unscaledTime;
         Status = "Receiving host CAD";
         RequestPackageChunk("glb");
     }
@@ -445,6 +555,9 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
         { SetError("Host CAD transfer was corrupted."); return; }
         Buffer.BlockCopy(chunk, 0, target, incomingOffset, chunk.Length);
         incomingOffset += chunk.Length;
+        lastChunkTime = Time.unscaledTime;
+        int received = (message.file == "glb" ? 0 : incomingGlb.Length) + incomingOffset;
+        Status = $"Receiving host CAD ({100 * received / Math.Max(1, incomingGlb.Length + incomingJson.Length)}%)";
         if (incomingOffset < target.Length)
         { RequestPackageChunk(message.file); return; }
         incomingOffset = 0;
@@ -471,7 +584,7 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
             incomingJson = null;
             incomingPackageId = null;
             Status = "Waiting for shared location";
-            Send(new CADRoomWire { kind = "hello" }, NetworkManager.ServerClientId);
+            StartAwaitingHost();
         }
         catch (Exception e)
         {
@@ -652,6 +765,7 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
 
     private void LateUpdate()
     {
+        UpdateGuestHandshake();
         if (!roomActive || State != RoomState.Ready || applyingNetworkState || !FrameReady)
         {
             if (roomActive && State == RoomState.Ready && !FrameReady)
@@ -835,6 +949,8 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
         incomingJson = null;
         incomingPackageId = null;
         incomingOffset = 0;
+        awaitingHost = false;
+        guestLocalizing = false;
         virtualFrameReady = false;
         alignment.ResetAnchor();
         GetComponent<CADVirtualLocomotion>()?.SetRoomActive(false);
@@ -847,6 +963,9 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
         State = RoomState.Error;
         Status = reason;
         Debug.LogWarning("[CAD room] " + reason);
+        if (IsHost && network != null && network.IsListening)
+            foreach (ulong peer in waitingForAnchor.Union(readyClients).ToArray())
+                SendError(peer, "Host: " + reason);
     }
 
     private async void OnDestroy()

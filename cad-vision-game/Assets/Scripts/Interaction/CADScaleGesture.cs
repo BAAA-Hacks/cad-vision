@@ -144,28 +144,36 @@ public sealed class CADScaleGesture
     {
         if (!IsActive)
             return false;
+
+        float distance = Vector3.Distance(first, second);
+        if (!float.IsFinite(distance))
+            return false;
+
+        // Shared room without the lease yet: nothing moves; the gesture keeps re-baselining so
+        // it starts from here (no jump) once the lease arrives.
         if (multiplayer != null && multiplayer.IsInRoom &&
             !multiplayer.HasLease(modelRoot != null
                 ? new[] { CADMultiplayerLeaseTable.ModelId }
                 : objects.ConvertAll(target => target.Id)))
         {
-            initialDistance = handDistance;
+            initialDistance = distance;
+            initialAxis = second - first;
             if (modelRoot != null)
+            {
                 initialModelRatio = service.ModelScaleRatio;
+                initialModelRotation = modelRoot.rotation;
+            }
             else
                 for (int i = 0; i < objects.Count; i++)
                 {
                     ObjectTarget target = objects[i];
                     if (target.Transform == null) return false;
                     target.InitialScale = target.Transform.localScale;
+                    target.InitialRotation = target.Transform.rotation;
                     objects[i] = target;
                 }
             return true;
         }
-
-        float distance = Vector3.Distance(first, second);
-        if (!float.IsFinite(distance))
-            return false;
 
         // Scale in log space, so growing and shrinking have the same dead zone.
         float log = Mathf.Log(Ratio(distance));
