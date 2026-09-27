@@ -17,8 +17,8 @@ using UnityEngine.UI;
 /// the context menu switches its button sets.
 ///
 /// Lifecycle: starts hidden (Inspector: startVisible). ToggleMainMenu / ShowMainMenu /
-/// HideMainMenu are the entry points. Every show respawns it ~0.7 m in front of the head,
-/// a little below eye level, facing the user (never head-locked). While open it stays put,
+/// HideMainMenu are the entry points. Every show respawns it ~0.85 m (at least
+/// CADMenuPanel.MinMenuDistance) in front of the head, a little below eye level, facing the user (never head-locked). While open it stays put,
 /// except that pressing and holding its border or its header with trigger or pinch drags it
 /// rigidly with the pointer (CADMenuPanel's shared border drag; the plain-text header is an
 /// extra grab region). It stays open across model replacement; all state
@@ -34,7 +34,7 @@ public class CADMainMenu : MonoBehaviour
 {
     [Header("Placement")]
     [Tooltip("Distance in front of the headset when shown (m).")]
-    [SerializeField, Range(0.4f, 1.2f)] private float spawnDistance = 0.7f;
+    [SerializeField, Range(0.4f, 1.2f)] private float spawnDistance = 0.85f;
     [Tooltip("How far below eye level it appears (m).")]
     [SerializeField] private float spawnDrop = 0.12f;
 

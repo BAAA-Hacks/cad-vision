@@ -1626,6 +1626,41 @@ public class CADInteractionPolishTests
         Assert.That(CanvasOf(menu.Panel).lossyScale.x, Is.EqualTo(0.00075f).Within(1e-7f));
     }
 
+    [Test]
+    public void EdgeGlowIsOnlyNearTheCursorAndOnlyOutsideTheWindow()
+    {
+        svc.EnterScope("A");
+        OpenObjectMenu("P1");
+        CADMenuPanel panel = menu.Panel;
+        RaisePointer(panel, 3, Oculus.Interaction.PointerEventType.Hover, BorderPoint(panel, left: true));
+        panel.UpdateGrabGlow(1f);
+
+        Rect r = CanvasOf(panel).rect;
+        float edge = CADMenuPanel.BorderWidth;
+        Assert.That(panel.EdgeGlow.AlphaAt(new Vector2(r.xMin - edge, r.center.y)), Is.GreaterThan(0.9f), "lit at the cursor");
+        Assert.That(panel.EdgeGlow.AlphaAt(new Vector2(r.xMax + edge, r.center.y)), Is.LessThan(0.01f), "far edge stays dark");
+        Assert.That(panel.EdgeGlow.AlphaAt(new Vector2(r.center.x, r.yMax + edge)), Is.LessThan(0.2f), "fades along the edge");
+
+        // Every glow vertex is on or outside the window's rounded edge (the panel background).
+        List<Vector3> vertices = panel.EdgeGlow.GetVertexPositions();
+        Assert.That(vertices, Is.Not.Empty);
+        var window = new Rect(r.xMin - edge, r.yMin - edge, r.width + 2 * edge, r.height + 2 * edge);
+        float radius = panel.EdgeGlow.Radius;
+        foreach (Vector3 v in vertices)
+        {
+            Vector2 q = new Vector2(Mathf.Abs(v.x - window.center.x), Mathf.Abs(v.y - window.center.y))
+                - (window.size * 0.5f - Vector2.one * radius);
+            float outside = Vector2.Max(q, Vector2.zero).magnitude + Mathf.Min(Mathf.Max(q.x, q.y), 0f) - radius;
+            Assert.That(outside, Is.GreaterThanOrEqualTo(-1e-3f), $"glow vertex {v} is over the window");
+        }
+    }
+
+    [Test]
+    public void MenusOpenAtLeastPointEightMetresAway()
+    {
+        Assert.That(CADMenuPanel.MinMenuDistance, Is.EqualTo(0.8f).Within(1e-4f));
+    }
+
     private static void RaisePointer(CADMenuPanel panel, int id, Oculus.Interaction.PointerEventType type, Vector3 point) =>
         typeof(CADMenuPanel).GetMethod("TrackHover", Any).Invoke(panel,
             new object[] { new Oculus.Interaction.PointerEvent(id, type, new Pose(point, Quaternion.identity)) });

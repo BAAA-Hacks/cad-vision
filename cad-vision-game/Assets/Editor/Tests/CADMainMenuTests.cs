@@ -571,8 +571,8 @@ public class CADMainMenuTests
         Assert.That(Camera.main.transform, Is.SameAs(head), "the test eye is Camera.main");
         Vector3 offset = menu.PanelTransform.position - head.position;
         Vector3 flatForward = Vector3.ProjectOnPlane(head.forward, Vector3.up).normalized;
-        Assert.That(Vector3.Dot(Vector3.ProjectOnPlane(offset, Vector3.up), flatForward), Is.InRange(0.6f, 0.8f),
-            "0.6–0.8 m ahead");
+        Assert.That(Vector3.Dot(Vector3.ProjectOnPlane(offset, Vector3.up), flatForward), Is.InRange(0.75f, 0.95f),
+            "0.75–0.95 m ahead");
         Assert.That(offset.y, Is.InRange(-0.2f, -0.01f), "slightly below eye level");
         Assert.That(Vector3.Dot(menu.PanelTransform.forward, offset.normalized), Is.GreaterThan(0.99f), "faces the user");
     }
