@@ -11,6 +11,12 @@ public sealed class CADRoomWire
     public string packageId;
     public string groupId;
     public string anchorId;
+    public string mode;
+    public string file;
+    public string data;
+    public int offset;
+    public int glbLength;
+    public int jsonLength;
     public string id;
     public string[] ids;
     public string reason;

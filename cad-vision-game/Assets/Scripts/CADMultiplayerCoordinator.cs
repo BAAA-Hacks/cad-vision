@@ -26,14 +26,19 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
     private const int MaxPacketBytes = 2 * 1024 * 1024;
     private const float PoseInterval = 0.05f;
     private const float HeartbeatInterval = 1f;
+    private const int PackageChunkBytes = 16 * 1024;
+    private const int MaxModelBytes = 100 * 1024 * 1024;
+    private const int MaxMetadataBytes = 10 * 1024 * 1024;
 
     public enum RoomState { Offline, Connecting, Localizing, Syncing, Ready, Error }
+    public enum RoomMode { Passthrough, Virtual }
     public RoomState State { get; private set; } = RoomState.Offline;
     public string Status { get; private set; } = "Offline";
     public string RoomCode => session?.Code ?? string.Empty;
     public bool IsInRoom => roomActive;
     public bool IsHost => session != null && session.IsHost;
     public int ParticipantCount => session?.Players?.Count ?? 0;
+    public RoomMode Mode { get; private set; } = RoomMode.Passthrough;
 
     private CADVisionManipulationService service;
     private CADXRPassthroughToggle environment;
@@ -60,6 +65,13 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
     private float nextPoseTime;
     private float nextHeartbeatTime;
     private int operationGeneration;
+    private Pose virtualFrame;
+    private bool virtualFrameReady;
+    private byte[] incomingGlb;
+    private byte[] incomingJson;
+    private string incomingPackageId;
+    private int incomingOffset;
+    private bool importingPackage;
 
     private void Awake()
     {
@@ -109,14 +121,14 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
         Debug.Log("[CAD room] Using network transport " + transport.GetType().Name);
     }
 
-    private async Task<bool> PrepareAsync()
+    private async Task<bool> PrepareAsync(bool requireModel)
     {
         State = RoomState.Connecting;
         Status = "Preparing CAD room";
-        for (int i = 0; i < 100 &&
+        for (int i = 0; requireModel && i < 100 &&
             (service.ModelRoot == null || string.IsNullOrEmpty(CADPackageIdentity.Current)); i++)
             await Task.Delay(100);
-        if (service.ModelRoot == null || string.IsNullOrEmpty(CADPackageIdentity.Current))
+        if (requireModel && (service.ModelRoot == null || string.IsNullOrEmpty(CADPackageIdentity.Current)))
         {
             SetError("The bundled CAD model has not loaded.");
             return false;
@@ -129,33 +141,39 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
         return true;
     }
 
-    public async void HostRoom() => await HostRoomAsync();
+    public async void HostRoom() => await HostRoomAsync(RoomMode.Passthrough);
+    public async void HostVirtualRoom() => await HostRoomAsync(RoomMode.Virtual);
 
-    public async Task HostRoomAsync()
+    public Task HostRoomAsync() => HostRoomAsync(RoomMode.Passthrough);
+
+    public async Task HostRoomAsync(RoomMode mode)
     {
         if (roomActive) return;
         int current = ++operationGeneration;
         try
         {
-            if (!await PrepareAsync() || current != operationGeneration) return;
+            if (!await PrepareAsync(true) || current != operationGeneration) return;
             Status = "Creating room";
             var options = new SessionOptions { Type = SessionType, MaxPlayers = 2,
                 Name = "CAD Vision room", IsPrivate = true }.WithRelayNetwork();
             session = await MultiplayerService.Instance.CreateSessionAsync(options);
             if (current != operationGeneration) return;
-            BeginConnectedRoom();
+            BeginConnectedRoom(mode);
             State = RoomState.Localizing;
-            Status = "Creating shared location";
-            Vector3 center = service.TryGetModelBounds(out Bounds bounds)
-                ? bounds.center : service.ModelRoot.position;
-            if (!await alignment.CreateAndShareAsync(new Pose(center, Quaternion.identity)))
-            { SetError(alignment.Status); return; }
+            if (mode == RoomMode.Passthrough)
+            {
+                Status = "Creating shared location";
+                Vector3 center = service.TryGetModelBounds(out Bounds bounds)
+                    ? bounds.center : service.ModelRoot.position;
+                if (!await alignment.CreateAndShareAsync(new Pose(center, Quaternion.identity)))
+                { SetError(alignment.Status); return; }
+            }
             if (current != operationGeneration) return;
             CaptureAcceptedState();
             everReady = true;
             State = RoomState.Ready;
             Status = "Room ready — give the code to the other headset";
-            foreach (ulong peer in waitingForAnchor.ToArray()) SendAnchor(peer);
+            foreach (ulong peer in waitingForAnchor.ToArray()) SendFrame(peer);
         }
         catch (Exception e)
         {
@@ -175,14 +193,14 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
         int current = ++operationGeneration;
         try
         {
-            if (!await PrepareAsync() || current != operationGeneration) return;
+            if (!await PrepareAsync(false) || current != operationGeneration) return;
             Status = "Joining room";
             session = await MultiplayerService.Instance.JoinSessionByCodeAsync(code,
                 new JoinSessionOptions { Type = SessionType });
             if (current != operationGeneration) return;
-            BeginConnectedRoom();
+            BeginConnectedRoom(RoomMode.Passthrough);
             State = RoomState.Localizing;
-            Status = "Waiting for shared location";
+            Status = "Waiting for host CAD and room location";
             Send(new CADRoomWire { kind = "hello" }, NetworkManager.ServerClientId);
         }
         catch (Exception e)
@@ -192,11 +210,10 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
         }
     }
 
-    private void BeginConnectedRoom()
+    private void BeginConnectedRoom(RoomMode mode)
     {
+        SetMode(mode);
         roomActive = true;
-        if (environment != null) environment.SetPassthroughEnabled(true);
-        GetComponent<CADVirtualLocomotion>()?.SetRoomActive(true);
         network.CustomMessagingManager.RegisterNamedMessageHandler(MessageName, OnMessage);
         network.OnClientDisconnectCallback += OnClientDisconnected;
         network.OnClientConnectedCallback += OnClientConnected;
@@ -220,11 +237,33 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
             SetError("Host left the room");
     }
 
-    private void SendAnchor(ulong clientId)
+    private void SetMode(RoomMode mode)
     {
-        if (!alignment.IsReady) return;
-        Send(new CADRoomWire { kind = "anchor", groupId = alignment.GroupId.ToString(),
-            anchorId = alignment.AnchorId.ToString() }, clientId);
+        Mode = mode;
+        if (environment != null) environment.SetPassthroughEnabled(mode == RoomMode.Passthrough);
+        GetComponent<CADVirtualLocomotion>()?.SetRoomActive(mode == RoomMode.Passthrough);
+        virtualFrameReady = false;
+        if (mode == RoomMode.Virtual)
+        {
+            Transform head = Camera.main != null ? Camera.main.transform : transform;
+            float yaw = head.eulerAngles.y;
+            float floorY = environment != null && environment.VirtualFloor != null
+                ? environment.VirtualFloor.position.y : 0f;
+            virtualFrame = new Pose(new Vector3(head.position.x, floorY, head.position.z),
+                Quaternion.Euler(0f, yaw, 0f));
+            virtualFrameReady = true;
+        }
+    }
+
+    private bool FrameReady => Mode == RoomMode.Virtual ? virtualFrameReady : alignment.IsReady;
+    private Pose FramePose => Mode == RoomMode.Virtual ? virtualFrame : alignment.WorldPose;
+
+    private void SendFrame(ulong clientId)
+    {
+        if (!FrameReady) return;
+        Send(new CADRoomWire { kind = "frame", mode = Mode == RoomMode.Virtual ? "virtual" : "passthrough",
+            groupId = Mode == RoomMode.Passthrough ? alignment.GroupId.ToString() : null,
+            anchorId = Mode == RoomMode.Passthrough ? alignment.AnchorId.ToString() : null }, clientId);
     }
 
     private async void LocalizeGuestAsync(CADRoomWire message)
@@ -232,9 +271,19 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
         if (message.protocol != CADPackageIdentity.Protocol ||
             message.packageId != CADPackageIdentity.Current)
         { SetError("The headsets have different CAD files or app versions."); return; }
-        if (!Guid.TryParse(message.groupId, out Guid group) ||
+        if (message.mode == "virtual")
+        {
+            SetMode(RoomMode.Virtual);
+            State = RoomState.Syncing;
+            Status = "Loading shared CAD state";
+            Send(new CADRoomWire { kind = "ready" }, NetworkManager.ServerClientId);
+            return;
+        }
+        if (message.mode != "passthrough" ||
+            !Guid.TryParse(message.groupId, out Guid group) ||
             !Guid.TryParse(message.anchorId, out Guid anchorId))
         { SetError("Invalid shared location from host"); return; }
+        SetMode(RoomMode.Passthrough);
         try
         {
             if (!await alignment.LoadSharedAsync(group, anchorId))
@@ -272,12 +321,16 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
         {
             case "hello":
                 if (message.packageId != CADPackageIdentity.Current)
-                { SendError(sender, "The headsets have different CAD files or app versions."); return; }
+                { OfferHostPackage(sender); return; }
                 waitingForAnchor.Add(sender);
-                SendAnchor(sender);
+                SendFrame(sender);
+                break;
+            case "package-next":
+                SendPackageChunk(sender, message);
                 break;
             case "ready":
-                if (!waitingForAnchor.Contains(sender) || !alignment.IsReady) return;
+                if (!waitingForAnchor.Contains(sender) || !FrameReady ||
+                    message.packageId != CADPackageIdentity.Current) return;
                 readyClients.Add(sender);
                 SendSnapshot(sender);
                 break;
@@ -308,7 +361,9 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
     {
         switch (message.kind)
         {
-            case "anchor": LocalizeGuestAsync(message); break;
+            case "package-offer": ReceivePackageOffer(message); break;
+            case "package-chunk": ReceivePackageChunk(message); break;
+            case "frame": LocalizeGuestAsync(message); break;
             case "snapshot": ApplySnapshot(message); break;
             case "state":
                 if (State != RoomState.Ready) bufferedUpdates.Add(message);
@@ -330,11 +385,107 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
     private void SendError(ulong peer, string reason) =>
         Send(new CADRoomWire { kind = "error", reason = reason }, peer);
 
+    private void OfferHostPackage(ulong peer)
+    {
+        byte[] glb = CADPackageIdentity.ModelBytes;
+        byte[] json = CADPackageIdentity.MetadataBytes;
+        if (glb == null || json == null || glb.Length > MaxModelBytes ||
+            json.Length > MaxMetadataBytes)
+        { SendError(peer, "Host CAD is unavailable or too large to share."); return; }
+        Send(new CADRoomWire { kind = "package-offer", glbLength = glb.Length,
+            jsonLength = json.Length }, peer);
+    }
+
+    private void SendPackageChunk(ulong peer, CADRoomWire request)
+    {
+        if (readyClients.Contains(peer) || request.packageId != CADPackageIdentity.Current)
+            return;
+        byte[] source = request.file == "glb" ? CADPackageIdentity.ModelBytes :
+            request.file == "json" ? CADPackageIdentity.MetadataBytes : null;
+        if (source == null || request.offset < 0 || request.offset >= source.Length) return;
+        int count = Math.Min(PackageChunkBytes, source.Length - request.offset);
+        Send(new CADRoomWire { kind = "package-chunk", file = request.file,
+            offset = request.offset, data = Convert.ToBase64String(source, request.offset, count) }, peer);
+    }
+
+    private void ReceivePackageOffer(CADRoomWire message)
+    {
+        if (State != RoomState.Localizing || importingPackage ||
+            message.glbLength <= 0 || message.glbLength > MaxModelBytes ||
+            message.jsonLength <= 0 || message.jsonLength > MaxMetadataBytes ||
+            string.IsNullOrEmpty(message.packageId))
+        { SetError("Host CAD package is invalid or too large."); return; }
+        incomingGlb = new byte[message.glbLength];
+        incomingJson = new byte[message.jsonLength];
+        incomingPackageId = message.packageId;
+        incomingOffset = 0;
+        Status = "Receiving host CAD";
+        RequestPackageChunk("glb");
+    }
+
+    private void RequestPackageChunk(string file)
+    {
+        Send(new CADRoomWire { kind = "package-next", file = file,
+            offset = incomingOffset, packageId = incomingPackageId }, NetworkManager.ServerClientId);
+    }
+
+    private void ReceivePackageChunk(CADRoomWire message)
+    {
+        if (incomingGlb == null || importingPackage ||
+            message.packageId != incomingPackageId || message.offset != incomingOffset ||
+            string.IsNullOrEmpty(message.data)) return;
+        byte[] target = message.file == "glb" ? incomingGlb :
+            message.file == "json" ? incomingJson : null;
+        if (target == null) return;
+        byte[] chunk;
+        try { chunk = Convert.FromBase64String(message.data); }
+        catch (FormatException) { SetError("Host CAD transfer was corrupted."); return; }
+        if (chunk.Length == 0 || chunk.Length > PackageChunkBytes ||
+            incomingOffset + chunk.Length > target.Length)
+        { SetError("Host CAD transfer was corrupted."); return; }
+        Buffer.BlockCopy(chunk, 0, target, incomingOffset, chunk.Length);
+        incomingOffset += chunk.Length;
+        if (incomingOffset < target.Length)
+        { RequestPackageChunk(message.file); return; }
+        incomingOffset = 0;
+        if (message.file == "glb") RequestPackageChunk("json");
+        else ImportHostPackageAsync();
+    }
+
+    private async void ImportHostPackageAsync()
+    {
+        importingPackage = true;
+        int generation = operationGeneration;
+        try
+        {
+            if (CADPackageIdentity.Compute(incomingGlb, incomingJson) != incomingPackageId)
+                throw new InvalidOperationException("Host CAD verification failed.");
+            Status = "Loading host CAD";
+            CadModelLoader loader = FindAnyObjectByType<CadModelLoader>();
+            if (loader == null) throw new InvalidOperationException("CAD loader is unavailable.");
+            await loader.LoadPackageAsync(incomingGlb, Encoding.UTF8.GetString(incomingJson).TrimStart('\uFEFF'));
+            if (generation != operationGeneration) return;
+            if (CADPackageIdentity.Current != incomingPackageId)
+                throw new InvalidOperationException("Host CAD verification failed after loading.");
+            incomingGlb = null;
+            incomingJson = null;
+            incomingPackageId = null;
+            Status = "Waiting for shared location";
+            Send(new CADRoomWire { kind = "hello" }, NetworkManager.ServerClientId);
+        }
+        catch (Exception e)
+        {
+            Debug.LogException(e);
+            if (generation == operationGeneration) SetError("Could not load host CAD: " + e.Message);
+        }
+        finally { importingPackage = false; }
+    }
+
     private void Send(CADRoomWire message, ulong peer)
     {
         if (network == null || !network.IsListening || network.CustomMessagingManager == null) return;
         message.protocol = CADPackageIdentity.Protocol;
-        message.packageId = CADPackageIdentity.Current;
+        if (message.kind != "package-next") message.packageId = CADPackageIdentity.Current;
         byte[] bytes = Encoding.UTF8.GetBytes(JsonUtility.ToJson(message));
         if (bytes.Length > MaxPacketBytes) { SetError("CAD room message is too large"); return; }
         using var writer = new FastBufferWriter(bytes.Length + 8, Allocator.Temp);
@@ -352,7 +503,7 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
 
     private void SendSnapshot(ulong peer)
     {
-        if (!alignment.IsReady) return;
+        if (!FrameReady) return;
         var model = CaptureModel();
         Send(new CADRoomWire { kind = "snapshot", revision = revision,
             position = model.position, rotation = model.rotation, scale = model.scale,
@@ -361,7 +512,7 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
 
     private void ApplySnapshot(CADRoomWire message)
     {
-        if (State != RoomState.Syncing || !alignment.IsReady ||
+        if (State != RoomState.Syncing || !FrameReady ||
             message.packageId != CADPackageIdentity.Current ||
             !ValidPose(message) || message.parts == null)
         { SetError("Shared CAD snapshot is invalid"); return; }
@@ -437,7 +588,7 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
 
     private void ApplyModel(CADRoomWire message)
     {
-        Pose frame = alignment.WorldPose;
+        Pose frame = FramePose;
         service.ApplyAcceptedModelState(frame.position + frame.rotation * message.position,
             frame.rotation * message.rotation, message.scale);
     }
@@ -452,7 +603,7 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
     private CADRoomPart CaptureModel()
     {
         Transform root = service.ModelRoot;
-        Pose frame = alignment.WorldPose;
+        Pose frame = FramePose;
         return new CADRoomPart { id = CADMultiplayerLeaseTable.ModelId,
             position = Quaternion.Inverse(frame.rotation) * (root.position - frame.position),
             rotation = Quaternion.Inverse(frame.rotation) * root.rotation,
@@ -501,15 +652,15 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
 
     private void LateUpdate()
     {
-        if (!roomActive || State != RoomState.Ready || applyingNetworkState || !alignment.IsReady)
+        if (!roomActive || State != RoomState.Ready || applyingNetworkState || !FrameReady)
         {
-            if (roomActive && State == RoomState.Ready && !alignment.IsReady)
+            if (roomActive && State == RoomState.Ready && !FrameReady)
             {
                 ReleaseAllLocalLeases();
                 State = RoomState.Localizing;
                 Status = "Shared location lost — hold still to relocalize";
             }
-            else if (roomActive && everReady && State == RoomState.Localizing && alignment.IsReady)
+            else if (roomActive && everReady && State == RoomState.Localizing && FrameReady)
             {
                 State = IsHost ? RoomState.Ready : RoomState.Syncing;
                 Status = IsHost ? "Room ready" : "Refreshing shared CAD state";
@@ -582,7 +733,7 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
 
     private void ApplyAcceptedModel(CADRoomPart model)
     {
-        Pose frame = alignment.WorldPose;
+        Pose frame = FramePose;
         service.ApplyAcceptedModelState(frame.position + frame.rotation * model.position,
             frame.rotation * model.rotation, model.scale);
     }
@@ -601,7 +752,7 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
     public bool RequestLease(IEnumerable<string> ids)
     {
         if (!roomActive) return true;
-        if (State != RoomState.Ready || !alignment.IsReady) return false;
+        if (State != RoomState.Ready || !FrameReady) return false;
         string[] requested = Normalize(ids);
         if (requested.Length == 0) return false;
         if (SameTargets(localTargets, requested))
@@ -632,7 +783,7 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
         if (--localLeaseReferences > 0) return;
         if (localToken != 0)
         {
-            foreach (string id in alignment.IsReady ? localTargets : Array.Empty<string>())
+            foreach (string id in FrameReady ? localTargets : Array.Empty<string>())
             {
                 CADRoomPart p = id == CADMultiplayerLeaseTable.ModelId ? CaptureModel()
                     : byId.ContainsKey(id) ? CapturePart(id) : null;
@@ -680,6 +831,11 @@ public sealed class CADMultiplayerCoordinator : MonoBehaviour
         readyClients.Clear();
         waitingForAnchor.Clear();
         bufferedUpdates.Clear();
+        incomingGlb = null;
+        incomingJson = null;
+        incomingPackageId = null;
+        incomingOffset = 0;
+        virtualFrameReady = false;
         alignment.ResetAnchor();
         GetComponent<CADVirtualLocomotion>()?.SetRoomActive(false);
         State = RoomState.Offline;

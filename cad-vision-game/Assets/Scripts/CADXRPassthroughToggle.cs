@@ -75,7 +75,9 @@ public class CADXRPassthroughToggle : MonoBehaviour
 
     public void SetPassthroughEnabled(bool enabled)
     {
-        if (!enabled && GetComponent<CADMultiplayerCoordinator>()?.IsInRoom == true)
+        CADMultiplayerCoordinator room = GetComponent<CADMultiplayerCoordinator>();
+        if (room != null && room.IsInRoom &&
+            enabled != (room.Mode == CADMultiplayerCoordinator.RoomMode.Passthrough))
             return;
         if (passthroughLayer == null)
         {

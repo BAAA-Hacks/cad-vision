@@ -61,7 +61,7 @@ public class CADMainMenu : MonoBehaviour
     private Text scopeSection, roomSection, roomStatus, cadenSection, viewSection, modelSection, interfaceSection;
     private Text scopeText, displayLabel, outlineLabel, scaleLabel, scaleValue;
     private readonly Dictionary<CADDisplayMode, Button> displayButtons = new();
-    private Button scopeButton, hostRoomButton, joinRoomButton, leaveRoomButton;
+    private Button scopeButton, hostRoomButton, hostVirtualRoomButton, joinRoomButton, leaveRoomButton;
     private Button cadenButton, outlineButton;
     private Button manipulateButton, resetButton, resetObjectButton, resetScaleButton, resetAssemblyButton, resetModelButton;
     private Button scaleDownButton, scaleUpButton, closeButton;
@@ -184,6 +184,8 @@ public class CADMainMenu : MonoBehaviour
             ? $"Room: {multiplayer.RoomCode} ({multiplayer.ParticipantCount}/2)\n{multiplayer.Status}"
             : $"Room: {multiplayer.Status}");
         CADMenuPanel.SetInteractable(hostRoomButton, !multiplayer.IsInRoom &&
+            multiplayer.State != CADMultiplayerCoordinator.RoomState.Connecting);
+        CADMenuPanel.SetInteractable(hostVirtualRoomButton, !multiplayer.IsInRoom &&
             multiplayer.State != CADMultiplayerCoordinator.RoomState.Connecting);
         CADMenuPanel.SetInteractable(joinRoomButton, !multiplayer.IsInRoom &&
             multiplayer.State != CADMultiplayerCoordinator.RoomState.Connecting);
@@ -417,8 +419,10 @@ public class CADMainMenu : MonoBehaviour
 
         roomSection = Section("Shared room");
         roomStatus = panel.CreateText("Room status", "Room: Offline");
-        hostRoomButton = AddButton("Host", multiplayer.HostRoom,
-            "Create a room and show its code to the second headset.");
+        hostRoomButton = AddButton("Host passthrough", multiplayer.HostRoom,
+            "Create a shared room for two headsets in the same physical space.");
+        hostVirtualRoomButton = AddButton("Host virtual", multiplayer.HostVirtualRoom,
+            "Create a virtual room for headsets in different locations.");
         joinRoomButton = AddButton("Join", PromptJoinRoom,
             "Tap the code shown on the host headset using the VR keypad.");
         leaveRoomButton = AddButton("Leave", multiplayer.LeaveRoom,
@@ -491,7 +495,8 @@ public class CADMainMenu : MonoBehaviour
 
             new(SectionHeight, roomSection),
             new(TextHeight * 2f, roomStatus),
-            new(ButtonHeight, SectionSpacing, hostRoomButton, joinRoomButton, leaveRoomButton),
+            new(ButtonHeight, SectionSpacing, hostRoomButton, hostVirtualRoomButton),
+            new(ButtonHeight, joinRoomButton, leaveRoomButton),
 
             new(SectionHeight, cadenSection),
             new(ButtonHeight, SectionSpacing, cadenButton),
