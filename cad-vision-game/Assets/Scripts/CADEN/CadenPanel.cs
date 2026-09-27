@@ -256,7 +256,8 @@ public sealed class CadenPanel : MonoBehaviour
         AnimateMinimize();
         if (Time.unscaledTime < nextContextUpdate) return;
         nextContextUpdate = Time.unscaledTime + 0.5f;
-        context.text = "Assembly  /  " + host.AssemblyName;
+        bool sharedRoom = modelService != null && modelService.TryGetComponent(out CADMultiplayerCoordinator room) && room.IsInRoom;
+        context.text = "Assembly  /  " + host.AssemblyName + (sharedRoom ? "   ·   Shared room: CADEN can't move parts" : "");
         SetBusy(host.IsBusy);
         send.interactable = !busy && host.Session != null && !string.IsNullOrWhiteSpace(input.text);
     }

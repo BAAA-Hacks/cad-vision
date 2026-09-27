@@ -37,6 +37,7 @@ public sealed class CADScaleGesture
     }
 
     private CADVisionManipulationService service;
+    private CADMultiplayerCoordinator multiplayer;
     private readonly List<ObjectTarget> objects = new();
     private Transform modelRoot;
     private Vector3 modelPivotLocal;
@@ -62,6 +63,8 @@ public sealed class CADScaleGesture
             return false;
 
         service = manipulationService;
+        multiplayer = service.GetComponent<CADMultiplayerCoordinator>();
+        multiplayer?.RequestLease(new[] { CADMultiplayerLeaseTable.ModelId });
         modelRoot = root;
         initialModelRatio = manipulationService.ModelScaleRatio;
         initialModelRotation = root.rotation;
@@ -105,6 +108,8 @@ public sealed class CADScaleGesture
             return false;
 
         service = manipulationService;
+        multiplayer = service.GetComponent<CADMultiplayerCoordinator>();
+        multiplayer?.RequestLease(objects.ConvertAll(target => target.Id));
         return Start(handDistance, pivotWorld);
     }
 
@@ -143,6 +148,32 @@ public sealed class CADScaleGesture
         float distance = Vector3.Distance(first, second);
         if (!float.IsFinite(distance))
             return false;
+
+        // Shared room without the lease yet: nothing moves; the gesture keeps re-baselining so
+        // it starts from here (no jump) once the lease arrives.
+        if (multiplayer != null && multiplayer.IsInRoom &&
+            !multiplayer.HasLease(modelRoot != null
+                ? new[] { CADMultiplayerLeaseTable.ModelId }
+                : objects.ConvertAll(target => target.Id)))
+        {
+            initialDistance = distance;
+            initialAxis = second - first;
+            if (modelRoot != null)
+            {
+                initialModelRatio = service.ModelScaleRatio;
+                initialModelRotation = modelRoot.rotation;
+            }
+            else
+                for (int i = 0; i < objects.Count; i++)
+                {
+                    ObjectTarget target = objects[i];
+                    if (target.Transform == null) return false;
+                    target.InitialScale = target.Transform.localScale;
+                    target.InitialRotation = target.Transform.rotation;
+                    objects[i] = target;
+                }
+            return true;
+        }
 
         // Scale in log space, so growing and shrinking have the same dead zone.
         float log = Mathf.Log(Ratio(distance));
@@ -209,6 +240,10 @@ public sealed class CADScaleGesture
 
     public void End()
     {
+        if (modelRoot != null)
+            multiplayer?.ReleaseLease(new[] { CADMultiplayerLeaseTable.ModelId });
+        else if (objects.Count > 0)
+            multiplayer?.ReleaseLease(objects.ConvertAll(target => target.Id));
         IsActive = false;
         objects.Clear();
         modelRoot = null;

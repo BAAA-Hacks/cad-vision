@@ -46,6 +46,7 @@ public class CADMainMenu : MonoBehaviour
     // Layout in canvas units (1 unit = 1 mm at 100% UI scale); style guide sizes (CADMenuPanel).
     private const float PanelWidth = 440f;
     private const float HeaderHeight = 64f;
+    private const float TitleHeight = 36f; // Room-code keypad heading.
     private const float LogoSize = 56f;
     private const float SectionHeight = 28f;
     private const float TextHeight = 30f;
@@ -58,22 +59,30 @@ public class CADMainMenu : MonoBehaviour
     private CADPointerInteraction pointerInteraction;
 
     private CADMenuPanel panel;
+    private CADMenuPanel codePanel;
     private GameObject panelRoot; // panel.Root.
     private RectTransform header; // Logo + wordmark + subtitle; also a grab region of the border drag.
     private Text title;           // "CADVision" wordmark.
-    private Text scopeSection, cadenSection, viewSection, modelSection;
-    private Text scopeText, displayLabel, outlineLabel;
+
+    private Text scopeSection, roomSection, roomStatus, cadenSection, viewSection, modelSection, interfaceSection;
+    private Text scopeText, displayLabel, outlineLabel, scaleLabel, scaleValue;
     private readonly Dictionary<CADDisplayMode, Button> displayButtons = new();
-    private Button scopeButton, cadenButton, outlineButton;
+    private Button scopeButton, hostRoomButton, hostVirtualRoomButton, joinRoomButton, leaveRoomButton;
+    private Button cadenButton, outlineButton;
     private Button manipulateButton, resetButton, resetObjectButton, resetScaleButton, resetAssemblyButton, resetModelButton;
     private Button closeButton;
     private bool resetExpanded;
+    private CADMultiplayerCoordinator multiplayer;
+    private Text enteredRoomCode;
+    private Button confirmRoomCode;
+    private string roomCode = string.Empty;
 
 
-    public bool IsOpen => panel != null && panel.IsOpen;
-    public bool IsDragging => panel != null && panel.IsDragging;
+    public bool IsOpen => panel != null && panel.IsOpen || codePanel != null && codePanel.IsOpen;
+    public bool IsDragging => panel != null && panel.IsDragging || codePanel != null && codePanel.IsDragging;
     public bool IsResetExpanded => resetExpanded;
-    public Transform PanelTransform => panelRoot != null ? panelRoot.transform : null;
+    public Transform PanelTransform => codePanel != null && codePanel.IsOpen
+        ? codePanel.Root.transform : panelRoot != null ? panelRoot.transform : null;
     /// <summary>The shared panel this menu is built from (same class as the context menu's).</summary>
     public CADMenuPanel Panel => panel;
 
@@ -81,18 +90,34 @@ public class CADMainMenu : MonoBehaviour
     {
         manipulationService = GetComponent<CADVisionManipulationService>();
         settings = GetComponent<CADUISettings>();
+        multiplayer = GetComponent<CADMultiplayerCoordinator>();
+        if (multiplayer == null) multiplayer = gameObject.AddComponent<CADMultiplayerCoordinator>();
         pointerInteraction = GetComponent<CADPointerInteraction>();
         BuildPanel();
+        BuildCodePanel();
         panel.Hide();
+        codePanel.Hide();
         if (startVisible)
             ShowMainMenu();
     }
 
-    private void OnEnable() => panel?.EnableBorderDrag(pointerInteraction);
+    private void OnEnable()
+    {
+        panel?.EnableBorderDrag(pointerInteraction);
+        codePanel?.EnableBorderDrag(pointerInteraction);
+    }
 
-    private void OnDisable() => panel?.DisableBorderDrag();
+    private void OnDisable()
+    {
+        panel?.DisableBorderDrag();
+        codePanel?.DisableBorderDrag();
+    }
 
-    private void OnDestroy() => panel?.Destroy();
+    private void OnDestroy()
+    {
+        panel?.Destroy();
+        codePanel?.Destroy();
+    }
 
     // ---------------- Show / hide ----------------
 
@@ -105,6 +130,7 @@ public class CADMainMenu : MonoBehaviour
     /// <summary>Shows the menu in front of the user; if already open, brings it back in front.</summary>
     public void ShowMainMenu()
     {
+        codePanel?.Hide();
         panel.EndDrag();
         resetExpanded = false;
         ApplyLayout();
@@ -120,10 +146,16 @@ public class CADMainMenu : MonoBehaviour
         if (IsOpen)
             Debug.Log("[CADMainMenu] Hidden.");
         panel.Hide();
+        codePanel?.Hide();
     }
 
     private void LateUpdate()
     {
+        if (codePanel != null && codePanel.IsOpen)
+        {
+            codePanel.UpdateDrag();
+            return;
+        }
         if (!IsOpen)
             return;
 
@@ -156,6 +188,19 @@ public class CADMainMenu : MonoBehaviour
     public void Refresh()
     {
         SetText(scopeText, $"Scope: {manipulationService.CurrentScopeDisplayName}");
+        // Hosting shares the loaded model: until one is loaded, say so and keep Host disabled.
+        bool connecting = multiplayer.State == CADMultiplayerCoordinator.RoomState.Connecting;
+        bool canHost = !multiplayer.IsInRoom && !connecting && multiplayer.HasShareableModel;
+        SetText(roomStatus, multiplayer.IsInRoom
+            ? $"Room: {multiplayer.RoomCode} ({multiplayer.ParticipantCount}/2)\n{multiplayer.Status}"
+            : !multiplayer.HasShareableModel && !connecting && multiplayer.State == CADMultiplayerCoordinator.RoomState.Offline
+                ? "Room: Offline\nLoad a CAD model to host a room"
+                : $"Room: {multiplayer.Status}");
+        CADMenuPanel.SetInteractable(hostRoomButton, canHost);
+        CADMenuPanel.SetInteractable(hostVirtualRoomButton, canHost);
+        CADMenuPanel.SetInteractable(joinRoomButton, !multiplayer.IsInRoom &&
+            multiplayer.State != CADMultiplayerCoordinator.RoomState.Connecting);
+        CADMenuPanel.SetInteractable(leaveRoomButton, multiplayer.IsInRoom);
 
         // Exit inside an assembly; else Enter (enabled only for one selected assembly).
         bool atRoot = manipulationService.IsAtRootScope;
@@ -177,10 +222,10 @@ public class CADMainMenu : MonoBehaviour
         panel.SetSelected(manipulateButton, modelMode);
 
         CADMenuPanel.SetLabel(resetButton, resetExpanded ? "Reset ▲" : "Reset ▼");
-        CADMenuPanel.SetInteractable(resetObjectButton, manipulationService.GetSelectedIds().Count > 0);
-        CADMenuPanel.SetInteractable(resetScaleButton, manipulationService.ModelRoot != null);
-        CADMenuPanel.SetInteractable(resetAssemblyButton, ResetAssemblyTarget() != null);
-        CADMenuPanel.SetInteractable(resetModelButton, manipulationService.ModelRoot != null);
+        CADMenuPanel.SetInteractable(resetObjectButton, !multiplayer.IsInRoom && manipulationService.GetSelectedIds().Count > 0);
+        CADMenuPanel.SetInteractable(resetScaleButton, !multiplayer.IsInRoom && manipulationService.ModelRoot != null);
+        CADMenuPanel.SetInteractable(resetAssemblyButton, !multiplayer.IsInRoom && ResetAssemblyTarget() != null);
+        CADMenuPanel.SetInteractable(resetModelButton, !multiplayer.IsInRoom && manipulationService.ModelRoot != null);
 
         Vector3 scale = Vector3.one * settings.UiScale;
         if (panelRoot.transform.localScale != scale)
@@ -205,6 +250,86 @@ public class CADMainMenu : MonoBehaviour
             manipulationService.ExitScope();
         else if (manipulationService.TryGetEnterableSelection(out string assemblyId))
             manipulationService.EnterScope(assemblyId);
+    }
+
+    private void PromptJoinRoom()
+    {
+        roomCode = string.Empty;
+        RefreshCodePanel();
+        codePanel.Root.transform.SetPositionAndRotation(
+            panelRoot.transform.position, panelRoot.transform.rotation);
+        codePanel.Root.transform.localScale = Vector3.one * settings.UiScale;
+        panel.Hide();
+        codePanel.Show();
+    }
+
+    private void AppendRoomCode(char value)
+    {
+        if (roomCode.Length >= 12) return;
+        roomCode += value;
+        RefreshCodePanel();
+    }
+
+    private void BackspaceRoomCode()
+    {
+        if (roomCode.Length == 0) return;
+        roomCode = roomCode.Substring(0, roomCode.Length - 1);
+        RefreshCodePanel();
+    }
+
+    private void RefreshCodePanel()
+    {
+        SetText(enteredRoomCode, "Code: " + (roomCode.Length == 0 ? "------" : roomCode));
+        CADMenuPanel.SetInteractable(confirmRoomCode, roomCode.Length >= 4);
+    }
+
+    private void SubmitRoomCode()
+    {
+        if (roomCode.Length < 4) return;
+        string code = roomCode;
+        ShowMainMenu();
+        multiplayer.JoinRoom(code);
+    }
+
+    private void BuildCodePanel()
+    {
+        codePanel = new CADMenuPanel("CAD Room Code", PanelWidth, CADMenuStyle.Default);
+        codePanel.CloseRequested = HideMainMenu;
+        Text heading = codePanel.CreateText("Title", "Join shared room",
+            CADMenuPanel.FontSize + 2, FontStyle.Bold);
+        codePanel.AddGrabRegion(heading.rectTransform);
+        enteredRoomCode = codePanel.CreateText("Entered code", "Code: ------",
+            CADMenuPanel.FontSize + 4, FontStyle.Bold);
+        Text hint = codePanel.CreateText("Hint", "Tap the code shown on the host headset");
+        var rows = new List<CADMenuPanel.Row>
+        {
+            new(TitleHeight, heading),
+            new(ButtonHeight, enteredRoomCode),
+            new(TextHeight, SectionSpacing, hint)
+        };
+        const string keys = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        for (int row = 0; row < 6; row++)
+        {
+            var buttons = new Component[6];
+            for (int column = 0; column < 6; column++)
+            {
+                char key = keys[row * 6 + column];
+                buttons[column] = codePanel.CreateButton(key.ToString(),
+                    () => AppendRoomCode(key));
+            }
+            rows.Add(new CADMenuPanel.Row(ButtonHeight, buttons));
+        }
+        Button backspace = codePanel.CreateButton("Delete", BackspaceRoomCode);
+        Button clear = codePanel.CreateButton("Clear", () =>
+        {
+            roomCode = string.Empty;
+            RefreshCodePanel();
+        });
+        confirmRoomCode = codePanel.CreateButton("Join", SubmitRoomCode);
+        Button cancel = codePanel.CreateButton("Cancel", ShowMainMenu);
+        rows.Add(new CADMenuPanel.Row(ButtonHeight, backspace, clear, confirmRoomCode, cancel));
+        codePanel.Stack(rows);
+        RefreshCodePanel();
     }
 
     private void ToggleReset()
@@ -276,6 +401,17 @@ public class CADMainMenu : MonoBehaviour
             TextAnchor.MiddleLeft);
         scopeButton = AddButton("Enter assembly", OnScopeButton,
             "Enter the selected assembly, or go back up one level.");
+
+        roomSection = Section("Shared room");
+        roomStatus = panel.CreateText("Room status", "Room: Offline");
+        hostRoomButton = AddButton("Host passthrough", multiplayer.HostRoom,
+            "Create a shared room for two headsets in the same physical space.");
+        hostVirtualRoomButton = AddButton("Host virtual", multiplayer.HostVirtualRoom,
+            "Create a virtual room for headsets in different locations.");
+        joinRoomButton = AddButton("Join", PromptJoinRoom,
+            "Tap the code shown on the host headset using the VR keypad.");
+        leaveRoomButton = AddButton("Leave", multiplayer.LeaveRoom,
+            "Disconnect from the shared room.");
 
         cadenSection = Section("CADEN");
         cadenButton = AddButton("CADEN: Off", settings.ToggleCaden, "Show or hide the CADEN design assistant.");
@@ -380,6 +516,11 @@ public class CADMainMenu : MonoBehaviour
             new(SectionHeight, scopeSection),
             new(TextHeight, scopeText),
             new(ButtonHeight, SectionSpacing, scopeButton),
+
+            new(SectionHeight, roomSection),
+            new(TextHeight * 2f, roomStatus),
+            new(ButtonHeight, SectionSpacing, hostRoomButton, hostVirtualRoomButton),
+            new(ButtonHeight, joinRoomButton, leaveRoomButton),
 
             new(SectionHeight, cadenSection),
             new(ButtonHeight, SectionSpacing, cadenButton),

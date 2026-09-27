@@ -21,6 +21,7 @@ namespace CADVision
 
         private IEnumerator Start()
         {
+            CADPackageIdentity.Clear();
             // Allow headset tracking to update before placing the model in front of the viewer.
             yield return null;
             string glbUrl;

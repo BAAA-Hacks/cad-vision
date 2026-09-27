@@ -2124,6 +2124,45 @@ public class CADInteractionPolishTests
         Assert.That(Step(true, true), Is.EqualTo(none), "too soon after the last pinch");
     }
 
+    // ================= Shared room =================
+
+    [Test]
+    public void SharedRoomHidesActionsThatWouldSnapBack()
+    {
+        var room = svc.GetComponent<CADMultiplayerCoordinator>();
+        Assert.That(room, Is.Not.Null, "the Main Menu adds the room coordinator");
+        svc.EnterScope("A");
+        svc.SetObjectScaleAroundPoint("P1", t["P1"].localScale * 2f, Vector3.zero, t["P1"].position);
+        OpenObjectMenu("P1");
+        Assert.That(ContextLabels(), Does.Contain("Reset part").And.Contain("Reset size").And.Contain("Detach"));
+
+        typeof(CADMultiplayerCoordinator).GetField("roomActive", Any).SetValue(room, true);
+        OpenObjectMenu("P1");
+        string[] labels = ContextLabels();
+        foreach (string hidden in new[] { "Reset part", "Reset size", "Reset assembly", "Detach", "Reattach" })
+            Assert.That(labels, Does.Not.Contain(hidden), $"'{hidden}' would be undone in a shared room");
+        Assert.That(labels, Does.Contain("Multi-select"), "the rest stays");
+        typeof(CADMultiplayerCoordinator).GetField("roomActive", Any).SetValue(room, false);
+    }
+
+    [Test]
+    public void ARoomErrorLeavesTheRoomKeepsTheReasonAndBringsTheButtonsBack()
+    {
+        var room = svc.GetComponent<CADMultiplayerCoordinator>();
+        Call(room, "Awake");
+        typeof(CADMultiplayerCoordinator).GetField("roomActive", Any).SetValue(room, true);
+        svc.EnterScope("A");
+        OpenObjectMenu("P1");
+        Assert.That(ContextLabels(), Does.Not.Contain("Reset part"), "hidden while in a room");
+
+        Call(room, "SetError", "Host left the room");
+        Assert.That(room.IsInRoom, Is.False, "a failed room is left right away");
+        Assert.That(room.State, Is.EqualTo(CADMultiplayerCoordinator.RoomState.Error));
+        Assert.That(room.Status, Is.EqualTo("Host left the room"), "the reason stays visible");
+        OpenObjectMenu("P1");
+        Assert.That(ContextLabels(), Does.Contain("Reset part").And.Contain("Detach"), "the buttons come back");
+    }
+
     // ================= Helpers =================
 
     private void AssertBeside(Bounds bounds, string what) => AssertBesidePanel(menu.Panel, bounds, what);

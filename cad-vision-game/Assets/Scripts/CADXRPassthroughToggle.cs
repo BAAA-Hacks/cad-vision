@@ -35,6 +35,7 @@ public class CADXRPassthroughToggle : MonoBehaviour
     private Color[] originalBackgrounds;
 
     public bool IsPassthroughEnabled { get; private set; }
+    public Transform VirtualFloor => virtualFloor != null ? virtualFloor.transform : null;
 
     private void Start()
     {
@@ -74,6 +75,10 @@ public class CADXRPassthroughToggle : MonoBehaviour
 
     public void SetPassthroughEnabled(bool enabled)
     {
+        CADMultiplayerCoordinator room = GetComponent<CADMultiplayerCoordinator>();
+        if (room != null && room.IsInRoom &&
+            enabled != (room.Mode == CADMultiplayerCoordinator.RoomMode.Passthrough))
+            return;
         if (passthroughLayer == null)
         {
             Debug.LogWarning("[CADXRPassthroughToggle] No passthrough layer to toggle.");
