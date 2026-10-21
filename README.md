@@ -6,6 +6,8 @@ The application connects a runtime-loaded **GLB** with **engineering metadata JS
 
 **Inspection transforms do not rewrite the source SolidWorks design or its mates.**
 
+![CADVision displaying a vehicle chassis in mixed reality](docs/images/axel.gif)
+
 ## Table of contents
 
 | Section | What you'll find |
