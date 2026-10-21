@@ -8,6 +8,7 @@ The application connects a runtime-loaded **GLB** with **engineering metadata JS
 
 ![CADVision displaying a vehicle chassis in mixed reality](docs/images/axel.gif)
 
+Youtube Demo: https://www.youtube.com/watch?v=0-bYjncKWIs&t=36s
 ## Table of contents
 
 | Section | What you'll find |
